@@ -31,4 +31,4 @@ this repository — only the app code.
 ## Build phases
 1. Catalogue · Ledger · Staging · Settings — foundation. ✅
 2. Ledger import (Excel/CSV template): append, skip duplicates, route unknown codes to staging. ✅
-3. Sales & analytics from WooCommerce / Vektori exports, and report/file generation.
+3. Sales & analytics from WooCommerce / Vektori exports (imported as ledger out-movements), and report/file generation. ✅

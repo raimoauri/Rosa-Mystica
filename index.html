@@ -195,6 +195,8 @@ textarea.io{font-family:var(--mono);font-size:11.5px;min-height:150px;white-spac
   .grid3{grid-template-columns:1fr 1fr}
 }
 @media (max-width:520px){ .kpis{grid-template-columns:1fr} .grid2,.grid3{grid-template-columns:1fr} }
+.charttip{position:fixed;z-index:200;pointer-events:none;background:var(--ink);color:var(--bg);font-size:11.5px;font-weight:500;padding:5px 9px;border-radius:7px;box-shadow:var(--shadow-lift);transform:translate(-50%,calc(-100% - 12px));white-space:nowrap;font-variant-numeric:tabular-nums}
+@media (max-width:860px){.anrow{grid-template-columns:1fr!important}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -605,32 +607,68 @@ function normDate(v){let s=String(v==null?"":v).trim();if(!s)return"";
   return s;}
 const LEDGER_COLS=[["date",["date"]],["channel",["channel"]],["batchRef",["batchref","batch"]],["code",["productcode","code","sku","ean","isbn"]],["qty",["quantity","qty","pcs"]],["unitPrice",["unitprice","price","unit"]],["name",["name"]],["type",["type"]],["note",["note"]]];
 function inferDir(st,channel){const c=st.channels.find(x=>x.name.toLowerCase()===String(channel||"").toLowerCase());if(c)return c.dir;return /sale|sell|myyn|woo|vektori|out/i.test(channel||"")?"out":"in";}
+function prepareMovements(raw,st,warnings0){
+  const catSet=new Set(st.catalogue.map(p=>normCode(p.code)));
+  const sig=m=>[m.date,m.channel,normCode(m.code),m.qty,m.unitPrice==null?"":m.unitPrice,m.batchRef].join("|");
+  const existing=new Set(st.ledger.map(sig));const seen=new Set();
+  const movements=[];const stage={};const newCh={};let dup=0;
+  for(const mv of raw){
+    const s=sig(mv);if(existing.has(s)||seen.has(s)){dup++;continue;}seen.add(s);
+    const clean={date:mv.date,channel:mv.channel,dir:mv.dir,batchRef:mv.batchRef,code:mv.code,qty:mv.qty,unitPrice:mv.unitPrice,note:mv.note};movements.push(clean);
+    if(mv.channel&&!st.channels.some(c=>c.name.toLowerCase()===mv.channel.toLowerCase()))newCh[mv.channel]=mv.dir;
+    const nc=normCode(mv.code);
+    if(nc&&!catSet.has(nc)){const e=stage[nc]||(stage[nc]={code:mv.code,name:mv._name||"",type:mv._type||"goods",seenCount:0,qty:0,firstDate:""});
+      e.seenCount++;e.qty+=(mv.dir==="in"?mv.qty:-mv.qty);if(mv.date&&(!e.firstDate||mv.date<e.firstDate))e.firstDate=mv.date;if(!e.name&&mv._name)e.name=mv._name;}
+  }
+  const staging=Object.values(stage);const newChannels=Object.entries(newCh).map(([name,dir])=>({name,dir}));
+  const warnings=(warnings0||[]).slice();if(dup)warnings.push(dup+" exact duplicate"+(dup>1?"s":"")+" skipped.");
+  return {movements,staging,newChannels,warnings,stats:{add:movements.length,dup,newCodes:staging.length,skipped:0}};
+}
 function parseLedgerRows(rows,st){
   if(!rows||!rows.length)return {movements:[],staging:[],newChannels:[],warnings:["The file looks empty."],stats:{add:0,dup:0,newCodes:0,skipped:0}};
   const H=(rows[0]||[]).map(normH);const col={};const used={};
   for(const [f,pats] of LEDGER_COLS){let idx=-1;for(const p of pats){for(let i=0;i<H.length;i++){if(used[i])continue;if(H[i]===p||H[i].indexOf(p)===0){idx=i;break;}}if(idx>=0)break;}if(idx>=0){col[f]=idx;used[idx]=1;}}
   const g=(r,f)=>col[f]==null?"":(r[col[f]]==null?"":r[col[f]]);
-  const catSet=new Set(st.catalogue.map(p=>normCode(p.code)));
-  const sig=m=>[m.date,m.channel,normCode(m.code),m.qty,m.unitPrice==null?"":m.unitPrice,m.batchRef].join("|");
-  const existing=new Set(st.ledger.map(sig));const seen=new Set();
   const data=rows.slice(1).filter(r=>r.some(c=>String(c==null?"":c).trim()!==""));
-  const movements=[];const stage={};const newCh={};let dup=0,skipped=0;const defCh=st.channels[0]?st.channels[0].name:"Purchase";
-  for(const r of data){
-    const code=String(g(r,"code")).trim();const qty=parseNum(g(r,"qty"));
+  const raw=[];let skipped=0;const defCh=st.channels[0]?st.channels[0].name:"Purchase";
+  for(const r of data){const code=String(g(r,"code")).trim();const qty=parseNum(g(r,"qty"));
     if(!code||qty==null||qty<=0){skipped++;continue;}
     const channel=String(g(r,"channel")).trim()||defCh;const dir=inferDir(st,channel);
-    const mv={date:normDate(g(r,"date")),channel,dir,batchRef:String(g(r,"batchRef")).trim(),code,qty,unitPrice:parseNum(g(r,"unitPrice")),note:String(g(r,"note")||"").trim()};
-    const s=sig(mv);if(existing.has(s)||seen.has(s)){dup++;continue;}seen.add(s);movements.push(mv);
-    if(!st.channels.some(c=>c.name.toLowerCase()===channel.toLowerCase()))newCh[channel]=dir;
-    const nc=normCode(code);
-    if(!catSet.has(nc)){const e=stage[nc]||(stage[nc]={code,name:String(g(r,"name")||"").trim(),type:(String(g(r,"type")||"").trim().toLowerCase()||"goods"),seenCount:0,qty:0,firstDate:""});
-      e.seenCount++;e.qty+=(dir==="in"?qty:-qty);if(mv.date&&(!e.firstDate||mv.date<e.firstDate))e.firstDate=mv.date;if(!e.name&&g(r,"name"))e.name=String(g(r,"name")).trim();}
-  }
-  const staging=Object.values(stage);const newChannels=Object.entries(newCh).map(([name,dir])=>({name,dir}));
+    raw.push({date:normDate(g(r,"date")),channel,dir,batchRef:String(g(r,"batchRef")).trim(),code,qty,unitPrice:parseNum(g(r,"unitPrice")),note:String(g(r,"note")||"").trim(),_name:String(g(r,"name")||"").trim(),_type:(String(g(r,"type")||"").trim().toLowerCase()||"goods")});}
   const warnings=[];if(col.code==null)warnings.push("No Product code column found — is this the ledger template?");
   if(skipped)warnings.push(skipped+" row"+(skipped>1?"s":"")+" skipped (missing code or quantity).");
-  if(dup)warnings.push(dup+" exact duplicate"+(dup>1?"s":"")+" skipped.");
-  return {movements,staging,newChannels,warnings,stats:{add:movements.length,dup,newCodes:staging.length,skipped}};
+  const prep=prepareMovements(raw,st,warnings);prep.stats.skipped=skipped;return prep;
+}
+/* Sales import: Vektori Product Sales Report (monthly aggregate) or WooCommerce orders (per line). */
+function parseSales(rows,override){
+  if(!rows||!rows.length)return {raw:[],format:null,defDate:"",skipped:0,warnings:["The file looks empty."]};
+  let hi=-1,fmt=null;
+  for(let i=0;i<Math.min(rows.length,60);i++){const H=(rows[i]||[]).map(normH);
+    if(H.indexOf("ordernumber")>=0&&H.indexOf("sku")>=0){hi=i;fmt="woo";break;}
+    if(H.indexOf("name")>=0&&H.some(x=>x.indexOf("productcode")===0)&&H.some(x=>x.indexOf("salepcs")===0)){hi=i;fmt="vektori";break;}}
+  if(hi<0)return {raw:[],format:null,defDate:"",skipped:0,warnings:["Unrecognised sales file — expected a Vektori Product Sales Report or a WooCommerce orders export."]};
+  const H=(rows[hi]||[]).map(normH);
+  const find=(...names)=>{for(const n of names){const e=H.indexOf(n);if(e>=0)return e;}for(const n of names){for(let i=0;i<H.length;i++)if(H[i].indexOf(n)===0)return i;}return -1;};
+  const data=rows.slice(hi+1);const raw=[];let skipped=0;const warnings=[];let defDate=override||"";
+  if(fmt==="woo"){
+    const cO=find("ordernumber"),cD=find("orderdate"),cS=find("sku"),cN=find("itemname","name"),cQ=find("quantity"),cP=find("productcurrentprice","price","productprice");
+    for(const r of data){const code=String(r[cS]==null?"":r[cS]).trim();const qty=parseNum(r[cQ]);
+      if(!code||qty==null||qty<=0){if(code||String(r[cN]==null?"":r[cN]).trim())skipped++;continue;}
+      const draw=String(r[cD]==null?"":r[cD]).trim();const d=normDate(draw.slice(0,10)||draw);
+      const nm=String(r[cN]==null?"":r[cN]).trim();
+      raw.push({date:d,channel:"WooCommerce",dir:"out",batchRef:String(r[cO]==null?"":r[cO]).trim(),code,qty,unitPrice:parseNum(r[cP]),note:nm,_name:nm,_type:"book"});}
+    return {raw,format:"woo",defDate:"",skipped,warnings};
+  }
+  // vektori
+  const cN=find("name"),cC=find("productcode","code"),cQ=find("salepcs"),cS=find("sale"),cRQ=find("refundpcs"),cR=find("refund");
+  if(!defDate){for(let i=0;i<hi;i++){const line=(rows[i]||[]).join(" ");const m=/(\d{2})[.\/](\d{2})[.\/](\d{4})[^-]*-[^0-9]*(\d{2})[.\/](\d{2})[.\/](\d{4})/.exec(line);if(m){defDate=m[6]+"-"+m[5]+"-"+m[4];break;}}}
+  const isNon=(name,code)=>{const n=name.toLowerCase(),c=code.toUpperCase();return (!name&&!code)||n.indexOf("total")===0||n.indexOf("yhteens")===0||/^PR\d+$/.test(c)||c==="LHJKRTI"||n.indexOf("kassasta")===0||n.indexOf("lahjakortti")===0;};
+  for(const r of data){const name=String(r[cN]==null?"":r[cN]).trim();const code=String(r[cC]==null?"":r[cC]).trim();
+    if(isNon(name,code))continue;if(!code){skipped++;continue;}
+    const sp=parseNum(r[cQ])||0,rp=cRQ>=0?(parseNum(r[cRQ])||0):0;const net=sp-rp;if(net<=0){skipped++;continue;}
+    const sale=parseNum(r[cS])||0,ref=cR>=0?(parseNum(r[cR])||0):0;const unit=Math.round(((sale+ref)/net)*100)/100;
+    raw.push({date:defDate,channel:"Vektori",dir:"out",batchRef:"VEK-"+(defDate||"period"),code,qty:net,unitPrice:unit,note:name,_name:name,_type:"book"});}
+  return {raw,format:"vektori",defDate,skipped,warnings};
 }
 
 function indexCatalogue(cat){const by={};for(const p of cat)by[normCode(p.code)]=p;return by;}
@@ -974,6 +1012,97 @@ function LedgerImportModal({st,act,onClose,show}){
     ${res&&res.warnings.length?html`<div class="note">${res.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
   </${Modal}>`;}
 
+function SalesImportModal({st,act,onClose,show}){
+  const [parsed,setParsed]=useState(null);const [ov,setOv]=useState("");const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();
+  function ingest(rows){const r=parseSales(rows,"");setParsed(r);setOv("");if(!r.raw.length)setErr(r.warnings[0]||"No sales rows found.");else setErr("");}
+  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setParsed(null);setFn(f.name);const name=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
+    if(name.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
+    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
+    e.target.value="";}
+  const eff=parsed&&parsed.raw.length?(parsed.format==="vektori"&&ov?{...parsed,raw:parsed.raw.map(m=>({...m,date:ov,batchRef:"VEK-"+ov})),defDate:ov}:parsed):null;
+  const prep=eff?prepareMovements(eff.raw,st,(eff.warnings||[]).concat(eff.skipped?[eff.skipped+" row"+(eff.skipped>1?"s":"")+" skipped (no code or zero net)."]:[])):null;
+  if(prep)prep.stats.skipped=eff.skipped;
+  const rev=prep?prep.movements.reduce((a,m)=>a+(+m.qty||0)*(+m.unitPrice||0),0):0;
+  const ok=prep&&prep.stats.add;
+  function run(){if(!ok)return;act.importLedger(prep);show("Imported "+prep.stats.add+" sales"+(prep.stats.newCodes?" · "+prep.stats.newCodes+" to staging":""));onClose();}
+  const fmtName=parsed?(parsed.format==="woo"?"WooCommerce orders":parsed.format==="vektori"?"Vektori sales report":"Unrecognised"):"";
+  return html`<${Modal} wide=${true} title="Import sales (Vektori / WooCommerce)" onClose=${onClose}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Import${ok?(" "+prep.stats.add):""}</button></${React.Fragment}>`}>
+    <div class="note">Upload a <b>Vektori</b> Product Sales Report or a <b>WooCommerce</b> orders export (.xlsx or .csv) — the format is detected automatically. Each line becomes an <b>out</b> movement in the ledger under its channel; unknown product codes go to staging. Re-importing the same file changes nothing (duplicates are skipped).</div>
+    <div class="hintrow"><button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Choose sales file…</button>
+      <input ref=${fileRef} type="file" accept=".xlsx,.csv" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}
+      ${parsed&&parsed.format?html`<span class="badge type">${fmtName}</span>`:null}</div>
+    ${parsed&&parsed.format==="vektori"?html`<div class="hintrow"><label class="note">Vektori has no per-line date — dated to <b>${fmtD(eff?eff.defDate:parsed.defDate)||"(set one)"}</b>. Override:</label><input type="date" style=${{width:"auto"}} value=${ov} onInput=${e=>setOv(e.target.value)}/></div>`:null}
+    ${err?html`<div class="err">${err}</div>`:null}
+    ${ok?html`<div class="kpis" style=${{marginTop:"4px"}}>
+      <div class="kpi"><div class="k">Sales lines</div><div class="v">${num(prep.stats.add)}</div></div>
+      <div class="kpi"><div class="k">Revenue</div><div class="v">${money(rev)}</div></div>
+      <div class="kpi"><div class="k">New → staging</div><div class="v">${num(prep.stats.newCodes)}</div></div>
+      <div class="kpi"><div class="k">Duplicates skipped</div><div class="v">${num(prep.stats.dup)}</div></div>
+    </div>`:null}
+    ${prep&&prep.warnings.length?html`<div class="note">${prep.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
+  </${Modal}>`;}
+
+const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function monLbl(k){const p=String(k).split("-");return (MONTHS[(+p[1])-1]||"?")+" ’"+(p[0]||"").slice(2);}
+function niceTicks(max,count){max=Math.max(max,1);const s0=max/Math.max(1,count);const mag=Math.pow(10,Math.floor(Math.log10(s0)));const nm=s0/mag;let st2;if(nm<=1)st2=mag;else if(nm<=2)st2=2*mag;else if(nm<=5)st2=5*mag;else st2=10*mag;const out=[];for(let v=0;v<=max+1e-9;v+=st2)out.push(Math.round(v*1000)/1000);return out;}
+function Analytics({st,act,show}){
+  const [tip,setTip]=useState(null);const [metric,setMetric]=useState("rev");
+  const tp=label=>({onMouseEnter:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseMove:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseLeave:()=>setTip(null)});
+  const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
+  const out=st.ledger.filter(r=>r.dir==="out");
+  let units=0,rev=0;const chan={},monthMap={},prod={};
+  for(const r of out){const q=+r.qty||0,v=q*(+r.unitPrice||0);units+=q;rev+=v;
+    const c=r.channel||"—";(chan[c]=chan[c]||{units:0,rev:0});chan[c].units+=q;chan[c].rev+=v;
+    const m=(r.date||"").slice(0,7);if(/^\d{4}-\d{2}$/.test(m)){(monthMap[m]=monthMap[m]||{units:0,rev:0});monthMap[m].units+=q;monthMap[m].rev+=v;}
+    const k=normCode(r.code);(prod[k]=prod[k]||{code:r.code,units:0,rev:0});prod[k].units+=q;prod[k].rev+=v;}
+  const months=Object.keys(monthMap).sort().map(k=>({k,...monthMap[k]}));
+  const channels=Object.entries(chan).map(([c,v])=>({c,...v})).sort((a,b)=>b.rev-a.rev);
+  const mv=o=>metric==="rev"?o.rev:o.units;const mfmt=x=>metric==="rev"?money(x):num(x);
+  const top=Object.values(prod).sort((a,b)=>mv(b)-mv(a)).slice(0,12);
+  const unmatched=Object.keys(prod).filter(k=>k&&!byCode[k]);
+  function report(){const head=["code","name","units","revenue",...channels.map(c=>c.c+" units")];
+    const rows=Object.values(prod).sort((a,b)=>b.rev-a.rev).map(p=>{const nm=byCode[normCode(p.code)];
+      const perCh=channels.map(c=>out.filter(r=>normCode(r.code)===normCode(p.code)&&r.channel===c.c).reduce((a,r)=>a+(+r.qty||0),0));
+      return [p.code,nm?nm.name:"",p.units,Math.round(p.rev*100)/100,...perCh];});
+    const csv=toCSV(head,rows);if(IN_FRAME||!downloadText("rosa-mystica_sales_"+today()+".csv",csv,"text/csv"))act.openExport("Sales report — CSV",csv);else show("Saved CSV");}
+  function monthChart(){ if(!months.length)return html`<div class="empty"><div class="note">No dated sales yet.</div></div>`;
+    const W=720,H=230,padL=54,padR=14,padT=18,padB=28,iw=W-padL-padR,ih=H-padT-padB;
+    const maxV=Math.max(1,...months.map(mv));const ticks=niceTicks(maxV,4);let topv=ticks[ticks.length-1];const ts=ticks.length>1?ticks[1]-ticks[0]:topv;while(topv<=maxV){topv+=ts;ticks.push(topv);}
+    const step=iw/months.length,bw=Math.min(54,step*0.6),y=v=>padT+ih-(v/topv)*ih;
+    return html`<svg viewBox="0 0 ${W} ${H}" style=${{width:"100%",height:"auto"}}>
+      ${ticks.map(t=>html`<g key=${t}><line x1=${padL} x2=${W-padR} y1=${y(t)} y2=${y(t)} style=${{stroke:"var(--line)"}}/><text x=${padL-8} y=${y(t)+3} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${metric==="rev"?Math.round(t):num(t)}</text></g>`)}
+      ${months.map((m,i)=>{const cx=padL+step*i+step/2,yy=y(mv(m));return html`<g key=${m.k} ...${tp(monLbl(m.k)+" · "+mfmt(mv(m)))}>
+        <rect x=${cx-bw/2} y=${yy} width=${bw} height=${Math.max(0,padT+ih-yy)} rx="4" style=${{fill:"var(--accent)"}}/>
+        <text x=${cx} y=${H-padB+15} text-anchor="middle" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${monLbl(m.k)}</text></g>`;})}
+    </svg>`;}
+  function channelChart(){if(!channels.length)return null;const maxV=Math.max(1,...channels.map(mv));
+    return html`<div style=${{display:"flex",flexDirection:"column",gap:"13px"}}>${channels.map(c=>html`<div key=${c.c}>
+      <div style=${{display:"flex",justifyContent:"space-between",marginBottom:"5px",fontSize:"13px"}}><span style=${{fontWeight:"500"}}>${c.c}</span><span class="mono">${mfmt(mv(c))}</span></div>
+      <div style=${{height:"10px",borderRadius:"6px",background:"var(--surface-2)",overflow:"hidden"}} ...${tp(c.c+" · "+num(c.units)+" units · "+money(c.rev))}><div style=${{height:"100%",width:(mv(c)/maxV*100)+"%",background:"var(--accent)",borderRadius:"6px"}}></div></div></div>`)}</div>`;}
+  return html`<div class="content">
+    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Sales & analytics</h2>
+      <div class="hintrow"><div class="seg"><button aria-pressed=${metric==="rev"} onClick=${()=>setMetric("rev")}>Revenue</button><button aria-pressed=${metric==="units"} onClick=${()=>setMetric("units")}>Units</button></div>
+        ${out.length?html`<button class="btn" onClick=${report}><${Icon} name="download"/>Sales report</button>`:null}
+        <button class="btn primary" onClick=${()=>act.openSalesImport()}><${Icon} name="upload"/>Import sales</button></div></div>
+    ${out.length===0?html`<div class="panel"><div class="empty"><${Icon} name="analytics"/><div class="big">No sales yet</div><div class="note" style=${{maxWidth:"440px"}}>Import a Vektori or WooCommerce export — each line becomes an out-movement in the ledger, and this tab compartmentalises them by channel, month and product.</div><button class="btn primary" onClick=${()=>act.openSalesImport()}><${Icon} name="upload"/>Import sales</button></div></div>`:html`<${React.Fragment}>
+    <div class="kpis" style=${{marginBottom:"20px"}}>
+      <div class="kpi"><div class="k">Revenue</div><div class="v">${money(rev)}</div><div class="f">${num(out.length)} lines</div></div>
+      <div class="kpi"><div class="k">Units sold</div><div class="v">${num(units)}</div></div>
+      <div class="kpi"><div class="k">Channels</div><div class="v">${num(channels.length)}</div><div class="f">${channels.map(c=>c.c).join(" · ")}</div></div>
+      <div class="kpi"><div class="k">Unmatched codes</div><div class="v">${num(unmatched.length)}</div><div class="f">${unmatched.length?"in staging for review":"all linked"}</div></div>
+    </div>
+    <div class="anrow" style=${{display:"grid",gridTemplateColumns:"1.5fr 1fr",gap:"18px",marginBottom:"18px"}}>
+      <div class="panel"><div class="panel-h"><h3>By month</h3><span class="note">${metric==="rev"?"revenue":"units"}</span></div><div style=${{padding:"12px 14px"}}>${monthChart()}</div></div>
+      <div class="panel"><div class="panel-h"><h3>By channel</h3><span class="note">${metric==="rev"?"revenue":"units"}</span></div><div style=${{padding:"16px"}}>${channelChart()}</div></div>
+    </div>
+    <div class="panel"><div class="panel-h"><h3>Top products</h3><span class="note">by ${metric==="rev"?"revenue":"units"}</span></div>
+      <div class="tablewrap"><table><thead><tr><th>Code</th><th>Product</th><th class="num">Units</th><th class="num">Revenue</th></tr></thead>
+      <tbody>${top.map(p=>{const nm=byCode[normCode(p.code)];return html`<tr key=${normCode(p.code)}><td class="code">${p.code}</td><td>${nm?html`<span class="name">${nm.name}</span>`:html`<span class="faint">unlinked</span>`}</td><td class="num">${num(p.units)}</td><td class="num mono">${money(p.rev)}</td></tr>`;})}</tbody></table></div></div>
+    </${React.Fragment}>`}
+    ${tip?html`<div class="charttip" style=${{left:tip.x+"px",top:tip.y+"px"}}>${tip.label}</div>`:null}
+  </div>`;}
+
 function App(){
   const [st,setSt]=useState(load);
   const [tab,setTab]=useState("overview");
@@ -986,7 +1115,7 @@ function App(){
   const show=msg=>{setToast(msg);clearTimeout(window.__rmt);window.__rmt=setTimeout(()=>setToast(""),2200);};
 
   const act={
-    toast:show, go:setTab, openImport:()=>setModal({type:"ledgerimport"}),
+    toast:show, go:setTab, openImport:()=>setModal({type:"ledgerimport"}), openSalesImport:()=>setModal({type:"salesimport"}),
     commitProduct:(clean,origCode,fromStaging)=>setSt(s=>{
       const nc=normCode(clean.code), oc=origCode?normCode(origCode):null;
       let catalogue=s.catalogue.slice();
@@ -1047,7 +1176,7 @@ function App(){
       ${tab==="catalogue"?html`<${Catalogue} st=${st} act=${act} openProduct=${openProduct} q=${q} setQ=${setQ}/>`:null}
       ${tab==="ledger"?html`<${Ledger} st=${st} act=${act} openMovement=${openMovement} openProduct=${openProduct}/>`:null}
       ${tab==="staging"?html`<${Staging} st=${st} act=${act} openProduct=${openProduct} show=${show}/>`:null}
-      ${tab==="analytics"?html`<div class="content"><div class="panel"><div class="empty"><${Icon} name="analytics"/><div class="big">Sales & analytics</div><div class="note" style=${{maxWidth:"440px"}}>This is where WooCommerce and Vektori exports will be imported, compartmentalised and turned into reports. Share your templates and I'll wire it up.</div></div></div></div>`:null}
+      ${tab==="analytics"?html`<${Analytics} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="settings"?html`<${Settings} st=${st} act=${act} show=${show}/>`:null}
     </div>
     ${modal&&modal.type==="product"?html`<${ProductModal} st=${st} act=${act} editing=${modal.editing} fromStaging=${modal.fromStaging} onClose=${()=>setModal(null)} show=${show}/>`:null}
@@ -1056,6 +1185,7 @@ function App(){
     ${modal&&modal.type==="encsave"?html`<${PassModal} mode="save" onClose=${()=>setModal(null)} onSubmit=${async pass=>{const text=JSON.stringify(await encryptCore(st,pass),null,2);const name="rosa-mystica_core_"+today()+".enc.json";if(IN_FRAME||!downloadText(name,text)){setModal({type:"export",title:"Encrypted core — copy and keep safe",text});}else{setModal(null);show("Saved "+name);}}}/>`:null}
     ${modal&&modal.type==="encopen"?html`<${PassModal} mode="open" onClose=${()=>setModal(null)} onSubmit=${async pass=>{const d=await decryptCore(modal.payload,pass);act.replaceAll(d);setModal(null);show("Data loaded");}}/>`:null}
     ${modal&&modal.type==="ledgerimport"?html`<${LedgerImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
+    ${modal&&modal.type==="salesimport"?html`<${SalesImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="wipe"?html`<${ConfirmModal} title="Erase everything?" confirmLabel="Erase all data" body=${html`<span>This clears the catalogue, ledger and staging in this browser. Export a backup first if you might want it back.</span>`} onConfirm=${act.wipe} onClose=${()=>setModal(null)}/>`:null}
     ${toast?html`<div class="toast">${toast}</div>`:null}
   </div>`;}
