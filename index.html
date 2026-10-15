@@ -561,6 +561,78 @@ function csvEscape(v){return '"'+String(v==null?"":v).replace(/"/g,'""')+'"';}
 function toCSV(head,rows){return [head.map(csvEscape).join(",")].concat(rows.map(r=>r.map(csvEscape).join(","))).join("\n");}
 
 /* ---------- derived selectors ---------- */
+/* ===== file reading + ledger import (xlsx via fflate, or csv) ===== */
+const TPL_LEDGER_B64="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";
+function b64ToBytes(b64){const bin=atob(b64),n=bin.length,out=new Uint8Array(n);for(let i=0;i<n;i++)out[i]=bin.charCodeAt(i);return out;}
+function downloadBytes(filename,bytes,mime){try{const blob=new Blob([bytes],{type:mime||"application/octet-stream"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=filename;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove();},0);return true;}catch(e){return false;}}
+function colIndex(ref){const m=/^([A-Z]+)/.exec(String(ref||"").toUpperCase());if(!m)return 0;let n=0;for(const ch of m[1])n=n*26+(ch.charCodeAt(0)-64);return n-1;}
+function xlsxToRows(buf){
+  const files=fflate.unzipSync(new Uint8Array(buf));const dec=new TextDecoder();
+  const px=s=>new DOMParser().parseFromString(s,"application/xml");
+  const sst=[];const ss=files["xl/sharedStrings.xml"];
+  if(ss){const d=px(dec.decode(ss));const sis=d.getElementsByTagName("si");for(let i=0;i<sis.length;i++){let t="";const ts=sis[i].getElementsByTagName("t");for(let j=0;j<ts.length;j++)t+=ts[j].textContent||"";sst.push(t);}}
+  let target="xl/worksheets/sheet1.xml";
+  try{const wb=px(dec.decode(files["xl/workbook.xml"]));const rels=px(dec.decode(files["xl/_rels/workbook.xml.rels"]));
+    const rl=rels.getElementsByTagName("Relationship");const rmap={};for(let i=0;i<rl.length;i++)rmap[rl[i].getAttribute("Id")]=rl[i].getAttribute("Target");
+    const sh=wb.getElementsByTagName("sheet");if(sh.length){let rid=sh[0].getAttribute("r:id");if(!rid)rid=sh[0].getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships","id");
+      let tgt=rmap[rid];if(tgt){tgt=tgt.replace(/^\.?\//,"");if(tgt.indexOf("xl/")!==0)tgt="xl/"+tgt;if(files[tgt])target=tgt;}}}catch(e){}
+  const sd=px(dec.decode(files[target]||files["xl/worksheets/sheet1.xml"]));
+  const rowsEl=sd.getElementsByTagName("row");const out=[];
+  for(let i=0;i<rowsEl.length;i++){const cs=rowsEl[i].getElementsByTagName("c");const arr=[];
+    for(let j=0;j<cs.length;j++){const c=cs[j];const cx=colIndex(c.getAttribute("r"));const t=c.getAttribute("t");let val="";
+      if(t==="s"){const v=c.getElementsByTagName("v")[0];if(v)val=sst[+v.textContent]||"";}
+      else if(t==="inlineStr"){const is=c.getElementsByTagName("t")[0];val=is?(is.textContent||""):"";}
+      else{const v=c.getElementsByTagName("v")[0];val=v?(v.textContent||""):"";}
+      arr[cx]=val;}
+    for(let k=0;k<arr.length;k++)if(arr[k]==null)arr[k]="";
+    out.push(arr);}
+  return out;
+}
+function csvParse(text,delim){const rows=[];let i=0,field="",row=[],q=false;const t=String(text||"");
+  if(!delim){const head=t.slice(0,t.indexOf("\n")>=0?t.indexOf("\n"):t.length);delim=(head.split(";").length>head.split(",").length)?";":",";}
+  const pushF=()=>{row.push(field);field="";};const pushR=()=>{pushF();rows.push(row);row=[];};
+  for(;i<t.length;i++){const c=t[i];
+    if(q){if(c==='"'){if(t[i+1]==='"'){field+='"';i++;}else q=false;}else field+=c;}
+    else{if(c==='"')q=true;else if(c===delim)pushF();else if(c==="\n"){pushR();}else if(c==="\r"){}else field+=c;}}
+  if(field!==""||row.length)pushR();
+  return rows;}
+function normH(s){return String(s==null?"":s).toLowerCase().replace(/[^a-z0-9]/g,"");}
+function pad2(n){return String(n).padStart(2,"0");}
+function normDate(v){let s=String(v==null?"":v).trim();if(!s)return"";
+  if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
+  const m=/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/.exec(s);if(m)return m[3]+"-"+pad2(m[2])+"-"+pad2(m[1]);
+  if(/^\d+(\.\d+)?$/.test(s)){const n=Math.round(+s);if(n>20000&&n<90000){const d=new Date(Date.UTC(1899,11,30)+n*86400000);return d.toISOString().slice(0,10);}}
+  return s;}
+const LEDGER_COLS=[["date",["date"]],["channel",["channel"]],["batchRef",["batchref","batch"]],["code",["productcode","code","sku","ean","isbn"]],["qty",["quantity","qty","pcs"]],["unitPrice",["unitprice","price","unit"]],["name",["name"]],["type",["type"]],["note",["note"]]];
+function inferDir(st,channel){const c=st.channels.find(x=>x.name.toLowerCase()===String(channel||"").toLowerCase());if(c)return c.dir;return /sale|sell|myyn|woo|vektori|out/i.test(channel||"")?"out":"in";}
+function parseLedgerRows(rows,st){
+  if(!rows||!rows.length)return {movements:[],staging:[],newChannels:[],warnings:["The file looks empty."],stats:{add:0,dup:0,newCodes:0,skipped:0}};
+  const H=(rows[0]||[]).map(normH);const col={};const used={};
+  for(const [f,pats] of LEDGER_COLS){let idx=-1;for(const p of pats){for(let i=0;i<H.length;i++){if(used[i])continue;if(H[i]===p||H[i].indexOf(p)===0){idx=i;break;}}if(idx>=0)break;}if(idx>=0){col[f]=idx;used[idx]=1;}}
+  const g=(r,f)=>col[f]==null?"":(r[col[f]]==null?"":r[col[f]]);
+  const catSet=new Set(st.catalogue.map(p=>normCode(p.code)));
+  const sig=m=>[m.date,m.channel,normCode(m.code),m.qty,m.unitPrice==null?"":m.unitPrice,m.batchRef].join("|");
+  const existing=new Set(st.ledger.map(sig));const seen=new Set();
+  const data=rows.slice(1).filter(r=>r.some(c=>String(c==null?"":c).trim()!==""));
+  const movements=[];const stage={};const newCh={};let dup=0,skipped=0;const defCh=st.channels[0]?st.channels[0].name:"Purchase";
+  for(const r of data){
+    const code=String(g(r,"code")).trim();const qty=parseNum(g(r,"qty"));
+    if(!code||qty==null||qty<=0){skipped++;continue;}
+    const channel=String(g(r,"channel")).trim()||defCh;const dir=inferDir(st,channel);
+    const mv={date:normDate(g(r,"date")),channel,dir,batchRef:String(g(r,"batchRef")).trim(),code,qty,unitPrice:parseNum(g(r,"unitPrice")),note:String(g(r,"note")||"").trim()};
+    const s=sig(mv);if(existing.has(s)||seen.has(s)){dup++;continue;}seen.add(s);movements.push(mv);
+    if(!st.channels.some(c=>c.name.toLowerCase()===channel.toLowerCase()))newCh[channel]=dir;
+    const nc=normCode(code);
+    if(!catSet.has(nc)){const e=stage[nc]||(stage[nc]={code,name:String(g(r,"name")||"").trim(),type:(String(g(r,"type")||"").trim().toLowerCase()||"goods"),seenCount:0,qty:0,firstDate:""});
+      e.seenCount++;e.qty+=(dir==="in"?qty:-qty);if(mv.date&&(!e.firstDate||mv.date<e.firstDate))e.firstDate=mv.date;if(!e.name&&g(r,"name"))e.name=String(g(r,"name")).trim();}
+  }
+  const staging=Object.values(stage);const newChannels=Object.entries(newCh).map(([name,dir])=>({name,dir}));
+  const warnings=[];if(col.code==null)warnings.push("No Product code column found — is this the ledger template?");
+  if(skipped)warnings.push(skipped+" row"+(skipped>1?"s":"")+" skipped (missing code or quantity).");
+  if(dup)warnings.push(dup+" exact duplicate"+(dup>1?"s":"")+" skipped.");
+  return {movements,staging,newChannels,warnings,stats:{add:movements.length,dup,newCodes:staging.length,skipped}};
+}
+
 function indexCatalogue(cat){const by={};for(const p of cat)by[normCode(p.code)]=p;return by;}
 function stockByCode(st){const m={};for(const r of st.ledger){const k=normCode(r.code);if(!k)continue;const q=+r.qty||0;m[k]=(m[k]||0)+(r.dir==="in"?q:-q);}return m;}
 function lastOrderedByCode(st){const m={};for(const r of st.ledger){if(r.dir!=="in")continue;const k=normCode(r.code);if(!k)continue;if(!m[k]||(r.date||"")>m[k])m[k]=r.date||"";}return m;}
@@ -745,7 +817,7 @@ function Ledger({st,act,openMovement,openProduct}){
   const grouped=useMemo(()=>{const g={};for(const r of rows){const k=r.batchRef||"(no batch)";(g[k]=g[k]||[]).push(r);}return Object.entries(g);},[rows]);
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Movements</h2></div>
-      <div class="hintrow"><button class="btn" onClick=${()=>act.go("import")}><${Icon} name="upload"/>Import ledger</button><button class="btn primary" onClick=${()=>openMovement(null)}><${Icon} name="plus"/>New movement</button></div></div>
+      <div class="hintrow"><button class="btn" onClick=${()=>act.openImport()}><${Icon} name="upload"/>Import ledger</button><button class="btn primary" onClick=${()=>openMovement(null)}><${Icon} name="plus"/>New movement</button></div></div>
     <div class="toolbar">
       <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, product, batch, note…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
       <select class="filter" value=${fch} onChange=${e=>setFch(e.target.value)}><option value="">All channels</option>${st.channels.map(c=>html`<option key=${c.id} value=${c.name}>${c.name}</option>`)}</select>
@@ -876,6 +948,32 @@ function ConfirmModal({title,body,confirmLabel,onConfirm,onClose}){
   return html`<${Modal} title=${title} onClose=${onClose} footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn danger" onClick=${()=>{onConfirm();onClose();}}>${confirmLabel||"Confirm"}</button></${React.Fragment}>`}><div>${body}</div></${Modal}>`;}
 
 /* ===================== App ===================== */
+function LedgerImportModal({st,act,onClose,show}){
+  const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();
+  function ingest(rows){const r=parseLedgerRows(rows,st);setRes(r);setErr(r.stats.add?"":(r.stats.dup?("All "+r.stats.dup+" row"+(r.stats.dup>1?"s are":" is")+" already in the ledger — nothing new to add."):"No movements found — check the file uses the ledger template."));}
+  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setRes(null);setFn(f.name);const name=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
+    if(name.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
+    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx — is it a real Excel file?");}};rd.readAsArrayBuffer(f);}
+    e.target.value="";}
+  function dl(){const name="Rosa-Mystica_Ledger-template.xlsx";if(IN_FRAME){show("Open the app in its own tab to download");return;}if(!downloadBytes(name,b64ToBytes(TPL_LEDGER_B64),"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))show("Download blocked — open in its own tab");}
+  function run(){if(!res||!res.stats.add){setErr("Nothing to import.");return;}act.importLedger(res);show("Imported "+res.stats.add+" movements"+(res.stats.newCodes?" · "+res.stats.newCodes+" to staging":""));onClose();}
+  const ok=res&&res.stats.add;
+  return html`<${Modal} wide=${true} title="Import ledger (Excel / CSV)" onClose=${onClose}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Import${ok?(" "+res.stats.add):""}</button></${React.Fragment}>`}>
+    <div class="note">Download the template, enter one row per movement — lines of one import/invoice share a <b>batch ref</b>. Importing <b>appends</b> rows, skips exact duplicates, and sends any product code not in the catalogue to <b>staging</b> for review. CSV works too.</div>
+    <div class="hintrow"><button class="btn sm" onClick=${dl}><${Icon} name="download"/>Download template (.xlsx)</button>
+      <button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Choose filled file…</button>
+      <input ref=${fileRef} type="file" accept=".xlsx,.csv" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}</div>
+    ${err?html`<div class="err">${err}</div>`:null}
+    ${res?html`<div class="kpis" style=${{marginTop:"4px"}}>
+      <div class="kpi"><div class="k">Movements</div><div class="v">${num(res.stats.add)}</div></div>
+      <div class="kpi"><div class="k">New → staging</div><div class="v">${num(res.stats.newCodes)}</div></div>
+      <div class="kpi"><div class="k">Duplicates skipped</div><div class="v">${num(res.stats.dup)}</div></div>
+      <div class="kpi"><div class="k">New channels</div><div class="v">${num(res.newChannels.length)}</div></div>
+    </div>`:null}
+    ${res&&res.warnings.length?html`<div class="note">${res.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
+  </${Modal}>`;}
+
 function App(){
   const [st,setSt]=useState(load);
   const [tab,setTab]=useState("overview");
@@ -888,7 +986,7 @@ function App(){
   const show=msg=>{setToast(msg);clearTimeout(window.__rmt);window.__rmt=setTimeout(()=>setToast(""),2200);};
 
   const act={
-    toast:show, go:t=>{ if(t==="import"){show("Ledger import arrives in the next build");return;} setTab(t); },
+    toast:show, go:setTab, openImport:()=>setModal({type:"ledgerimport"}),
     commitProduct:(clean,origCode,fromStaging)=>setSt(s=>{
       const nc=normCode(clean.code), oc=origCode?normCode(origCode):null;
       let catalogue=s.catalogue.slice();
@@ -915,6 +1013,16 @@ function App(){
     openDecrypt:obj=>setModal({type:"encopen",payload:obj}),
     openWipe:()=>setModal({type:"wipe"}),
     wipe:()=>setSt(blankState()),
+    importLedger:parsed=>setSt(s=>{const now=new Date().toISOString();
+      const channels=s.channels.slice();
+      for(const nc of parsed.newChannels)if(!channels.some(c=>c.name.toLowerCase()===nc.name.toLowerCase()))channels.push({id:uid(),name:nc.name,dir:nc.dir});
+      const ledger=[...s.ledger,...parsed.movements.map(m=>({...m,id:uid(),createdAt:now}))];
+      const catSet=new Set(s.catalogue.map(p=>normCode(p.code)));
+      const staging=s.staging.slice();
+      for(const e of parsed.staging){const nc=normCode(e.code);if(catSet.has(nc))continue;const ix=staging.findIndex(x=>normCode(x.code)===nc);
+        if(ix>=0){const o=staging[ix];staging[ix]={...o,seenCount:(o.seenCount||0)+e.seenCount,qty:(o.qty||0)+e.qty,firstDate:(!o.firstDate||(e.firstDate&&e.firstDate<o.firstDate))?(e.firstDate||o.firstDate):o.firstDate,name:o.name||e.name,type:o.type||e.type};}
+        else staging.push({code:e.code,name:e.name,type:e.type,seenCount:e.seenCount,qty:e.qty,firstDate:e.firstDate});}
+      return {...s,channels,ledger,staging};}),
   };
   const openProduct=(p,fromStaging)=>setModal({type:"product",editing:p,fromStaging:!!fromStaging});
   const openMovement=r=>setModal({type:"movement",editing:r});
@@ -947,6 +1055,7 @@ function App(){
     ${modal&&modal.type==="export"?html`<${ExportModal} title=${modal.title} text=${modal.text} onClose=${()=>setModal(null)}/>`:null}
     ${modal&&modal.type==="encsave"?html`<${PassModal} mode="save" onClose=${()=>setModal(null)} onSubmit=${async pass=>{const text=JSON.stringify(await encryptCore(st,pass),null,2);const name="rosa-mystica_core_"+today()+".enc.json";if(IN_FRAME||!downloadText(name,text)){setModal({type:"export",title:"Encrypted core — copy and keep safe",text});}else{setModal(null);show("Saved "+name);}}}/>`:null}
     ${modal&&modal.type==="encopen"?html`<${PassModal} mode="open" onClose=${()=>setModal(null)} onSubmit=${async pass=>{const d=await decryptCore(modal.payload,pass);act.replaceAll(d);setModal(null);show("Data loaded");}}/>`:null}
+    ${modal&&modal.type==="ledgerimport"?html`<${LedgerImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="wipe"?html`<${ConfirmModal} title="Erase everything?" confirmLabel="Erase all data" body=${html`<span>This clears the catalogue, ledger and staging in this browser. Export a backup first if you might want it back.</span>`} onConfirm=${act.wipe} onClose=${()=>setModal(null)}/>`:null}
     ${toast?html`<div class="toast">${toast}</div>`:null}
   </div>`;}
