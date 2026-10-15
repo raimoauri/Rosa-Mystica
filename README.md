@@ -40,3 +40,4 @@ reorder list (sellable, out of stock, previously moved) carrying provider + prov
 2. Ledger import (Excel/CSV template): append, skip duplicates, route unknown codes to staging. ✅
 3. Sales & analytics from WooCommerce / Vektori exports (imported as ledger out-movements), and report/file generation. ✅
 4. Auto batch references, the provider-reference bridge, and the Inventory (FIFO) tab with reorder. ✅
+5. Per-item reorder points, a catalogue import template + bulk-confirm staging, and .xlsx reports. ✅
