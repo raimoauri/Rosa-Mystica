@@ -34,10 +34,21 @@ Lives in this browser (localStorage). Export a portable **core file** (`.json`),
 AES-256 encrypted, from Settings. Catalogue and ledger also export to CSV. No data is stored in
 this repository — only the app code.
 
-## Inventory (FIFO)
+## Inventory (FIFO) & invoice progress
 An Inventory tab derives, from the one ledger, FIFO stock per code — received, sold, on-hand,
 sell-through, FIFO cost, realized profit and ROI (only units matched to a cost lot count), plus a
 reorder list (sellable, out of stock, previously moved) carrying provider + provider ref, exportable.
+A **Batches** segment rolls the same ledger up per invoice/batch (via FIFO lot→batch attribution, so a
+reordered code's sales land against the batch that supplied them): received, sold, on-hand, sell-through,
+capital invested, recouped, profit and ROI per invoice — the old Import Desk invoice progress, rebuilt
+from the unified ledger.
+
+## VAT
+Purchases carry an explicit **per-line VAT rate**; the VAT-inclusive line total is keyed and net/VAT are
+counted back from it. Margins everywhere are **net-to-net**: purchase cost stripped by its line VAT, sale
+price stripped by the rate for the product's type (configurable in Settings; a movement's own VAT %
+overrides). The Finance tab shows **output VAT** (sales, from settlement) beside **input VAT** (purchases,
+from the ledger) over any range, for a by-hand net-VAT / Fivaldi reconciliation.
 
 ## Financial tracker
 A **Finance** tab, parallel to Analytics, imports the **Vektori Transaction Report** (.csv/.xlsx) —
@@ -58,3 +69,5 @@ The Settlement Report isn't needed — the Transaction Report carries the same t
 6. Channel mode (in-person / online) with an analytics split, and a **Financial tracker** — Vektori
    Transaction Report import, period summaries (day/week/month/custom), VAT + payment breakdowns,
    and till-vs-app reconciliation. ✅
+7. Per-line purchase VAT (totals keyed, VAT counted back), net-to-net margins, a **Batches** invoice-progress
+   segment in Inventory, and an input-vs-output VAT view in Finance. ✅
