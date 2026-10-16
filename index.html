@@ -658,7 +658,7 @@ function parseLedgerRows(rows,st){
   const data=rows.slice(1).filter(r=>r.some(c=>String(c==null?"":c).trim()!==""));
   const raw=[];let skipped=0;const defCh=st.channels[0]?st.channels[0].name:"Purchase";
   for(const r of data){const code=String(g(r,"code")).trim();const qty=parseNum(g(r,"qty"));
-    if(!code||qty==null||qty<=0){skipped++;continue;}
+    if(!code||qty==null||qty===0){skipped++;continue;}
     const channel=String(g(r,"channel")).trim()||defCh;const dir=inferDir(st,channel);
     const date=normDate(g(r,"date"));const country=String(g(r,"country")||"").trim();const provider=String(g(r,"provider")||"").trim();const providerRef=String(g(r,"providerRef")||"").trim();
     const batchGiven=String(g(r,"batchRef")).trim();const batchRef=batchGiven||((country||provider)?genBatchRef(country,date,provider):"");
@@ -1013,7 +1013,7 @@ function MovementModal({st,act,editing,onClose,show}){
   const up=(k,v)=>setF(o=>({...o,[k]:v}));
   const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
   const nc=normCode(f.code);const prod=byCode[nc];
-  const errs=[];if(!nc)errs.push("A product code is required.");if(parseNum(f.qty)==null||parseNum(f.qty)<=0)errs.push("Quantity must be a positive number.");
+  const errs=[];if(!nc)errs.push("A product code is required.");if(parseNum(f.qty)==null||parseNum(f.qty)===0)errs.push("Quantity must be non-zero (negative allowed, e.g. an opening adjustment or a return).");
   const valid=errs.length===0;
   const suggestedBatch=genBatchRef(f.country,f.date,f.provider);
   function commit(){if(!valid)return;const dir=channelDir(st,f.channel);const bref=f.batchRef.trim()||suggestedBatch;
