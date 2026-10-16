@@ -45,9 +45,10 @@ from the unified ledger.
 
 ## VAT
 Purchases carry an explicit **per-line VAT rate**; the VAT-inclusive line total is keyed and net/VAT are
-counted back from it. Margins everywhere are **net-to-net**: purchase cost stripped by its line VAT, sale
-price stripped by the rate for the product's type (configurable in Settings; a movement's own VAT %
-overrides). The Finance tab shows **output VAT** (sales, from settlement) beside **input VAT** (purchases,
+counted back from it. A batch can also carry a **transport (freight-in) total**, spread per unit by
+quantity into the **net landed cost** — entered once per batch (repeated on each line or on one). Margins
+everywhere are **net-to-net**: landed purchase cost (net + freight share) vs sale price stripped by the
+rate for the product's type (configurable in Settings; a movement's own VAT % overrides). The Finance tab shows **output VAT** (sales, from settlement) beside **input VAT** (purchases,
 from the ledger) over any range, for a by-hand net-VAT / Fivaldi reconciliation.
 
 ## Financial tracker
@@ -79,3 +80,5 @@ same totals plus daily detail.
    segment in Inventory, and an input-vs-output VAT view in Finance. ✅
 8. WooCommerce Revenue import (online money view), in-person-vs-online split, per-mode reconciliation, and an
    online postage box (shipping charged vs postage paid to the carrier). ✅
+9. Batch-level transport (freight-in) spread per unit by quantity into net landed cost, feeding FIFO,
+   margins and the Batches view; Transport column in the ledger template, movement form and exports. ✅

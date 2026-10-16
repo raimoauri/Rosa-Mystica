@@ -628,7 +628,7 @@ function normDate(v){let s=String(v==null?"":v).trim();if(!s)return"";
   const m=/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/.exec(s);if(m)return m[3]+"-"+pad2(m[2])+"-"+pad2(m[1]);
   if(/^\d+(\.\d+)?$/.test(s)){const n=Math.round(+s);if(n>20000&&n<90000){const d=new Date(Date.UTC(1899,11,30)+n*86400000);return d.toISOString().slice(0,10);}}
   return s;}
-const LEDGER_COLS=[["date",["date"]],["channel",["channel"]],["country",["country"]],["providerRef",["providerref","provref","supplierref","supplierart"]],["provider",["provider","supplier","manufacturer","publisher"]],["batchRef",["batchref","batch"]],["code",["productcode","code","sku","ean","isbn"]],["qty",["quantity","qty","pcs"]],["lineTotal",["totalinclvat","totalincvat","grosstotal","linetotal","total"]],["vatRate",["vatrate","vatpct","alvpct","vat","alv"]],["unitPrice",["unitprice","price","unit"]],["name",["name"]],["type",["type"]],["note",["note"]]];
+const LEDGER_COLS=[["date",["date"]],["channel",["channel"]],["country",["country"]],["providerRef",["providerref","provref","supplierref","supplierart"]],["provider",["provider","supplier","manufacturer","publisher"]],["batchRef",["batchref","batch"]],["code",["productcode","code","sku","ean","isbn"]],["qty",["quantity","qty","pcs"]],["lineTotal",["totalinclvat","totalincvat","grosstotal","linetotal","total"]],["vatRate",["vatrate","vatpct","alvpct","vat","alv"]],["unitPrice",["unitprice","price","unit"]],["transport",["transport","freight","rahti","toimituskulu"]],["name",["name"]],["type",["type"]],["note",["note"]]];
 function inferDir(st,channel){const c=st.channels.find(x=>x.name.toLowerCase()===String(channel||"").toLowerCase());if(c)return c.dir;return /sale|sell|myyn|woo|vektori|out/i.test(channel||"")?"out":"in";}
 function abbrevCountry(c){c=String(c||"").trim();if(!c)return"";const map={finland:"FI",suomi:"FI",poland:"PL",puola:"PL",portugal:"PT",portugali:"PT",sweden:"SE",ruotsi:"SE",germany:"DE",saksa:"DE",italy:"IT",italia:"IT",france:"FR",ranska:"FR",spain:"ES",espanja:"ES",uk:"GB","united kingdom":"GB",usa:"US","united states":"US",vatican:"VA",netherlands:"NL",alankomaat:"NL",belgium:"BE",austria:"AT",switzerland:"CH",ireland:"IE",poland2:"PL"};const k=c.toLowerCase();if(map[k])return map[k];if(/^[A-Za-z]{2}$/.test(c))return c.toUpperCase();return c.replace(/[^A-Za-z]/g,"").slice(0,2).toUpperCase();}
 function abbrevProvider(p){p=String(p||"").trim();if(!p)return"";return p.replace(/[^A-Za-z0-9]/g,"").slice(0,4).toUpperCase();}
@@ -640,7 +640,7 @@ function prepareMovements(raw,st,warnings0){
   const movements=[];const stage={};const newCh={};let dup=0;
   for(const mv of raw){
     const s=sig(mv);if(existing.has(s)||seen.has(s)){dup++;continue;}seen.add(s);
-    const clean={date:mv.date,channel:mv.channel,dir:mv.dir,batchRef:mv.batchRef,code:mv.code,qty:mv.qty,unitPrice:mv.unitPrice,vatRate:(mv.vatRate==null?null:mv.vatRate),note:mv.note,country:mv.country||"",provider:mv.provider||"",providerRef:mv.providerRef||""};movements.push(clean);
+    const clean={date:mv.date,channel:mv.channel,dir:mv.dir,batchRef:mv.batchRef,code:mv.code,qty:mv.qty,unitPrice:mv.unitPrice,vatRate:(mv.vatRate==null?null:mv.vatRate),transport:(mv.transport==null?null:mv.transport),note:mv.note,country:mv.country||"",provider:mv.provider||"",providerRef:mv.providerRef||""};movements.push(clean);
     if(mv.channel&&!st.channels.some(c=>c.name.toLowerCase()===mv.channel.toLowerCase()))newCh[mv.channel]=mv.dir;
     const nc=normCode(mv.code);
     if(nc&&!catSet.has(nc)){const e=stage[nc]||(stage[nc]={code:mv.code,name:mv._name||"",type:mv._type||"goods",seenCount:0,qty:0,firstDate:"",provider:mv.provider||"",providerRef:mv.providerRef||""});
@@ -662,8 +662,8 @@ function parseLedgerRows(rows,st){
     const channel=String(g(r,"channel")).trim()||defCh;const dir=inferDir(st,channel);
     const date=normDate(g(r,"date"));const country=String(g(r,"country")||"").trim();const provider=String(g(r,"provider")||"").trim();const providerRef=String(g(r,"providerRef")||"").trim();
     const batchGiven=String(g(r,"batchRef")).trim();const batchRef=batchGiven||((country||provider)?genBatchRef(country,date,provider):"");
-    const lt=parseNum(g(r,"lineTotal"));const up0=parseNum(g(r,"unitPrice"));const unitPrice=(lt!=null&&qty>0)?(lt/qty):up0;const vatRate=parseNum(g(r,"vatRate"));
-    raw.push({date,channel,dir,batchRef,code,qty,unitPrice,vatRate,note:String(g(r,"note")||"").trim(),country,provider,providerRef,_name:String(g(r,"name")||"").trim(),_type:(String(g(r,"type")||"").trim().toLowerCase()||"goods")});}
+    const lt=parseNum(g(r,"lineTotal"));const up0=parseNum(g(r,"unitPrice"));const unitPrice=(lt!=null&&qty>0)?(lt/qty):up0;const vatRate=parseNum(g(r,"vatRate"));const transport=parseNum(g(r,"transport"));
+    raw.push({date,channel,dir,batchRef,code,qty,unitPrice,vatRate,transport,note:String(g(r,"note")||"").trim(),country,provider,providerRef,_name:String(g(r,"name")||"").trim(),_type:(String(g(r,"type")||"").trim().toLowerCase()||"goods")});}
   const warnings=[];if(col.code==null)warnings.push("No Product code column found — is this the ledger template?");
   if(skipped)warnings.push(skipped+" row"+(skipped>1?"s":"")+" skipped (missing code or quantity).");
   const prep=prepareMovements(raw,st,warnings);prep.stats.skipped=skipped;return prep;
@@ -1008,8 +1008,8 @@ function Ledger({st,act,openMovement,openProduct}){
   </div>`;}
 
 function MovementModal({st,act,editing,onClose,show}){
-  const blank={id:null,date:today(),channel:st.channels[0]?st.channels[0].name:"Purchase",country:"",provider:"",providerRef:"",batchRef:"",code:"",qty:"",lineTotal:"",vatRate:"",note:""};
-  const [f,setF]=useState(editing?{...editing,qty:String(editing.qty??""),lineTotal:(editing.unitPrice!=null&&editing.qty)?String(Math.round(editing.unitPrice*editing.qty*100)/100):"",vatRate:(editing.vatRate==null?"":String(editing.vatRate))}:blank);
+  const blank={id:null,date:today(),channel:st.channels[0]?st.channels[0].name:"Purchase",country:"",provider:"",providerRef:"",batchRef:"",code:"",qty:"",lineTotal:"",vatRate:"",transport:"",note:""};
+  const [f,setF]=useState(editing?{...editing,qty:String(editing.qty??""),lineTotal:(editing.unitPrice!=null&&editing.qty)?String(Math.round(editing.unitPrice*editing.qty*100)/100):"",vatRate:(editing.vatRate==null?"":String(editing.vatRate)),transport:(editing.transport==null?"":String(editing.transport))}:blank);
   const up=(k,v)=>setF(o=>({...o,[k]:v}));
   const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
   const nc=normCode(f.code);const prod=byCode[nc];
@@ -1017,8 +1017,8 @@ function MovementModal({st,act,editing,onClose,show}){
   const valid=errs.length===0;
   const suggestedBatch=genBatchRef(f.country,f.date,f.provider);
   function commit(){if(!valid)return;const dir=channelDir(st,f.channel);const bref=f.batchRef.trim()||suggestedBatch;
-    const qn=parseNum(f.qty)||0;const lt=parseNum(f.lineTotal);const unitPrice=(lt!=null&&qn>0)?(lt/qn):null;const vr=parseNum(f.vatRate);
-    act.saveMovement({id:f.id,date:f.date||today(),channel:f.channel,dir,batchRef:bref,code:f.code.trim(),qty:qn,unitPrice,vatRate:(vr==null?null:vr),note:f.note.trim(),country:(f.country||"").trim(),provider:(f.provider||"").trim(),providerRef:(f.providerRef||"").trim()});
+    const qn=parseNum(f.qty)||0;const lt=parseNum(f.lineTotal);const unitPrice=(lt!=null&&qn>0)?(lt/qn):null;const vr=parseNum(f.vatRate);const tr=parseNum(f.transport);
+    act.saveMovement({id:f.id,date:f.date||today(),channel:f.channel,dir,batchRef:bref,code:f.code.trim(),qty:qn,unitPrice,vatRate:(vr==null?null:vr),transport:(tr==null?null:tr),note:f.note.trim(),country:(f.country||"").trim(),provider:(f.provider||"").trim(),providerRef:(f.providerRef||"").trim()});
     show(editing?"Movement updated":"Movement recorded");onClose();}
   const codes=st.catalogue.map(p=>p.code).filter(Boolean);
   const footer=html`<${React.Fragment}>${editing?html`<button class="btn danger" onClick=${()=>{act.deleteMovement(editing.id);show("Deleted");onClose();}}>Delete</button>`:null}<span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${commit} disabled=${!valid}>${editing?"Save":"Record"}</button></${React.Fragment}>`;
@@ -1043,6 +1043,7 @@ function MovementModal({st,act,editing,onClose,show}){
       <${Field} label="VAT % (ALV)">${html`<input class="mono" type="text" inputmode="decimal" value=${f.vatRate} onInput=${e=>up("vatRate",e.target.value)} placeholder="13.5 / 25.5 / 0"/>`}</${Field}>
     </div>
     ${(parseNum(f.lineTotal)!=null&&parseNum(f.qty)>0)?html`<div class="note" style=${{marginTop:"-8px"}}>Unit ${money(parseNum(f.lineTotal)/parseNum(f.qty))}${parseNum(f.vatRate)>0?html` · net ${money(parseNum(f.lineTotal)/(1+parseNum(f.vatRate)/100))} · VAT ${money(parseNum(f.lineTotal)-parseNum(f.lineTotal)/(1+parseNum(f.vatRate)/100))}`:""}</div>`:null}
+    ${channelDir(st,f.channel)==="in"?html`<${Field} label="Transport — whole batch, net € (freight-in; enter once per batch, spread per unit)">${html`<input class="mono" type="text" inputmode="decimal" value=${f.transport} onInput=${e=>up("transport",e.target.value)}/>`}</${Field}>`:null}
     <${Field} label="Note">${html`<input type="text" value=${f.note} onInput=${e=>up("note",e.target.value)}/>`}</${Field}>
     ${errs.length?html`<div>${errs.map((e,i)=>html`<div class="err" key=${i}>• ${e}</div>`)}</div>`:null}
   </${Modal}>`;}
@@ -1072,8 +1073,8 @@ function Settings({st,act,show}){
   function exportCatalogueCSV(){const head=["code","type","name","author","year","category","supplier","supplierRef","cost","price","sellable","online","reorderPoint","notes"];
     const rows=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost,p.price,p.sellable!==false,!!p.online,p.reorderPoint==null?"":p.reorderPoint,p.notes]);
     const csv=toCSV(head,rows);if(IN_FRAME||!downloadText("rosa-mystica_catalogue_"+today()+".csv",csv,"text/csv"))act.openExport("Catalogue — CSV",csv);else show("Saved CSV");}
-  function exportLedgerCSV(){const head=["date","channel","dir","batchRef","code","qty","unitPrice","vatRate","lineTotal","note"];
-    const rows=st.ledger.map(r=>[r.date,r.channel,r.dir,r.batchRef,r.code,r.qty,r.unitPrice,r.vatRate==null?"":r.vatRate,(r.unitPrice==null?"":Math.round((+r.qty||0)*(+r.unitPrice||0)*100)/100),r.note]);
+  function exportLedgerCSV(){const head=["date","channel","dir","batchRef","code","qty","unitPrice","vatRate","lineTotal","transport","note"];
+    const rows=st.ledger.map(r=>[r.date,r.channel,r.dir,r.batchRef,r.code,r.qty,r.unitPrice,r.vatRate==null?"":r.vatRate,(r.unitPrice==null?"":Math.round((+r.qty||0)*(+r.unitPrice||0)*100)/100),r.transport==null?"":r.transport,r.note]);
     const csv=toCSV(head,rows);if(IN_FRAME||!downloadText("rosa-mystica_ledger_"+today()+".csv",csv,"text/csv"))act.openExport("Ledger — CSV",csv);else show("Saved CSV");}
   function onOpen(e){const file=e.target.files&&e.target.files[0];if(!file)return;const r=new FileReader();
     r.onload=()=>{try{const o=JSON.parse(r.result);if(isEncrypted(o)){act.openDecrypt(o);return;}if(!isCoreLike(o))throw 0;act.replaceAll(o);show("Loaded "+file.name);}catch(err){show("Couldn't read that file");}};r.readAsText(file);e.target.value="";}
@@ -1091,8 +1092,8 @@ function Settings({st,act,show}){
   function catSheets(){const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost","Price","Sellable","Online","Reorder point","Notes"];
     const body=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost==null?"":+p.cost,p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
     return [{name:"Catalogue",rows:[head].concat(body)}];}
-  function ledSheets(){const head=["Date","Channel","Dir","Batch ref","Country","Provider","Provider ref","Code","Qty","Unit price","VAT %","Line total","Note"];
-    const body=st.ledger.map(r=>[r.date,r.channel,r.dir,r.batchRef,r.country||"",r.provider||"",r.providerRef||"",r.code,+r.qty||0,r.unitPrice==null?"":+r.unitPrice,r.vatRate==null?"":+r.vatRate,(r.unitPrice==null?"":r2((+r.qty||0)*(+r.unitPrice||0))),r.note]);
+  function ledSheets(){const head=["Date","Channel","Dir","Batch ref","Country","Provider","Provider ref","Code","Qty","Unit price","VAT %","Line total","Transport (batch)","Note"];
+    const body=st.ledger.map(r=>[r.date,r.channel,r.dir,r.batchRef,r.country||"",r.provider||"",r.providerRef||"",r.code,+r.qty||0,r.unitPrice==null?"":+r.unitPrice,r.vatRate==null?"":+r.vatRate,(r.unitPrice==null?"":r2((+r.qty||0)*(+r.unitPrice||0))),r.transport==null?"":+r.transport,r.note]);
     return [{name:"Ledger",rows:[head].concat(body)}];}
   return html`<div class="content" style=${{maxWidth:"780px"}}>
     <div style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Configuration</h2></div>
@@ -1184,10 +1185,11 @@ function LedgerImportModal({st,act,onClose,show}){
     if(name.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
     else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx — is it a real Excel file?");}};rd.readAsArrayBuffer(f);}
     e.target.value="";}
-  function dl(){const head=["Date","Channel","Country","Provider","Batch ref","Product code","Provider ref","Quantity","Total (incl VAT)","VAT %","Name","Type","Note"];
-    const ex1=["2026-09-01","Purchase","Portugal","Edições Example","","9789999999999","ABC-123","100","450.00","13.5","Example book title","book","key the VAT-inclusive line total; VAT is counted back"];
-    const ex2=["2026-09-01","Purchase","Finland","Own print","","KKG-001","","50","310.00","25.5","Own-published title (print service)","book","service fee VAT 25.5%"];
-    downloadXlsx("Rosa-Mystica_Ledger-template.xlsx",[{name:"Ledger",rows:[head,ex1,ex2]}],show);}
+  function dl(){const head=["Date","Channel","Country","Provider","Batch ref","Product code","Provider ref","Quantity","Total (incl VAT)","VAT %","Transport (batch, net)","Name","Type","Note"];
+    const ex1=["2026-09-01","Purchase","Portugal","Edições Example","PT-0001","9789999999999","ABC-123","100","450.00","13.5","30.00","Example book A","book","Transport = WHOLE-batch freight, net; repeat it on each line of the batch"];
+    const ex2=["2026-09-01","Purchase","Portugal","Edições Example","PT-0001","9789999999991","ABC-124","50","250.00","13.5","30.00","Example book B","book","same batch, same transport value repeated — spread per unit across the batch"];
+    const ex3=["2026-09-01","Purchase","Finland","Own print","OWN-1","KKG-001","","50","310.00","25.5","","Own-published title","book","own print: 25.5% service-fee VAT; no freight"];
+    downloadXlsx("Rosa-Mystica_Ledger-template.xlsx",[{name:"Ledger",rows:[head,ex1,ex2,ex3]}],show);}
   function run(){if(!res||!res.stats.add){setErr("Nothing to import.");return;}act.importLedger(res);show("Imported "+res.stats.add+" movements"+(res.stats.newCodes?" · "+res.stats.newCodes+" to staging":""));onClose();}
   const ok=res&&res.stats.add;
   return html`<${Modal} wide=${true} title="Import ledger (Excel / CSV)" onClose=${onClose}
@@ -1311,14 +1313,21 @@ function vatRatesOf(st){const v=(st.settings&&st.settings.vatRates)||{};return {
 function saleRateFor(p,st){const vr=vatRatesOf(st);const t=p&&p.type;if(t&&vr[t]!=null)return vr[t];return vr.goods;}
 function netCostUnit(m){const gross=+m.unitPrice||0;const r=m.vatRate==null?null:+m.vatRate;return (r&&r>0)?gross/(1+r/100):gross;}
 function netSaleUnit(o,saleRate){const gross=+o.unitPrice||0;const r=o.vatRate==null?null:+o.vatRate;const rate=(r&&r>0)?r:saleRate;return rate>0?gross/(1+rate/100):gross;}
+/* Batch transport (freight-in) spread per unit by quantity → added to net landed cost.
+   The batch total is taken once per batch (max across its in-lines, so repeating it on every
+   row or putting it on one row both work), then divided by the batch's received quantity. */
+function batchTransportInfo(st){const q={},t={};
+  for(const r of (st.ledger||[])){if(r.dir!=="in")continue;const b=r.batchRef||"";if(!b)continue;q[b]=(q[b]||0)+(+r.qty||0);const tv=r.transport==null?0:(+r.transport||0);if(tv>(t[b]||0))t[b]=tv;}
+  const per={},total={};for(const b in t){total[b]=t[b];if(q[b]>0&&t[b]>0)per[b]=t[b]/q[b];}
+  return {per,total};}
 function computeInventory(st){
-  const byCode=indexCatalogue(st.catalogue);const groups={};
+  const byCode=indexCatalogue(st.catalogue);const groups={};const tperU=batchTransportInfo(st).per;
   for(const r of st.ledger){const k=normCode(r.code);if(!k)continue;(groups[k]=groups[k]||[]).push(r);}
   const rows=[];
   for(const k in groups){const mvs=groups[k];const p=byCode[k];const saleRate=saleRateFor(p,st);
     const ins=mvs.filter(m=>m.dir==="in").sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const outs=mvs.filter(m=>m.dir==="out").sort((a,b)=>(a.date||"").localeCompare(b.date||""));
-    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)}));
+    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0)}));
     const received=lots.reduce((a,l)=>a+l.qty,0);
     let sold=0,cogs=0,revenue=0,revenueNet=0,matchedNetRev=0,unmatched=0;
     for(const o of outs){const priceGross=+o.unitPrice||0;const priceNet=netSaleUnit(o,saleRate);let q=+o.qty||0;sold+=q;revenue+=q*priceGross;revenueNet+=q*priceNet;
@@ -1335,13 +1344,13 @@ function computeInventory(st){
 }
 /* Per-invoice (batch) progress — FIFO lot→batch attribution from the one ledger. */
 function computeBatches(st){
-  const byCode=indexCatalogue(st.catalogue);const insBy={},outsBy={};
+  const byCode=indexCatalogue(st.catalogue);const insBy={},outsBy={};const ti=batchTransportInfo(st);const tperU=ti.per;const ttotal=ti.total;
   for(const r of st.ledger){const k=normCode(r.code);if(!k)continue;if(r.dir==="in")(insBy[k]=insBy[k]||[]).push(r);else if(r.dir==="out")(outsBy[k]=outsBy[k]||[]).push(r);}
   const agg={},meta={};
   for(const k in insBy){const p=byCode[k];const saleRate=saleRateFor(p,st);
     const ins=insBy[k].slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const outs=(outsBy[k]||[]).slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
-    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m),batchRef:m.batchRef||"(no batch)",date:m.date||"",provider:m.provider||"",country:m.country||""}));
+    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0),batchRef:m.batchRef||"(no batch)",date:m.date||"",provider:m.provider||"",country:m.country||""}));
     for(const l of lots){const b=l.batchRef;(agg[b]=agg[b]||{received:0,investedNet:0,sold:0,cogsNet:0,netRev:0});
       agg[b].received+=l.qty;agg[b].investedNet+=l.qty*l.cost;
       const mm=(meta[b]=meta[b]||{date:l.date,provider:l.provider,country:l.country,codes:new Set()});mm.codes.add(k);
@@ -1351,7 +1360,7 @@ function computeBatches(st){
   }
   const rows=Object.keys(agg).map(b=>{const a=agg[b];const mm=meta[b]||{};const profit=a.netRev-a.cogsNet;
     return {batchRef:b,date:mm.date||"",provider:mm.provider||"",country:mm.country||"",codes:mm.codes?mm.codes.size:0,
-      received:a.received,sold:a.sold,onHand:a.received-a.sold,sellThrough:a.received>0?a.sold/a.received:null,
+      received:a.received,sold:a.sold,onHand:a.received-a.sold,sellThrough:a.received>0?a.sold/a.received:null,transport:(ttotal[b]||0),
       investedNet:a.investedNet,recoupedNet:a.netRev,cogsNet:a.cogsNet,profit,roi:a.investedNet>0?profit/a.investedNet:null};});
   rows.sort((x,y)=>(y.date||"").localeCompare(x.date||""));
   return rows;
@@ -1408,8 +1417,8 @@ function Inventory({st,act,show}){
     </${React.Fragment}>`:html`<${React.Fragment}>
     ${batches.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"470px"}}>Purchases that share a batch reference form an invoice. Record or import in-movements and each invoice's progress — sold vs received, capital recouped, ROI — builds here.</div></div></div>`:html`<${React.Fragment}>
     <div class="note" style=${{marginBottom:"14px",maxWidth:"660px"}}>Each row is one invoice / batch. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT.</div>
-    <div class="panel"><div class="tablewrap"><table><thead><tr><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num">Sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Invested</th><th class="num">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
-      <tbody>${batches.map(b=>html`<tr key=${b.batchRef}><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"—":pct(b.roi)}</td></tr>`)}</tbody></table></div></div>
+    <div class="panel"><div class="tablewrap"><table><thead><tr><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num">Sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
+      <tbody>${batches.map(b=>html`<tr key=${b.batchRef}><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${b.transport?money(b.transport):"—"}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"—":pct(b.roi)}</td></tr>`)}</tbody></table></div></div>
     </${React.Fragment}>`}
     </${React.Fragment}>`}
   </div>`;}
