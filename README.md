@@ -18,7 +18,11 @@ Two sources of truth, anchored on the **product code**:
   `COUNTRY-YYYYMMDD-PROVIDER` so one invoice's lines share it.
 
 Plus a **staging** queue (codes seen in an import but not yet in the catalogue, confirmed in
-with the code intact) and a **sales/analytics** layer fed by WooCommerce / Vektori exports.
+with the code intact), a **sales/analytics** layer fed by WooCommerce / Vektori exports, and a
+**financial tracker** fed by Vektori settlement data (see below).
+
+Each sale channel carries a **mode** — *in-person* or *online* — so analytics can split takings by
+mode (Vektori = in-person counter, WooCommerce = online) independently of how many channels feed each.
 
 ## Secure editing
 The product code is the unique key. Product edits are validated as a whole before anything is
@@ -35,9 +39,22 @@ An Inventory tab derives, from the one ledger, FIFO stock per code — received,
 sell-through, FIFO cost, realized profit and ROI (only units matched to a cost lot count), plus a
 reorder list (sellable, out of stock, previously moved) carrying provider + provider ref, exportable.
 
+## Financial tracker
+A **Finance** tab, parallel to Analytics, imports the **Vektori Transaction Report** (.csv/.xlsx) —
+one settlement record per day carrying gross, net, VAT by rate, refunds, roundings and the
+cash / card split. Re-importing the same days changes nothing (duplicates skipped). It summarises any
+period — day / week / month, or a custom date range — with KPIs, a gross time-series, a VAT summary
+(net · VAT · gross by rate, Fivaldi-ready) and a payment-method breakdown, all exportable to one .xlsx.
+A **reconciliation** panel compares the till's gross against the in-person sales recorded in the app
+for the same period, flagging the variance (discounts, gift cards and cash-float are expected gaps).
+The Settlement Report isn't needed — the Transaction Report carries the same totals plus daily detail.
+
 ## Build phases
 1. Catalogue · Ledger · Staging · Settings — foundation. ✅
 2. Ledger import (Excel/CSV template): append, skip duplicates, route unknown codes to staging. ✅
 3. Sales & analytics from WooCommerce / Vektori exports (imported as ledger out-movements), and report/file generation. ✅
 4. Auto batch references, the provider-reference bridge, and the Inventory (FIFO) tab with reorder. ✅
 5. Per-item reorder points, a catalogue import template + bulk-confirm staging, and .xlsx reports. ✅
+6. Channel mode (in-person / online) with an analytics split, and a **Financial tracker** — Vektori
+   Transaction Report import, period summaries (day/week/month/custom), VAT + payment breakdowns,
+   and till-vs-app reconciliation. ✅

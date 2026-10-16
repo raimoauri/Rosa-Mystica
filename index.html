@@ -528,13 +528,15 @@ const TYPES=[["goods","Goods"],["book","Book"],["other","Other"]];
 const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 
 /* ---------- persistence ---------- */
-const SCHEMA=1;const LSKEY="rosamystica:v1";
-function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],
-  channels:[{id:uid(),name:"Purchase",dir:"in"}],
+const SCHEMA=2;const LSKEY="rosamystica:v1";
+function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],
+  channels:[{id:uid(),name:"Purchase",dir:"in",mode:null}],
   settings:{shop:"Katolinen Kirjakauppa",theme:"system"}};}
+function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
-  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];
-  if(!s.channels||!s.channels.length)s.channels=[{id:uid(),name:"Purchase",dir:"in"}];
+  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];
+  if(!s.channels||!s.channels.length)s.channels=[{id:uid(),name:"Purchase",dir:"in",mode:null}];
+  s.channels=s.channels.map(c=>("mode" in c)?c:Object.assign({},c,{mode:(c.dir==="out"?inferMode(c.name):null)}));
   s.settings=Object.assign({shop:"Katolinen Kirjakauppa",theme:"system"},s.settings||{});
   return s;}
 function load(){try{const r=localStorage.getItem(LSKEY);if(!r)return blankState();return migrate(JSON.parse(r));}catch(e){return blankState();}}
@@ -542,7 +544,7 @@ function save(s){try{localStorage.setItem(LSKEY,JSON.stringify(s));}catch(e){}}
 
 /* core file (portable, optionally encrypted) */
 const APP="Rosa Mystica";
-function makeCore(s){return {app:APP,kind:"core",schema:SCHEMA,savedAt:new Date().toISOString(),data:{catalogue:s.catalogue,ledger:s.ledger,staging:s.staging,channels:s.channels,settings:s.settings}};}
+function makeCore(s){return {app:APP,kind:"core",schema:SCHEMA,savedAt:new Date().toISOString(),data:{catalogue:s.catalogue,ledger:s.ledger,staging:s.staging,finance:s.finance,channels:s.channels,settings:s.settings}};}
 function readCore(o){return (o&&o.kind==="core"&&o.data)?o.data:o;}
 function isCoreLike(raw){const d=readCore(raw);return !!(d&&(Array.isArray(d.catalogue)||Array.isArray(d.ledger)));}
 const HAS_CRYPTO=(typeof crypto!=="undefined")&&!!(crypto.subtle)&&(typeof TextEncoder!=="undefined");
@@ -721,6 +723,73 @@ function indexCatalogue(cat){const by={};for(const p of cat)by[normCode(p.code)]
 function stockByCode(st){const m={};for(const r of st.ledger){const k=normCode(r.code);if(!k)continue;const q=+r.qty||0;m[k]=(m[k]||0)+(r.dir==="in"?q:-q);}return m;}
 function lastOrderedByCode(st){const m={};for(const r of st.ledger){if(r.dir!=="in")continue;const k=normCode(r.code);if(!k)continue;if(!m[k]||(r.date||"")>m[k])m[k]=r.date||"";}return m;}
 function channelDir(st,name){const c=st.channels.find(x=>x.name===name);return c?c.dir:"in";}
+function channelMode(st,name){const c=st.channels.find(x=>x.name===name);return c?(c.mode||null):null;}
+
+/* ===================== Finance — Vektori Transaction Report ===================== */
+function parseFinanceRows(rows){
+  const empty=w=>({records:[],warnings:[w],meta:{},stats:{days:0}});
+  if(!rows||!rows.length)return empty("The file looks empty.");
+  let kind="";
+  for(let i=0;i<Math.min(rows.length,8);i++){const j=(rows[i]||[]).join(" ").toLowerCase();
+    if(j.indexOf("transaction report")>=0){kind="transaction";break;}
+    if(j.indexOf("settlement report")>=0){kind="settlement";break;}}
+  let year=null,periodStart="",periodEnd="";
+  for(let i=0;i<Math.min(rows.length,12);i++){const line=(rows[i]||[]).join(" ");
+    const m=/(\d{2})[.\/](\d{2})[.\/](\d{4})[^0-9]*\d{1,2}:\d{2}\s*-\s*(\d{2})[.\/](\d{2})[.\/](\d{4})/.exec(line);
+    if(m){periodStart=m[3]+"-"+m[2]+"-"+m[1];periodEnd=m[6]+"-"+m[5]+"-"+m[4];year=+m[3];break;}}
+  const meta={periodStart,periodEnd,kind};
+  if(kind==="settlement")return {records:[],warnings:["This is a Vektori Settlement Report — a period summary only. Import the Transaction Report instead: it carries the same gross, net, VAT and payment totals plus the daily breakdown."],meta,stats:{days:0}};
+  let hi=-1;
+  for(let i=0;i<rows.length;i++){const j=(rows[i]||[]).map(x=>String(x==null?"":x).toLowerCase().trim());
+    if(j.some(c=>c==="gross")&&j.some(c=>c==="net")){hi=i;break;}}
+  if(hi<0)return {records:[],warnings:["Couldn't find the Transaction Report columns (Gross, Net, VAT, Cash, Card). Is this the right export?"],meta,stats:{days:0}};
+  const groupRow=rows[hi]||[],subRow=rows[hi+1]||[];
+  const n=Math.max(groupRow.length,subRow.length);
+  const gOrig=[];let last="";
+  for(let i=0;i<n;i++){const g=String(groupRow[i]==null?"":groupRow[i]).trim();if(g)last=g;gOrig[i]=last;}
+  const col={vat:{},pay:{}};const payLabel={};
+  for(let i=0;i<n;i++){const g=gOrig[i].toLowerCase().trim();const sub=String(subRow[i]==null?"":subRow[i]).trim().toLowerCase();
+    if(!g)continue;
+    if(g==="sales"){if(sub==="pcs")col.salesPcs=i;else col.salesTotal=i;}
+    else if(g==="roundings"){col.roundings=i;}
+    else if(g==="refunds"){if(sub==="pcs")col.refundPcs=i;else col.refundTotal=i;}
+    else if(g==="gross"){col.gross=i;}
+    else if(g==="net"){col.net=i;}
+    else{const vm=/^net\s*([\d.,]+)\s*%$/.exec(g),vv=/^vat\s*([\d.,]+)\s*%$/.exec(g);
+      if(vm){const r=vm[1].replace(",",".");(col.vat[r]=col.vat[r]||{}).net=i;}
+      else if(vv){const r=vv[1].replace(",",".");(col.vat[r]=col.vat[r]||{}).vat=i;}
+      else{(col.pay[g]=col.pay[g]||{})[sub==="pcs"?"pcs":"total"]=i;payLabel[g]=gOrig[i];}}}
+  const data=rows.slice(hi+2);const records=[];const sm=periodStart?+periodStart.slice(5,7):0;
+  for(const r of data){const lbl=String(r[0]==null?"":r[0]).trim();
+    const dm=/(\d{1,2})\.(\d{1,2})(?!\d)/.exec(lbl);if(!dm)continue;
+    const dd=+dm[1],mm=+dm[2];let yr=year||new Date().getFullYear();if(year&&sm&&mm<sm)yr=year+1;
+    const date=yr+"-"+pad2(mm)+"-"+pad2(dd);
+    const gv=k=>col[k]==null?null:parseNum(r[col[k]]);
+    const rec={date,channel:"Vektori",source:"vektori-transaction",
+      salesPcs:gv("salesPcs")||0,salesTotal:gv("salesTotal")||0,roundings:gv("roundings")||0,
+      refundPcs:gv("refundPcs")||0,refundTotal:gv("refundTotal")||0,gross:gv("gross"),net:gv("net"),vat:{},pay:{}};
+    for(const rr in col.vat){const cc=col.vat[rr];rec.vat[rr]={net:cc.net!=null?(parseNum(r[cc.net])||0):0,vat:cc.vat!=null?(parseNum(r[cc.vat])||0):0};}
+    for(const key in col.pay){const cc=col.pay[key];rec.pay[payLabel[key]||key]={pcs:cc.pcs!=null?(parseNum(r[cc.pcs])||0):0,total:cc.total!=null?(parseNum(r[cc.total])||0):0};}
+    if(rec.gross==null)rec.gross=(rec.salesTotal||0)+(rec.refundTotal||0);
+    if(rec.net==null)rec.net=rec.gross;
+    records.push(rec);}
+  const warnings=[];if(!records.length)warnings.push("No daily rows found below the header.");
+  return {records,warnings,meta,stats:{days:records.length}};
+}
+function prepareFinance(records,st){const key=r=>r.date+"|"+(r.channel||"");
+  const existing=new Set((st.finance||[]).map(key));const seen=new Set();const add=[];let dup=0;
+  for(const r of records){const k=key(r);if(existing.has(k)||seen.has(k)){dup++;continue;}seen.add(k);add.push(r);}
+  return {add,dup,stats:{add:add.length,dup}};}
+function financeAgg(recs){const a={gross:0,net:0,salesPcs:0,salesTotal:0,refundPcs:0,refundTotal:0,roundings:0,vat:{},pay:{},days:recs.length};
+  for(const r of recs){a.gross+=+r.gross||0;a.net+=+r.net||0;a.salesPcs+=+r.salesPcs||0;a.salesTotal+=+r.salesTotal||0;a.refundPcs+=+r.refundPcs||0;a.refundTotal+=+r.refundTotal||0;a.roundings+=+r.roundings||0;
+    for(const rr in (r.vat||{})){const v=r.vat[rr];(a.vat[rr]=a.vat[rr]||{net:0,vat:0});a.vat[rr].net+=+v.net||0;a.vat[rr].vat+=+v.vat||0;}
+    for(const pk in (r.pay||{})){const p=r.pay[pk];(a.pay[pk]=a.pay[pk]||{pcs:0,total:0});a.pay[pk].pcs+=+p.pcs||0;a.pay[pk].total+=+p.total||0;}}
+  return a;}
+function isoMonday(iso){const d=new Date(iso+"T00:00:00Z");const wd=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-wd);return d.toISOString().slice(0,10);}
+function fbucketKey(date,grain){if(grain==="month")return date.slice(0,7);if(grain==="week")return isoMonday(date);return date;}
+function bucketFinance(recs,grain){const m={};for(const r of recs){const k=fbucketKey(r.date,grain);(m[k]=m[k]||[]).push(r);}
+  return Object.keys(m).sort().map(k=>({k,gross:m[k].reduce((s,r)=>s+(+r.gross||0),0),net:m[k].reduce((s,r)=>s+(+r.net||0),0),recs:m[k]}));}
+function ledgerSalesInRange(st,start,end,chanSet){let rev=0,units=0;for(const r of st.ledger){if(r.dir!=="out")continue;if(chanSet&&!chanSet.has(r.channel))continue;const d=r.date||"";if(start&&d<start)continue;if(end&&d>end)continue;rev+=(+r.qty||0)*(+r.unitPrice||0);units+=+r.qty||0;}return {rev,units};}
 
 /* ---------- shared UI ---------- */
 function Icon({name}){const P={
@@ -735,7 +804,9 @@ function Icon({name}){const P={
   rose:"M12 2c2.2 1.4 3 3.6 2.4 5.6 1.9-1 4.2-.6 5.6 1-1.1 1.9-3.2 2.8-5.2 2.4 1.4 1.6 1.6 4 .4 5.9-1.9-.8-3.1-2.6-3.1-4.6-.9 1.8-2.9 3-5 2.8.1-2.1 1.5-3.9 3.4-4.5-2-.4-3.6-2-3.9-4.1 2-.5 4.1.3 5.2 2C11.6 6 11.4 3.7 12 2z",
   plus:"M12 5v14M5 12h14",
   download:"M12 3v12M7 10l5 5 5-5M5 21h14",
-  upload:"M12 21V9M7 14l5-5 5 5M5 3h14"
+  upload:"M12 21V9M7 14l5-5 5 5M5 3h14",
+  finance:"M2 6h20v12H2zM12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6M6 9v6M18 9v6",
+  reconcile:"M4 7h11M4 7l3-3M4 7l3 3M20 17H9m11 0l-3-3m3 3l-3 3"
 };return html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d=${P[name]||""}/></svg>`;}
 
 function Modal({title,code,wide,onClose,footer,children}){
@@ -977,7 +1048,7 @@ function Staging({st,act,openProduct,show}){
 
 /* ===================== Settings ===================== */
 function Settings({st,act,show}){
-  const [newCh,setNewCh]=useState({name:"",dir:"out"});
+  const [newCh,setNewCh]=useState({name:"",dir:"out",mode:""});
   const fileRef=useRef();
   function exportCore(){const txt=JSON.stringify(makeCore(st),null,2);const name="rosa-mystica_core_"+today()+".json";
     if(IN_FRAME||!downloadText(name,txt)){act.openExport("Core data — copy and keep safe",txt);}else show("Saved "+name);}
@@ -1009,13 +1080,15 @@ function Settings({st,act,show}){
   return html`<div class="content" style=${{maxWidth:"780px"}}>
     <div style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Configuration</h2></div>
     <div class="panel" style=${{marginBottom:"18px"}}>
-      <div class="panel-h"><h3>Channels</h3><span class="note">direction decides stock in / out</span></div>
+      <div class="panel-h"><h3>Channels</h3><span class="note">direction drives stock · mode splits in-person / online</span></div>
       <div class="tablewrap"><table><tbody>
-        ${st.channels.map(c=>html`<tr key=${c.id}><td><span class="name">${c.name}</span></td><td style=${{width:"120px"}}><${Badge} dir=${c.dir}/></td>
+        ${st.channels.map(c=>html`<tr key=${c.id}><td><span class="name">${c.name}</span></td><td style=${{width:"96px"}}><${Badge} dir=${c.dir}/></td>
+          <td style=${{width:"160px"}}>${c.dir==="out"?html`<select value=${c.mode||""} onChange=${e=>act.setChannelMode(c.id,e.target.value)}><option value="">— unset —</option><option value="in_person">In-person</option><option value="online">Online</option></select>`:html`<span class="faint">—</span>`}</td>
           <td class="num" style=${{width:"90px"}}>${st.channels.length>1?html`<button class="btn sm ghost" onClick=${()=>{if(st.ledger.some(r=>r.channel===c.name)){show("Channel is used by ledger rows");return;}act.removeChannel(c.id);}}>Remove</button>`:null}</td></tr>`)}
         <tr><td><input type="text" placeholder="New channel name" value=${newCh.name} onInput=${e=>setNewCh(o=>({...o,name:e.target.value}))}/></td>
           <td><select value=${newCh.dir} onChange=${e=>setNewCh(o=>({...o,dir:e.target.value}))}><option value="in">In (stock +)</option><option value="out">Out (stock −)</option></select></td>
-          <td class="num"><button class="btn sm primary" disabled=${!newCh.name.trim()} onClick=${()=>{act.addChannel(newCh.name.trim(),newCh.dir);setNewCh({name:"",dir:"out"});}}>Add</button></td></tr>
+          <td>${newCh.dir==="out"?html`<select value=${newCh.mode} onChange=${e=>setNewCh(o=>({...o,mode:e.target.value}))}><option value="">— unset —</option><option value="in_person">In-person</option><option value="online">Online</option></select>`:html`<span class="faint">—</span>`}</td>
+          <td class="num"><button class="btn sm primary" disabled=${!newCh.name.trim()} onClick=${()=>{act.addChannel(newCh.name.trim(),newCh.dir,newCh.mode);setNewCh({name:"",dir:"out",mode:""});}}>Add</button></td></tr>
       </tbody></table></div>
     </div>
     <div class="panel" style=${{marginBottom:"18px"}}>
@@ -1025,6 +1098,7 @@ function Settings({st,act,show}){
         <div class="hintrow">
           <button class="btn" onClick=${()=>downloadXlsx("rosa-mystica_sales_"+today()+".xlsx",salesSheets(),show)}><${Icon} name="download"/>Sales report</button>
           <button class="btn" onClick=${()=>downloadXlsx("rosa-mystica_inventory_"+today()+".xlsx",invSheets(),show)}><${Icon} name="download"/>Inventory report</button>
+          ${(st.finance||[]).length?html`<button class="btn" onClick=${()=>{const rs=(st.finance||[]).slice();const ds=rs.map(r=>r.date).sort();downloadXlsx("rosa-mystica_finance_"+today()+".xlsx",financeSheets(rs,[ds[0]||"",ds[ds.length-1]||""],st,"month"),show);}}><${Icon} name="download"/>Finance report</button>`:null}
           <button class="btn sm ghost" onClick=${()=>downloadXlsx("rosa-mystica_catalogue_"+today()+".xlsx",catSheets(),show)}>Catalogue .xlsx</button>
           <button class="btn sm ghost" onClick=${()=>downloadXlsx("rosa-mystica_ledger_"+today()+".xlsx",ledSheets(),show)}>Ledger .xlsx</button>
         </div>
@@ -1140,9 +1214,11 @@ function Analytics({st,act,show}){
   const tp=label=>({onMouseEnter:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseMove:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseLeave:()=>setTip(null)});
   const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
   const out=st.ledger.filter(r=>r.dir==="out");
-  let units=0,rev=0;const chan={},monthMap={},prod={};
+  const chModeMap={};st.channels.forEach(c=>chModeMap[c.name]=c.mode||null);
+  let units=0,rev=0;const chan={},monthMap={},prod={},modeMap={in_person:{units:0,rev:0},online:{units:0,rev:0},unset:{units:0,rev:0}};
   for(const r of out){const q=+r.qty||0,v=q*(+r.unitPrice||0);units+=q;rev+=v;
     const c=r.channel||"—";(chan[c]=chan[c]||{units:0,rev:0});chan[c].units+=q;chan[c].rev+=v;
+    const md=chModeMap[r.channel]||"unset";modeMap[md].units+=q;modeMap[md].rev+=v;
     const m=(r.date||"").slice(0,7);if(/^\d{4}-\d{2}$/.test(m)){(monthMap[m]=monthMap[m]||{units:0,rev:0});monthMap[m].units+=q;monthMap[m].rev+=v;}
     const k=normCode(r.code);(prod[k]=prod[k]||{code:r.code,units:0,rev:0});prod[k].units+=q;prod[k].rev+=v;}
   const months=Object.keys(monthMap).sort().map(k=>({k,...monthMap[k]}));
@@ -1185,6 +1261,12 @@ function Analytics({st,act,show}){
       <div class="panel"><div class="panel-h"><h3>By month</h3><span class="note">${metric==="rev"?"revenue":"units"}</span></div><div style=${{padding:"12px 14px"}}>${monthChart()}</div></div>
       <div class="panel"><div class="panel-h"><h3>By channel</h3><span class="note">${metric==="rev"?"revenue":"units"}</span></div><div style=${{padding:"16px"}}>${channelChart()}</div></div>
     </div>
+    <div class="panel" style=${{marginBottom:"18px"}}><div class="panel-h"><h3>In-person vs online</h3><span class="note">${metric==="rev"?"revenue":"units"} by channel mode</span></div>
+      <div style=${{padding:"16px"}}>${(()=>{const items=[["In-person",modeMap.in_person],["Online",modeMap.online]].concat((modeMap.unset.units||modeMap.unset.rev)?[["Unassigned",modeMap.unset]]:[]);const mm=Math.max(1,...items.map(it=>mv(it[1])));
+        return html`<div style=${{display:"flex",flexDirection:"column",gap:"13px"}}>${items.map(([lbl,o])=>html`<div key=${lbl}>
+          <div style=${{display:"flex",justifyContent:"space-between",marginBottom:"5px",fontSize:"13px"}}><span style=${{fontWeight:"500"}}>${lbl}</span><span class="mono">${mfmt(mv(o))}</span></div>
+          <div style=${{height:"10px",borderRadius:"6px",background:"var(--surface-2)",overflow:"hidden"}} ...${tp(lbl+" · "+num(o.units)+" units · "+money(o.rev))}><div style=${{height:"100%",width:(mv(o)/mm*100)+"%",background:"var(--accent)",borderRadius:"6px"}}></div></div></div>`)}</div>`;})()}
+        <div class="note" style=${{marginTop:"10px"}}>Set each channel's mode in Settings → Channels. Vektori is in-person; WooCommerce is online.</div></div></div>
     <div class="panel"><div class="panel-h"><h3>Top products</h3><span class="note">by ${metric==="rev"?"revenue":"units"}</span></div>
       <div class="tablewrap"><table><thead><tr><th>Code</th><th>Product</th><th class="num">Units</th><th class="num">Revenue</th></tr></thead>
       <tbody>${top.map(p=>{const nm=byCode[normCode(p.code)];return html`<tr key=${normCode(p.code)}><td class="code">${p.code}</td><td>${nm?html`<span class="name">${nm.name}</span>`:html`<span class="faint">unlinked</span>`}</td><td class="num">${num(p.units)}</td><td class="num mono">${money(p.rev)}</td></tr>`;})}</tbody></table></div></div>
@@ -1305,7 +1387,9 @@ function App(){
   const show=msg=>{setToast(msg);clearTimeout(window.__rmt);window.__rmt=setTimeout(()=>setToast(""),2200);};
 
   const act={
-    toast:show, go:setTab, openImport:()=>setModal({type:"ledgerimport"}), openSalesImport:()=>setModal({type:"salesimport"}), openCatImport:()=>setModal({type:"catimport"}),
+    toast:show, go:setTab, openImport:()=>setModal({type:"ledgerimport"}), openSalesImport:()=>setModal({type:"salesimport"}), openCatImport:()=>setModal({type:"catimport"}), openFinanceImport:()=>setModal({type:"financeimport"}),
+    importFinance:add=>setSt(s=>({...s,finance:[...(s.finance||[]),...add]})),
+    setChannelMode:(id,mode)=>setSt(s=>({...s,channels:s.channels.map(c=>c.id===id?{...c,mode:(mode||null)}:c)})),
     commitProduct:(clean,origCode,fromStaging)=>setSt(s=>{
       const nc=normCode(clean.code), oc=origCode?normCode(origCode):null;
       let catalogue=s.catalogue.slice();
@@ -1324,7 +1408,7 @@ function App(){
       return {...s,ledger:[...s.ledger,{...rec,id:rec.id||uid(),createdAt:now}]};}),
     deleteMovement:id=>setSt(s=>({...s,ledger:s.ledger.filter(r=>r.id!==id)})),
     discardStaging:code=>setSt(s=>({...s,staging:s.staging.filter(x=>normCode(x.code)!==normCode(code))})),
-    addChannel:(name,dir)=>setSt(s=>s.channels.some(c=>c.name===name)?s:{...s,channels:[...s.channels,{id:uid(),name,dir}]}),
+    addChannel:(name,dir,mode)=>setSt(s=>s.channels.some(c=>c.name===name)?s:{...s,channels:[...s.channels,{id:uid(),name,dir,mode:(mode!==undefined?(mode||null):(dir==="out"?inferMode(name):null))}]}),
     removeChannel:id=>setSt(s=>({...s,channels:s.channels.filter(c=>c.id!==id)})),
     replaceAll:raw=>setSt(s=>{const d=readCore(raw);return migrate({...blankState(),...d});}),
     openExport:(title,text)=>setModal({type:"export",title,text}),
@@ -1342,7 +1426,7 @@ function App(){
       return {...s,catalogue:cat,staging:[]};}),
     importLedger:parsed=>setSt(s=>{const now=new Date().toISOString();
       const channels=s.channels.slice();
-      for(const nc of parsed.newChannels)if(!channels.some(c=>c.name.toLowerCase()===nc.name.toLowerCase()))channels.push({id:uid(),name:nc.name,dir:nc.dir});
+      for(const nc of parsed.newChannels)if(!channels.some(c=>c.name.toLowerCase()===nc.name.toLowerCase()))channels.push({id:uid(),name:nc.name,dir:nc.dir,mode:(nc.dir==="out"?inferMode(nc.name):null)});
       const ledger=[...s.ledger,...parsed.movements.map(m=>({...m,id:uid(),createdAt:now}))];
       const catSet=new Set(s.catalogue.map(p=>normCode(p.code)));
       const staging=s.staging.slice();
@@ -1354,11 +1438,11 @@ function App(){
   const openProduct=(p,fromStaging)=>setModal({type:"product",editing:p,fromStaging:!!fromStaging});
   const openMovement=r=>setModal({type:"movement",editing:r});
 
-  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["settings","Settings","settings"]];
-  const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length};
+  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["settings","Settings","settings"]];
+  const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length,finance:(st.finance||[]).length};
   const themeLabel={system:"◐",light:"☀",dark:"☾"}[theme];
   const cycleTheme=()=>setTheme(p=>p==="system"?"light":p==="light"?"dark":"system");
-  const where={overview:"Hub",catalogue:"Catalogue",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",settings:"Settings"}[tab];
+  const where={overview:"Hub",catalogue:"Catalogue",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",settings:"Settings"}[tab];
 
   return html`<div class="app">
     <nav class="rail">
@@ -1376,6 +1460,7 @@ function App(){
       ${tab==="inventory"?html`<${Inventory} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="staging"?html`<${Staging} st=${st} act=${act} openProduct=${openProduct} show=${show}/>`:null}
       ${tab==="analytics"?html`<${Analytics} st=${st} act=${act} show=${show}/>`:null}
+      ${tab==="finance"?html`<${Finance} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="settings"?html`<${Settings} st=${st} act=${act} show=${show}/>`:null}
     </div>
     ${modal&&modal.type==="product"?html`<${ProductModal} st=${st} act=${act} editing=${modal.editing} fromStaging=${modal.fromStaging} onClose=${()=>setModal(null)} show=${show}/>`:null}
@@ -1386,9 +1471,133 @@ function App(){
     ${modal&&modal.type==="ledgerimport"?html`<${LedgerImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="salesimport"?html`<${SalesImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="catimport"?html`<${CatalogueImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
+    ${modal&&modal.type==="financeimport"?html`<${FinanceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="wipe"?html`<${ConfirmModal} title="Erase everything?" confirmLabel="Erase all data" body=${html`<span>This clears the catalogue, ledger and staging in this browser. Export a backup first if you might want it back.</span>`} onConfirm=${act.wipe} onClose=${()=>setModal(null)}/>`:null}
     ${toast?html`<div class="toast">${toast}</div>`:null}
   </div>`;}
+
+/* ===================== Finance tab ===================== */
+function financeSheets(recs,range,st,grain){
+  const r2=x=>x==null?"":Math.round(x*100)/100;
+  const agg=financeAgg(recs);const tx=agg.salesPcs+agg.refundPcs;
+  const summary=[["Field","Value"],
+    ["Period",(range[0]||"")+" … "+(range[1]||"")],["Sale days",agg.days],["Transactions",tx],
+    ["Gross (incl VAT)",r2(agg.gross)],["Net (excl VAT)",r2(agg.net)],["VAT",r2(agg.gross-agg.net)],
+    ["Average sale",tx?r2(agg.gross/tx):""],["Refund pcs",agg.refundPcs],["Refund total",r2(agg.refundTotal)],["Roundings",r2(agg.roundings)]];
+  const rates=Object.keys(agg.vat).sort((a,b)=>(+a)-(+b));
+  const vat=[["VAT rate %","Net","VAT","Gross"]].concat(rates.map(rt=>[rt,r2(agg.vat[rt].net),r2(agg.vat[rt].vat),r2(agg.vat[rt].net+agg.vat[rt].vat)]));
+  vat.push(["Total",r2(agg.net),r2(agg.gross-agg.net),r2(agg.gross)]);
+  const pays=Object.keys(agg.pay);
+  const pay=[["Payment method","Pcs","Total"]].concat(pays.map(p=>[p,agg.pay[p].pcs,r2(agg.pay[p].total)]));
+  const bks=bucketFinance(recs,grain);
+  const byb=[[grain==="month"?"Month":grain==="week"?"Week of":"Date","Gross","Net"]].concat(bks.map(b=>[b.k,r2(b.gross),r2(b.net)]));
+  const dhead=["Date","Sale pcs","Sales","Roundings","Refund pcs","Refunds","Gross","Net"].concat(rates.map(rt=>"Net "+rt+"%")).concat(rates.map(rt=>"VAT "+rt+"%")).concat(pays);
+  const daily=[dhead].concat(recs.slice().sort((a,b)=>a.date<b.date?-1:1).map(r=>[r.date,r.salesPcs,r2(r.salesTotal),r2(r.roundings),r.refundPcs,r2(r.refundTotal),r2(r.gross),r2(r.net)]
+    .concat(rates.map(rt=>r2((r.vat[rt]||{}).net||0))).concat(rates.map(rt=>r2((r.vat[rt]||{}).vat||0))).concat(pays.map(p=>r2((r.pay[p]||{}).total||0)))));
+  const inPerson=new Set((st.channels||[]).filter(c=>c.mode==="in_person").map(c=>c.name));
+  const led=ledgerSalesInRange(st,range[0],range[1],inPerson);
+  const rec=[["Reconciliation (in-person)","Value"],["Till gross (Vektori)",r2(agg.gross)],["Sales recorded in app",r2(led.rev)],["Variance",r2(agg.gross-led.rev)],
+    ["Note","Discounts, gift cards and cash-float are not product sales; Vektori product-sales imports date to period end."]];
+  return [{name:"Summary",rows:summary},{name:"By "+grain,rows:byb},{name:"VAT",rows:vat},{name:"Payments",rows:pay},{name:"Daily",rows:daily},{name:"Reconciliation",rows:rec}];
+}
+function Finance({st,act,show}){
+  const recsAll=(st.finance||[]).slice().sort((a,b)=>a.date<b.date?-1:1);
+  const [tip,setTip]=useState(null);
+  const tp=label=>({onMouseEnter:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseMove:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseLeave:()=>setTip(null)});
+  const [preset,setPreset]=useState("all");const [grain,setGrain]=useState("day");const [from,setFrom]=useState("");const [to,setTo]=useState("");
+  const minD=recsAll.length?recsAll[0].date:"";const maxD=recsAll.length?recsAll[recsAll.length-1].date:"";
+  const monB=(y,m)=>{const last=new Date(Date.UTC(y,m,0)).getUTCDate();return [y+"-"+pad2(m)+"-01",y+"-"+pad2(m)+"-"+pad2(last)];};
+  let start=minD,end=maxD;
+  if(preset==="custom"){start=from||minD;end=to||maxD;}
+  else if(preset==="thismonth"){const t=today();const b=monB(+t.slice(0,4),+t.slice(5,7));start=b[0];end=b[1];}
+  else if(preset==="lastmonth"){const t=today();let y=+t.slice(0,4),m=+t.slice(5,7)-1;if(m<1){m=12;y--;}const b=monB(y,m);start=b[0];end=b[1];}
+  const recs=recsAll.filter(r=>(!start||r.date>=start)&&(!end||r.date<=end));
+  const agg=financeAgg(recs);const buckets=bucketFinance(recs,grain);const tx=agg.salesPcs+agg.refundPcs;
+  const rates=Object.keys(agg.vat).sort((a,b)=>(+a)-(+b));const pays=Object.keys(agg.pay);
+  const inPerson=new Set(st.channels.filter(c=>c.mode==="in_person").map(c=>c.name));
+  const led=ledgerSalesInRange(st,start,end,inPerson);const variance=agg.gross-led.rev;
+  const shortD=iso=>{const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(iso);return m?((+m[3])+"."+(+m[2])):iso;};
+  const blabel=b=>grain==="month"?monLbl(b.k):grain==="week"?("w/"+shortD(b.k)):shortD(b.k);
+  function exportX(){downloadXlsx("rosa-mystica_finance_"+today()+".xlsx",financeSheets(recs,[start,end],st,grain),show);}
+  function barChart(){ if(!buckets.length)return html`<div class="empty"><div class="note">No settlement data in range.</div></div>`;
+    const W=720,H=230,padL=58,padR=14,padT=18,padB=30,iw=W-padL-padR,ih=H-padT-padB;
+    const maxV=Math.max(1,...buckets.map(b=>b.gross));const ticks=niceTicks(maxV,4);let topv=ticks[ticks.length-1];const ts=ticks.length>1?ticks[1]-ticks[0]:topv;while(topv<=maxV){topv+=ts;ticks.push(topv);}
+    const step=iw/buckets.length,bw=Math.min(48,step*0.62),y=v=>padT+ih-(v/topv)*ih;
+    return html`<svg viewBox="0 0 ${W} ${H}" style=${{width:"100%",height:"auto"}}>
+      ${ticks.map(t=>html`<g key=${t}><line x1=${padL} x2=${W-padR} y1=${y(t)} y2=${y(t)} style=${{stroke:"var(--line)"}}/><text x=${padL-8} y=${y(t)+3} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${Math.round(t)}</text></g>`)}
+      ${buckets.map((b,i)=>{const cx=padL+step*i+step/2,yy=y(b.gross);return html`<g key=${b.k} ...${tp(blabel(b)+" · "+money(b.gross)+" gross · "+money(b.net)+" net")}>
+        <rect x=${cx-bw/2} y=${yy} width=${bw} height=${Math.max(0,padT+ih-yy)} rx="4" style=${{fill:"var(--accent)"}}/>
+        <text x=${cx} y=${H-padB+16} text-anchor="middle" style=${{fontSize:"10px",fill:"var(--faint)"}}>${(buckets.length>18&&(i%2))?"":blabel(b)}</text></g>`;})}
+    </svg>`;}
+  const payMax=Math.max(1,...pays.map(p=>agg.pay[p].total));
+  if(recsAll.length===0)return html`<div class="content">
+    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Financial tracker</h2></div>
+    <div class="panel"><div class="empty"><${Icon} name="finance"/><div class="big">No settlement data yet</div><div class="note" style=${{maxWidth:"470px"}}>Import a <b>Vektori Transaction Report</b> (.csv or .xlsx). It carries daily gross, net, VAT by rate and the cash / card split — the tracker rolls it up by day, week or month and reconciles it against the sales recorded in the app.</div><button class="btn primary" onClick=${()=>act.openFinanceImport()}><${Icon} name="upload"/>Import settlement report</button></div></div>
+  </div>`;
+  return html`<div class="content">
+    <div class="rowbetween" style=${{marginBottom:"14px",flexWrap:"wrap",gap:"10px"}}><h2 style=${{fontSize:"22px"}}>Financial tracker</h2>
+      <div class="hintrow">
+        <div class="seg"><button aria-pressed=${grain==="day"} onClick=${()=>setGrain("day")}>Day</button><button aria-pressed=${grain==="week"} onClick=${()=>setGrain("week")}>Week</button><button aria-pressed=${grain==="month"} onClick=${()=>setGrain("month")}>Month</button></div>
+        <select value=${preset} onChange=${e=>setPreset(e.target.value)}><option value="all">All data</option><option value="thismonth">This month</option><option value="lastmonth">Last month</option><option value="custom">Custom…</option></select>
+        <button class="btn" onClick=${exportX}><${Icon} name="download"/>Export</button>
+        <button class="btn primary" onClick=${()=>act.openFinanceImport()}><${Icon} name="upload"/>Import</button>
+      </div></div>
+    ${preset==="custom"?html`<div class="hintrow" style=${{marginBottom:"14px"}}><label class="note">From</label><input type="date" style=${{width:"auto"}} value=${from} onInput=${e=>setFrom(e.target.value)}/><label class="note">to</label><input type="date" style=${{width:"auto"}} value=${to} onInput=${e=>setTo(e.target.value)}/><span class="note">blank = open-ended</span></div>`:null}
+    <div class="note" style=${{marginBottom:"14px"}}>Showing <b>${fmtD(start)||"—"}</b> → <b>${fmtD(end)||"—"}</b> · ${num(agg.days)} sale day${agg.days===1?"":"s"}</div>
+    <div class="kpis" style=${{marginBottom:"18px"}}>
+      <div class="kpi"><div class="k">Gross</div><div class="v">${money(agg.gross)}</div><div class="f">incl. VAT ${money(agg.gross-agg.net)}</div></div>
+      <div class="kpi"><div class="k">Net</div><div class="v">${money(agg.net)}</div><div class="f">VAT-exclusive</div></div>
+      <div class="kpi"><div class="k">Transactions</div><div class="v">${num(tx)}</div><div class="f">avg ${money(tx?agg.gross/tx:0)}</div></div>
+      <div class="kpi"><div class="k">Refunds</div><div class="v">${money(agg.refundTotal)}</div><div class="f">${num(agg.refundPcs)} · roundings ${money(agg.roundings)}</div></div>
+    </div>
+    <div class="panel" style=${{marginBottom:"18px"}}><div class="panel-h"><h3>Gross by ${grain}</h3><span class="note">settlement</span></div><div style=${{padding:"12px 14px"}}>${barChart()}</div></div>
+    <div class="anrow" style=${{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"18px",marginBottom:"18px"}}>
+      <div class="panel"><div class="panel-h"><h3>VAT summary</h3><span class="note">by rate</span></div>
+        <div class="tablewrap"><table><thead><tr><th>Rate</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Gross</th></tr></thead>
+        <tbody>${rates.map(rt=>html`<tr key=${rt}><td>${rt} %</td><td class="num mono">${money(agg.vat[rt].net)}</td><td class="num mono">${money(agg.vat[rt].vat)}</td><td class="num mono">${money(agg.vat[rt].net+agg.vat[rt].vat)}</td></tr>`)}
+        <tr style=${{fontWeight:"600",borderTop:"2px solid var(--line)"}}><td>Total</td><td class="num mono">${money(agg.net)}</td><td class="num mono">${money(agg.gross-agg.net)}</td><td class="num mono">${money(agg.gross)}</td></tr></tbody></table></div></div>
+      <div class="panel"><div class="panel-h"><h3>Payment methods</h3><span class="note">share of gross</span></div>
+        <div style=${{padding:"16px",display:"flex",flexDirection:"column",gap:"13px"}}>${pays.length?pays.map(p=>html`<div key=${p}>
+          <div style=${{display:"flex",justifyContent:"space-between",marginBottom:"5px",fontSize:"13px"}}><span style=${{fontWeight:"500"}}>${p}</span><span class="mono">${money(agg.pay[p].total)}</span></div>
+          <div style=${{height:"10px",borderRadius:"6px",background:"var(--surface-2)",overflow:"hidden"}} ...${tp(p+" · "+money(agg.pay[p].total)+" · "+num(agg.pay[p].pcs)+" tx")}><div style=${{height:"100%",width:(agg.pay[p].total/payMax*100)+"%",background:"var(--accent)",borderRadius:"6px"}}></div></div></div>`):html`<div class="note">No payment breakdown in this file.</div>`}</div></div>
+    </div>
+    <div class="panel"><div class="panel-h"><h3>Reconciliation</h3><span class="note">till vs app · in-person</span></div>
+      <div style=${{padding:"16px"}}>
+        <div class="kpis" style=${{marginBottom:"12px"}}>
+          <div class="kpi"><div class="k">Till gross (Vektori)</div><div class="v">${money(agg.gross)}</div></div>
+          <div class="kpi"><div class="k">Sales recorded in app</div><div class="v">${money(led.rev)}</div><div class="f">${num(led.units)} units · in-person</div></div>
+          <div class="kpi"><div class="k">Variance</div><div class="v">${money(variance)}</div><div class="f">${agg.gross?pct(variance/agg.gross):"—"}</div></div>
+        </div>
+        ${inPerson.size===0?html`<div class="warnbox">No channel is marked <b>in-person</b> yet — set one in Settings → Channels so the app knows which recorded sales to reconcile against the till.</div>`:(led.rev===0?html`<div class="note">No in-person sales are recorded in the app for this period yet. Import your Vektori <b>product</b> sales report on the Analytics tab and the variance here becomes meaningful.</div>`:html`<div class="note">Till takings vs the sales recorded in the app for the same period and in-person channels. A gap is expected: <b>discounts</b>, <b>gift-card</b> sales and redemptions and <b>cash-float</b> movements aren't product sales, and a Vektori product-sales import is dated to the period end — so sub-month windows won't line up.</div>`)}
+      </div></div>
+    ${tip?html`<div class="charttip" style=${{left:tip.x+"px",top:tip.y+"px"}}>${tip.label}</div>`:null}
+  </div>`;}
+function FinanceImportModal({st,act,onClose,show}){
+  const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();
+  function ingest(rows){const r=parseFinanceRows(rows);setRes(r);if(!r.records.length)setErr(r.warnings[0]||"No daily rows found.");else setErr("");}
+  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setRes(null);setFn(f.name);const name=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
+    if(name.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
+    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
+    e.target.value="";}
+  const prep=res&&res.records.length?prepareFinance(res.records,st):null;
+  const agg=res&&res.records.length?financeAgg(res.records):null;
+  const ok=prep&&prep.stats.add;
+  function run(){if(!ok)return;act.importFinance(prep.add);show("Imported "+prep.stats.add+" settlement day"+(prep.stats.add>1?"s":"")+(prep.stats.dup?" · "+prep.stats.dup+" already in":""));onClose();}
+  return html`<${Modal} wide=${true} title="Import settlement — Vektori Transaction Report" onClose=${onClose}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Import${ok?(" "+prep.stats.add):""}</button></${React.Fragment}>`}>
+    <div class="note">Upload a <b>Vektori Transaction Report</b> (.csv or .xlsx). Each day becomes one settlement record — gross, net, VAT by rate and the cash / card split. Re-importing the same days changes nothing (duplicates are skipped). The Settlement Report isn't needed: the Transaction Report carries the same totals plus daily detail.</div>
+    <div class="hintrow"><button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Choose report…</button>
+      <input ref=${fileRef} type="file" accept=".csv,.xlsx" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}
+      ${res&&res.meta&&res.meta.periodStart?html`<span class="badge type">${fmtD(res.meta.periodStart)} → ${fmtD(res.meta.periodEnd)}</span>`:null}</div>
+    ${err?html`<div class="err">${err}</div>`:null}
+    ${ok?html`<div class="kpis" style=${{marginTop:"4px"}}>
+      <div class="kpi"><div class="k">New days</div><div class="v">${num(prep.stats.add)}</div></div>
+      <div class="kpi"><div class="k">Gross</div><div class="v">${money(agg.gross)}</div></div>
+      <div class="kpi"><div class="k">Net</div><div class="v">${money(agg.net)}</div></div>
+      <div class="kpi"><div class="k">Already in</div><div class="v">${num(prep.stats.dup)}</div></div>
+    </div>`:null}
+    ${res&&res.warnings&&res.warnings.length?html`<div class="note">${res.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
+  </${Modal}>`;}
 
 ReactDOM.createRoot(document.getElementById("root")).render(html`<${App}/>`);
 </script>
