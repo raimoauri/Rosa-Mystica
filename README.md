@@ -51,14 +51,20 @@ overrides). The Finance tab shows **output VAT** (sales, from settlement) beside
 from the ledger) over any range, for a by-hand net-VAT / Fivaldi reconciliation.
 
 ## Financial tracker
-A **Finance** tab, parallel to Analytics, imports the **Vektori Transaction Report** (.csv/.xlsx) —
-one settlement record per day carrying gross, net, VAT by rate, refunds, roundings and the
-cash / card split. Re-importing the same days changes nothing (duplicates skipped). It summarises any
-period — day / week / month, or a custom date range — with KPIs, a gross time-series, a VAT summary
-(net · VAT · gross by rate, Fivaldi-ready) and a payment-method breakdown, all exportable to one .xlsx.
-A **reconciliation** panel compares the till's gross against the in-person sales recorded in the app
-for the same period, flagging the variance (discounts, gift cards and cash-float are expected gaps).
-The Settlement Report isn't needed — the Transaction Report carries the same totals plus daily detail.
+A **Finance** tab, parallel to Analytics, imports two daily money views, auto-detected:
+the **Vektori Transaction Report** (in-person: gross, net, VAT by rate, refunds, roundings, cash/card
+split) and the **WooCommerce Analytics → Revenue** export (online: orders, net, taxes, shipping, total —
+money-in is the order total incl. shipping). Re-importing the same days changes nothing (duplicates
+skipped). It summarises any period — day / week / month or a custom range — with KPIs, a gross
+time-series, an **in-person-vs-online** split, a VAT summary (net · VAT · gross by rate, Fivaldi-ready),
+a payment-method breakdown, and an **output-vs-input VAT** view (sales VAT from settlement beside
+purchase VAT from the ledger), all exportable to one .xlsx.
+
+Two **reconciliations**: in-person till gross vs in-person sales recorded in the app, and online money-in
+vs online sales recorded in the app. The online gap is mostly shipping, so an **online postage** box logs
+what the carrier actually bills the shop (the charged-to-us side), to square against the shipping charged
+to customers by hand. The Vektori Settlement Report isn't needed — the Transaction Report carries the
+same totals plus daily detail.
 
 ## Build phases
 1. Catalogue · Ledger · Staging · Settings — foundation. ✅
@@ -71,3 +77,5 @@ The Settlement Report isn't needed — the Transaction Report carries the same t
    and till-vs-app reconciliation. ✅
 7. Per-line purchase VAT (totals keyed, VAT counted back), net-to-net margins, a **Batches** invoice-progress
    segment in Inventory, and an input-vs-output VAT view in Finance. ✅
+8. WooCommerce Revenue import (online money view), in-person-vs-online split, per-mode reconciliation, and an
+   online postage box (shipping charged vs postage paid to the carrier). ✅
