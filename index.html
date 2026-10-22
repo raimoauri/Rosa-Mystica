@@ -16,6 +16,8 @@
   --ink:#1A1A1D; --muted:#6C6C73; --faint:#9A9AA1;
   --line:#E7E7E1; --line-strong:#D6D6CF;
   --accent:#9B2D4F; --accent-soft:#B14869; --accent-bg:#F8EBEF; --on-accent:#FFFFFF;
+  /* categorical series slots — fixed order, never cycled; validated light & dark */
+  --s1:#9B2D4F; --s2:#2a78d6; --s3:#eda100; --s4:#6250d6;
   --good:#2F7D5B; --warn:#936717; --bad:#B23A3A;
   --good-bg:#E8F1EC; --warn-bg:#F5EEDD; --bad-bg:#F6E7E7;
   --shadow:0 1px 2px rgba(20,18,22,.04),0 2px 8px rgba(20,18,22,.05);
@@ -30,6 +32,7 @@
   --ink:#ECECEF; --muted:#9A9AA2; --faint:#6B6B74;
   --line:#26262B; --line-strong:#36363D;
   --accent:#E78AA3; --accent-soft:#D06E8A; --accent-bg:#2A1820; --on-accent:#17171A;
+  --s1:#D06E8A; --s2:#3987e5; --s3:#c98500; --s4:#9085e9;
   --good:#5FBF93; --warn:#D7A64E; --bad:#E58A86;
   --good-bg:#15271F; --warn-bg:#272012; --bad-bg:#2A1B1B;
   --shadow:0 1px 2px rgba(0,0,0,.3),0 2px 10px rgba(0,0,0,.4);
@@ -41,6 +44,7 @@
   --ink:#ECECEF; --muted:#9A9AA2; --faint:#6B6B74;
   --line:#26262B; --line-strong:#36363D;
   --accent:#E78AA3; --accent-soft:#D06E8A; --accent-bg:#2A1820; --on-accent:#17171A;
+  --s1:#D06E8A; --s2:#3987e5; --s3:#c98500; --s4:#9085e9;
   --good:#5FBF93; --warn:#D7A64E; --bad:#E58A86;
   --good-bg:#15271F; --warn-bg:#272012; --bad-bg:#2A1B1B;
   --shadow:0 1px 2px rgba(0,0,0,.3),0 2px 10px rgba(0,0,0,.4);
@@ -1240,6 +1244,8 @@ function SalesImportModal({st,act,onClose,show}){
   </${Modal}>`;}
 
 const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const WDAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+function wdOf(iso){if(!/^\d{4}-\d{2}-\d{2}/.test(String(iso||"")))return"";const d=new Date(String(iso).slice(0,10)+"T00:00:00Z");return isNaN(d)?"":WDAYS[d.getUTCDay()];}
 function monLbl(k){const p=String(k).split("-");return (MONTHS[(+p[1])-1]||"?")+" ’"+(p[0]||"").slice(2);}
 function niceTicks(max,count){max=Math.max(max,1);const s0=max/Math.max(1,count);const mag=Math.pow(10,Math.floor(Math.log10(s0)));const nm=s0/mag;let st2;if(nm<=1)st2=mag;else if(nm<=2)st2=2*mag;else if(nm<=5)st2=5*mag;else st2=10*mag;const out=[];for(let v=0;v<=max+1e-9;v+=st2)out.push(Math.round(v*1000)/1000);return out;}
 function Analytics({st,act,show}){
@@ -1304,7 +1310,7 @@ function Analytics({st,act,show}){
       <div class="tablewrap"><table><thead><tr><th>Code</th><th>Product</th><th class="num">Units</th><th class="num">Revenue</th></tr></thead>
       <tbody>${top.map(p=>{const nm=byCode[normCode(p.code)];return html`<tr key=${normCode(p.code)}><td class="code">${p.code}</td><td>${nm?html`<span class="name">${nm.name}</span>`:html`<span class="faint">unlinked</span>`}</td><td class="num">${num(p.units)}</td><td class="num mono">${money(p.rev)}</td></tr>`;})}</tbody></table></div></div>
     </${React.Fragment}>`}
-    ${tip?html`<div class="charttip" style=${{left:tip.x+"px",top:tip.y+"px"}}>${tip.label}</div>`:null}
+    ${tip?html`<div class="charttip" style=${{left:tip.x+"px",top:tip.y+"px"}}>${Array.isArray(tip.label)?tip.label.map((l,i)=>html`<div key=${i}>${l}</div>`):tip.label}</div>`:null}
   </div>`;}
 
 /* VAT helpers — purchase cost carries an explicit per-line rate; sale price is stripped
@@ -1587,6 +1593,7 @@ function Finance({st,act,show}){
   const tp=label=>({onMouseEnter:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseMove:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseLeave:()=>setTip(null)});
   const [preset,setPreset]=useState("all");const [grain,setGrain]=useState("day");const [from,setFrom]=useState("");const [to,setTo]=useState("");
   const [pf,setPf]=useState(()=>({date:today(),amount:"",note:""}));
+  const [chart,setChart]=useState("bars");
   const purch=st.ledger.filter(r=>r.dir==="in"&&r.vatRate!=null&&+r.vatRate>0&&r.date);
   const allDates=recsAll.map(r=>r.date).concat(purch.map(r=>r.date)).filter(Boolean).sort();
   const minD=allDates.length?allDates[0]:"";const maxD=allDates.length?allDates[allDates.length-1]:"";
@@ -1597,6 +1604,16 @@ function Finance({st,act,show}){
   else if(preset==="lastmonth"){const t=today();let y=+t.slice(0,4),m=+t.slice(5,7)-1;if(m<1){m=12;y--;}const b=monB(y,m);start=b[0];end=b[1];}
   const recs=recsAll.filter(r=>(!start||r.date>=start)&&(!end||r.date<=end));
   const agg=financeAgg(recs);const buckets=bucketFinance(recs,grain);const tx=agg.salesPcs+agg.refundPcs;
+  /* Channel series. Colour follows the channel itself and is assigned from ALL finance data,
+     so narrowing the period never repaints the surviving series. Fixed slot order, never cycled. */
+  const chanAll=(()=>{const seen=[],md={};
+    for(const r of recsAll){const c=r.channel||"—";if(seen.indexOf(c)<0){seen.push(c);md[c]=r.mode||"";}}
+    const rank=c=>md[c]==="in_person"?0:(md[c]==="online"?1:2);
+    return seen.slice().sort((a,b)=>rank(a)-rank(b)||a.localeCompare(b));})();
+  const seriesNames=chanAll.length>4?chanAll.slice(0,3).concat(["Other"]):chanAll;
+  const cumSeries=(()=>{const m={};seriesNames.forEach(nm=>m[nm]=new Array(buckets.length).fill(0));
+    buckets.forEach((b,i)=>{for(const r of b.recs){const c=r.channel||"—";const nm=seriesNames.indexOf(c)>=0?c:"Other";if(m[nm])m[nm][i]+=(+r.gross||0);}});
+    return seriesNames.map((nm,si)=>{let run=0;return {name:nm,color:"var(--s"+((si%4)+1)+")",vals:m[nm].map(v=>(run+=v))};});})();
   const rates=Object.keys(agg.vat).sort((a,b)=>(+a)-(+b));const pays=Object.keys(agg.pay);
   const inPerson=new Set(st.channels.filter(c=>c.mode==="in_person").map(c=>c.name));
   const led=ledgerSalesInRange(st,start,end,inPerson);const variance=agg.gross-led.rev;
@@ -1612,15 +1629,43 @@ function Finance({st,act,show}){
   const blabel=b=>grain==="month"?monLbl(b.k):grain==="week"?("w/"+shortD(b.k)):shortD(b.k);
   function exportX(){downloadXlsx("rosa-mystica_finance_"+today()+".xlsx",financeSheets(recs,[start,end],st,grain),show);}
   function barChart(){ if(!buckets.length)return html`<div class="empty"><div class="note">No settlement data in range.</div></div>`;
-    const W=720,H=230,padL=58,padR=14,padT=18,padB=30,iw=W-padL-padR,ih=H-padT-padB;
+    const dayMode=grain==="day";
+    const W=720,H=dayMode?248:230,padL=58,padR=14,padT=18,padB=dayMode?46:30,iw=W-padL-padR,ih=H-padT-padB;
     const maxV=Math.max(1,...buckets.map(b=>b.gross));const ticks=niceTicks(maxV,4);let topv=ticks[ticks.length-1];const ts=ticks.length>1?ticks[1]-ticks[0]:topv;while(topv<=maxV){topv+=ts;ticks.push(topv);}
-    const step=iw/buckets.length,bw=Math.min(48,step*0.62),y=v=>padT+ih-(v/topv)*ih;
+    const step=iw/buckets.length,bw=Math.min(48,step*0.62),y=v=>padT+ih-(v/topv)*ih;const skip=buckets.length>18;
     return html`<svg viewBox="0 0 ${W} ${H}" style=${{width:"100%",height:"auto"}}>
       ${ticks.map(t=>html`<g key=${t}><line x1=${padL} x2=${W-padR} y1=${y(t)} y2=${y(t)} style=${{stroke:"var(--line)"}}/><text x=${padL-8} y=${y(t)+3} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${Math.round(t)}</text></g>`)}
-      ${buckets.map((b,i)=>{const cx=padL+step*i+step/2,yy=y(b.gross);return html`<g key=${b.k} ...${tp(blabel(b)+" · "+money(b.gross)+" gross · "+money(b.net)+" net")}>
+      ${buckets.map((b,i)=>{const cx=padL+step*i+step/2,yy=y(b.gross);const hide=skip&&(i%2);const wd=dayMode?wdOf(b.k):"";
+        return html`<g key=${b.k} ...${tp((wd?wd+" ":"")+blabel(b)+" · "+money(b.gross)+" gross · "+money(b.net)+" net")}>
         <rect x=${cx-bw/2} y=${yy} width=${bw} height=${Math.max(0,padT+ih-yy)} rx="4" style=${{fill:"var(--accent)"}}/>
-        <text x=${cx} y=${H-padB+16} text-anchor="middle" style=${{fontSize:"10px",fill:"var(--faint)"}}>${(buckets.length>18&&(i%2))?"":blabel(b)}</text></g>`;})}
+        ${dayMode?html`<${React.Fragment}><text x=${cx} y=${H-padB+16} text-anchor="middle" style=${{fontSize:"10px",fill:"var(--muted)",fontWeight:"500"}}>${hide?"":wd}</text><text x=${cx} y=${H-padB+29} text-anchor="middle" style=${{fontSize:"10px",fill:"var(--faint)"}}>${hide?"":blabel(b)}</text></${React.Fragment}>`:html`<text x=${cx} y=${H-padB+16} text-anchor="middle" style=${{fontSize:"10px",fill:"var(--faint)"}}>${hide?"":blabel(b)}</text>`}</g>`;})}
     </svg>`;}
+  function cumChart(){ if(!buckets.length)return html`<div class="empty"><div class="note">No settlement data in range.</div></div>`;
+    const dayMode=grain==="day";const n=buckets.length;
+    const W=720,H=dayMode?248:230,padL=58,padR=14,padT=18,padB=dayMode?46:30,iw=W-padL-padR,ih=H-padT-padB;
+    const totals=buckets.map((b,i)=>cumSeries.reduce((s,se)=>s+se.vals[i],0));
+    const maxV=Math.max(1,...totals);const ticks=niceTicks(maxV,4);let topv=ticks[ticks.length-1];const ts=ticks.length>1?ticks[1]-ticks[0]:topv;while(topv<=maxV){topv+=ts;ticks.push(topv);}
+    const X=i=>n===1?padL+iw/2:padL+(iw*i)/(n-1);const Y=v=>padT+ih-(v/topv)*ih;
+    const tops=[];const acc=new Array(n).fill(0);
+    for(const se of cumSeries){for(let i=0;i<n;i++)acc[i]+=se.vals[i];tops.push(acc.slice());}
+    const skip=n>18;
+    return html`<svg viewBox="0 0 ${W} ${H}" style=${{width:"100%",height:"auto"}}>
+      ${ticks.map(t=>html`<g key=${t}><line x1=${padL} x2=${W-padR} y1=${Y(t)} y2=${Y(t)} style=${{stroke:"var(--line)"}}/><text x=${padL-8} y=${Y(t)+3} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${Math.round(t)}</text></g>`)}
+      ${cumSeries.map((se,si)=>{const up=tops[si],lo=si===0?new Array(n).fill(0):tops[si-1];
+        if(n===1){const bw=56;return html`<rect key=${se.name} x=${X(0)-bw/2} y=${Y(up[0])} width=${bw} height=${Math.max(0,Y(lo[0])-Y(up[0])-2)} rx="3" style=${{fill:se.color}}/>`;}
+        const p=[];for(let i=0;i<n;i++)p.push(X(i)+","+Y(up[i]));for(let i=n-1;i>=0;i--)p.push(X(i)+","+Y(lo[i]));
+        return html`<g key=${se.name}><polygon points=${p.join(" ")} style=${{fill:se.color}}/><polyline points=${up.map((v,i)=>X(i)+","+Y(v)).join(" ")} style=${{fill:"none",stroke:"var(--surface)",strokeWidth:"2"}}/></g>`;})}
+      ${(tip&&tip.idx!=null)?html`<line x1=${X(tip.idx)} x2=${X(tip.idx)} y1=${padT} y2=${padT+ih} style=${{stroke:"var(--line-strong)",strokeWidth:"1"}}/>`:null}
+      ${buckets.map((b,i)=>{const hide=skip&&(i%2);const wd=dayMode?wdOf(b.k):"";
+        return html`<${React.Fragment} key=${b.k}>${dayMode?html`<${React.Fragment}><text x=${X(i)} y=${H-padB+16} text-anchor="middle" style=${{fontSize:"10px",fill:"var(--muted)",fontWeight:"500"}}>${hide?"":wd}</text><text x=${X(i)} y=${H-padB+29} text-anchor="middle" style=${{fontSize:"10px",fill:"var(--faint)"}}>${hide?"":blabel(b)}</text></${React.Fragment}>`:html`<text x=${X(i)} y=${H-padB+16} text-anchor="middle" style=${{fontSize:"10px",fill:"var(--faint)"}}>${hide?"":blabel(b)}</text>`}</${React.Fragment}>`;})}
+      <rect x=${padL} y=${padT} width=${iw} height=${ih} style=${{fill:"transparent",pointerEvents:"all"}}
+        onMouseMove=${e=>{const r=e.currentTarget.getBoundingClientRect();if(!r.width)return;let i=n===1?0:Math.round(((e.clientX-r.left)/r.width)*(n-1));i=Math.max(0,Math.min(n-1,i));
+          const wd=dayMode?wdOf(buckets[i].k):"";
+          setTip({x:e.clientX,y:e.clientY,idx:i,label:[(wd?wd+" ":"")+blabel(buckets[i])].concat(cumSeries.map(se=>se.name+" · "+money(se.vals[i]))).concat(["Total · "+money(totals[i])])});}}
+        onMouseLeave=${()=>setTip(null)}/>
+    </svg>`;}
+  function cumLegend(){const n=buckets.length;if(!n)return null;
+    return html`<div style=${{display:"flex",flexWrap:"wrap",gap:"16px",padding:"0 14px 12px"}}>${cumSeries.map(se=>html`<span key=${se.name} style=${{display:"inline-flex",alignItems:"center",gap:"7px",fontSize:"12.5px"}}><span style=${{width:"10px",height:"10px",borderRadius:"3px",background:se.color,flex:"none"}}></span><span style=${{fontWeight:"500"}}>${se.name}</span><span class="mono faint">${money(se.vals[n-1])}</span></span>`)}</div>`;}
   const payMax=Math.max(1,...pays.map(p=>agg.pay[p].total));
   if(recsAll.length===0&&!purch.length)return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Financial tracker</h2></div>
@@ -1642,7 +1687,9 @@ function Finance({st,act,show}){
       <div class="kpi"><div class="k">Transactions</div><div class="v">${num(tx)}</div><div class="f">avg ${money(tx?agg.gross/tx:0)}</div></div>
       <div class="kpi"><div class="k">Refunds</div><div class="v">${money(agg.refundTotal)}</div><div class="f">${num(agg.refundPcs)} · roundings ${money(agg.roundings)}</div></div>
     </div>
-    <div class="panel" style=${{marginBottom:"18px"}}><div class="panel-h"><h3>Gross by ${grain}</h3><span class="note">settlement</span></div><div style=${{padding:"12px 14px"}}>${barChart()}</div></div>
+    <div class="panel" style=${{marginBottom:"18px"}}><div class="panel-h"><h3>${chart==="cum"?"Cumulative income":"Gross by "+grain}</h3>
+      <div class="seg"><button aria-pressed=${chart==="bars"} onClick=${()=>setChart("bars")}>Bars</button><button aria-pressed=${chart==="cum"} onClick=${()=>setChart("cum")}>Cumulative</button></div></div>
+      <div style=${{padding:"12px 14px"}}>${chart==="cum"?cumChart():barChart()}</div>${chart==="cum"?cumLegend():null}</div>
     ${hasOnline?html`<div class="panel" style=${{marginBottom:"18px"}}><div class="panel-h"><h3>In-person vs online</h3><span class="note">money in · gross</span></div>
       <div style=${{padding:"16px",display:"flex",flexDirection:"column",gap:"13px"}}>
         ${[["In-person (Vektori)",modeAgg.in_person.gross],["Online (WooCommerce)",modeAgg.online.gross]].map(([lbl,v])=>{const mx=Math.max(1,modeAgg.in_person.gross,modeAgg.online.gross);return html`<div key=${lbl}>
@@ -1704,7 +1751,7 @@ function Finance({st,act,show}){
           ${postRecs.length?html`<div class="tablewrap"><table><tbody>${postRecs.map(e=>html`<tr key=${e.id}><td class="note">${fmtD(e.date)}</td><td class="num mono">${money(e.amount)}</td><td>${e.note||""}</td><td class="num"><button class="btn sm ghost rowact" onClick=${()=>{act.removePostage(e.id);show("Removed");}}>Remove</button></td></tr>`)}<tr style=${{fontWeight:"600",borderTop:"2px solid var(--line)"}}><td>Total paid</td><td class="num mono">${money(postPaid)}</td><td></td><td></td></tr></tbody></table></div>`:html`<div class="note faint">No postage entries in range yet.</div>`}
         </div>
       </div></div>`:null}
-    ${tip?html`<div class="charttip" style=${{left:tip.x+"px",top:tip.y+"px"}}>${tip.label}</div>`:null}
+    ${tip?html`<div class="charttip" style=${{left:tip.x+"px",top:tip.y+"px"}}>${Array.isArray(tip.label)?tip.label.map((l,i)=>html`<div key=${i}>${l}</div>`):tip.label}</div>`:null}
   </div>`;}
 function FinanceImportModal({st,act,onClose,show}){
   const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();

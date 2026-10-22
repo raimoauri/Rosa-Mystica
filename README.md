@@ -59,7 +59,10 @@ money-in is the order total incl. shipping). Re-importing the same days changes 
 skipped). It summarises any period — day / week / month or a custom range — with KPIs, a gross
 time-series, an **in-person-vs-online** split, a VAT summary (net · VAT · gross by rate, Fivaldi-ready),
 a payment-method breakdown, and an **output-vs-input VAT** view (sales VAT from settlement beside
-purchase VAT from the ledger), all exportable to one .xlsx.
+purchase VAT from the ledger), all exportable to one .xlsx. The time-series panel toggles between
+**Bars** (gross per day/week/month — the day axis carries the weekday above the date) and
+**Cumulative income**, which stacks the running total by channel in fixed categorical colours with a
+crosshair tooltip giving each channel's running figure and the total.
 
 Two **reconciliations**: in-person till gross vs in-person sales recorded in the app, and online money-in
 vs online sales recorded in the app. The online gap is mostly shipping, so an **online postage** box logs
@@ -82,3 +85,5 @@ same totals plus daily detail.
    online postage box (shipping charged vs postage paid to the carrier). ✅
 9. Batch-level transport (freight-in) spread per unit by quantity into net landed cost, feeding FIFO,
    margins and the Batches view; Transport column in the ledger template, movement form and exports. ✅
+10. Finance charts: weekday names above the dates on the day axis, and a **Cumulative income** view —
+    stacked areas by channel, with a validated categorical palette for light and dark. ✅
