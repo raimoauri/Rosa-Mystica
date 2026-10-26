@@ -110,6 +110,7 @@ button{font-family:inherit}
 
 /* kpi */
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.kpis.five{grid-template-columns:repeat(5,1fr)}
 .kpi{background:var(--surface);padding:15px 16px;display:flex;flex-direction:column;gap:4px}
 .kpi .k{font-size:11.5px;color:var(--muted);font-weight:500}
 .kpi .v{font-size:25px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;line-height:1.05}
@@ -186,7 +187,14 @@ label.lab{font-size:11.5px;font-weight:500;color:var(--muted);display:block;marg
 .empty{text-align:center;color:var(--muted);padding:54px 20px;display:flex;flex-direction:column;gap:14px;align-items:center}
 .empty .big{font-size:17px;color:var(--ink);font-weight:600}
 .empty svg{width:34px;height:34px;color:var(--faint)}
-.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:120;background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:999px;font-weight:500;font-size:13px;box-shadow:var(--shadow-lift)}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:120;background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:999px;font-weight:500;font-size:13px;box-shadow:var(--shadow-lift);display:flex;align-items:center;gap:12px}
+.toast .ubtn{background:none;border:none;color:var(--bg);font:inherit;font-weight:600;text-decoration:underline;text-underline-offset:2px;cursor:pointer;padding:0}
+/* persistent bar — a save that did not happen must not be a silent condition */
+.savebar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 26px;background:var(--bad-bg);border-bottom:1px solid color-mix(in srgb,var(--bad) 35%,var(--line));color:var(--bad);font-size:12.5px;font-weight:500}
+.savebar .btn{color:var(--ink)}
+.meter{height:8px;border-radius:5px;background:var(--surface-2);overflow:hidden}
+.meter>i{display:block;height:100%;border-radius:5px;background:var(--accent)}
+.meter.hot>i{background:var(--bad)}
 textarea.io{font-family:var(--mono);font-size:11.5px;min-height:150px;white-space:pre;overflow:auto;line-height:1.5}
 
 @media (max-width:860px){
@@ -532,20 +540,39 @@ const TYPES=[["goods","Goods"],["book","Book"],["other","Other"]];
 const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 
 /* ---------- persistence ---------- */
-const SCHEMA=2;const LSKEY="rosamystica:v1";
+const SCHEMA=3;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
 function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],
-  channels:[{id:uid(),name:"Purchase",dir:"in",mode:null}],
-  settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0}}};}
+  channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
+  settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:""}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
   s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];
   if(!s.channels||!s.channels.length)s.channels=[{id:uid(),name:"Purchase",dir:"in",mode:null}];
-  s.channels=s.channels.map(c=>("mode" in c)?c:Object.assign({},c,{mode:(c.dir==="out"?inferMode(c.name):null)}));
+  s.channels=s.channels.map(c=>{const o=("mode" in c)?c:Object.assign({},c,{mode:(c.dir==="out"?inferMode(c.name):null)});
+    return ("kind" in o)?o:Object.assign({},o,{kind:(o.dir==="out"?"sale":null)});});
   s.settings=Object.assign({shop:"Katolinen Kirjakauppa",theme:"system"},s.settings||{});
   if(!s.settings.vatRates||typeof s.settings.vatRates!=="object")s.settings.vatRates={book:13.5,goods:25.5,other:0};
   return s;}
-function load(){try{const r=localStorage.getItem(LSKEY);if(!r)return blankState();return migrate(JSON.parse(r));}catch(e){return blankState();}}
-function save(s){try{localStorage.setItem(LSKEY,JSON.stringify(s));}catch(e){}}
+/* Loading returns {ok:true,state} or {ok:false,raw,err}. A payload we cannot read is NEVER
+   replaced by a blank state — the raw bytes are handed to the recovery screen, and nothing
+   is written until the shopkeeper chooses what to do with them. */
+function loadState(){let raw=null;
+  try{raw=localStorage.getItem(LSKEY);}catch(e){return {ok:false,raw:null,err:"This browser is not allowing local storage ("+((e&&e.message)||"blocked")+")."};}
+  if(raw==null||raw==="")return {ok:true,state:blankState()};
+  let o=null;try{o=JSON.parse(raw);}catch(e){return {ok:false,raw,err:"The saved data is not readable JSON — "+((e&&e.message)||"parse error")+"."};}
+  if(!o||typeof o!=="object"||Array.isArray(o))return {ok:false,raw,err:"The saved data is not a Rosa Mystica state object."};
+  if(!Array.isArray(o.catalogue)&&!Array.isArray(o.ledger))return {ok:false,raw,err:"The saved data carries neither a catalogue nor a ledger — it may belong to another app."};
+  try{return {ok:true,state:migrate(o)};}catch(e){return {ok:false,raw,err:"The saved data could not be upgraded — "+((e&&e.message)||"error")+"."};}}
+function fmtBytes(n){return n>=1048576?(n/1048576).toFixed(2)+" MB":(n>=1024?Math.round(n/1024)+" KB":n+" B");}
+/* save reports what happened — a refused write is never swallowed. */
+function save(s){let json;
+  try{json=JSON.stringify(s);}catch(e){return {ok:false,bytes:0,msg:"The data could not be prepared for saving."};}
+  try{localStorage.setItem(LSKEY,json);return {ok:true,bytes:json.length};}
+  catch(e){const q=/quota|exceed/i.test(String((e&&(e.name+" "+e.message))||""));
+    return {ok:false,bytes:json.length,quota:q,
+      msg:q?("Out of browser storage — nothing has been saved since. "+fmtBytes(json.length)+" needed, about "+fmtBytes(LSBUDGET)+" available."):("The browser refused to save ("+((e&&e.name)||"error")+") — nothing has been saved since.")};}}
+function storageInfo(){let bytes=0;try{bytes=(localStorage.getItem(LSKEY)||"").length;}catch(e){}
+  return {bytes,budget:LSBUDGET,pct:Math.min(100,Math.round((bytes/LSBUDGET)*1000)/10)};}
 
 /* core file (portable, optionally encrypted) */
 const APP="Rosa Mystica";
@@ -637,14 +664,23 @@ function inferDir(st,channel){const c=st.channels.find(x=>x.name.toLowerCase()==
 function abbrevCountry(c){c=String(c||"").trim();if(!c)return"";const map={finland:"FI",suomi:"FI",poland:"PL",puola:"PL",portugal:"PT",portugali:"PT",sweden:"SE",ruotsi:"SE",germany:"DE",saksa:"DE",italy:"IT",italia:"IT",france:"FR",ranska:"FR",spain:"ES",espanja:"ES",uk:"GB","united kingdom":"GB",usa:"US","united states":"US",vatican:"VA",netherlands:"NL",alankomaat:"NL",belgium:"BE",austria:"AT",switzerland:"CH",ireland:"IE",poland2:"PL"};const k=c.toLowerCase();if(map[k])return map[k];if(/^[A-Za-z]{2}$/.test(c))return c.toUpperCase();return c.replace(/[^A-Za-z]/g,"").slice(0,2).toUpperCase();}
 function abbrevProvider(p){p=String(p||"").trim();if(!p)return"";return p.replace(/[^A-Za-z0-9]/g,"").slice(0,4).toUpperCase();}
 function genBatchRef(country,date,provider){const cc=abbrevCountry(country);const d=String(date||"").replace(/-/g,"");const pv=abbrevProvider(provider);return [cc,d,pv].filter(Boolean).join("-");}
+/* A staged code is typed from the code itself: 978/979 is the ISBN prefix, so a 13-digit
+   code starting there is a book (13.5% VAT); anything else defaults to goods (25.5%).
+   The old blanket "book" quietly put goods on the book rate once confirmed. */
+function guessType(code){const c=String(code||"").replace(/[^0-9]/g,"");return (c.length===13&&/^97[89]/.test(c))?"book":"goods";}
 function prepareMovements(raw,st,warnings0){
   const catSet=new Set(st.catalogue.map(p=>normCode(p.code)));
   const sig=m=>[m.date,m.channel,normCode(m.code),m.qty,m.unitPrice==null?"":m.unitPrice,m.batchRef].join("|");
   const existing=new Set(st.ledger.map(sig));const seen=new Set();
+  /* how many lines each channel+batch already holds, so a corrected re-import is flagged
+     rather than silently doubled (a changed price makes a new signature, not a duplicate) */
+  const held={};for(const r of st.ledger){const k=(r.channel||"")+"|"+(r.batchRef||"");held[k]=(held[k]||0)+1;}
+  const incoming={};
   const movements=[];const stage={};const newCh={};let dup=0;
   for(const mv of raw){
     const s=sig(mv);if(existing.has(s)||seen.has(s)){dup++;continue;}seen.add(s);
     const clean={date:mv.date,channel:mv.channel,dir:mv.dir,batchRef:mv.batchRef,code:mv.code,qty:mv.qty,unitPrice:mv.unitPrice,vatRate:(mv.vatRate==null?null:mv.vatRate),transport:(mv.transport==null?null:mv.transport),note:mv.note,country:mv.country||"",provider:mv.provider||"",providerRef:mv.providerRef||""};movements.push(clean);
+    {const k=(mv.channel||"")+"|"+(mv.batchRef||"");incoming[k]=(incoming[k]||0)+1;}
     if(mv.channel&&!st.channels.some(c=>c.name.toLowerCase()===mv.channel.toLowerCase()))newCh[mv.channel]=mv.dir;
     const nc=normCode(mv.code);
     if(nc&&!catSet.has(nc)){const e=stage[nc]||(stage[nc]={code:mv.code,name:mv._name||"",type:mv._type||"goods",seenCount:0,qty:0,firstDate:"",provider:mv.provider||"",providerRef:mv.providerRef||""});
@@ -652,7 +688,11 @@ function prepareMovements(raw,st,warnings0){
   }
   const staging=Object.values(stage);const newChannels=Object.entries(newCh).map(([name,dir])=>({name,dir}));
   const warnings=(warnings0||[]).slice();if(dup)warnings.push(dup+" exact duplicate"+(dup>1?"s":"")+" skipped.");
-  return {movements,staging,newChannels,warnings,stats:{add:movements.length,dup,newCodes:staging.length,skipped:0}};
+  const clash=[];
+  for(const k in incoming){if(!held[k])continue;const p=k.split("|");
+    clash.push({channel:p[0],batchRef:p[1],held:held[k],adding:incoming[k]});
+    warnings.push("Batch "+(p[1]||"(none)")+" on "+(p[0]||"—")+" already holds "+held[k]+" line"+(held[k]>1?"s":"")+"; this file adds "+incoming[k]+" more that are not exact duplicates. If this is a corrected re-import, delete the batch in the Ledger first — otherwise it will be counted twice.");}
+  return {movements,staging,newChannels,warnings,clash,stats:{add:movements.length,dup,newCodes:staging.length,skipped:0}};
 }
 function parseLedgerRows(rows,st){
   if(!rows||!rows.length)return {movements:[],staging:[],newChannels:[],warnings:["The file looks empty."],stats:{add:0,dup:0,newCodes:0,skipped:0}};
@@ -689,7 +729,7 @@ function parseSales(rows,override){
       if(!code||qty==null||qty<=0){if(code||String(r[cN]==null?"":r[cN]).trim())skipped++;continue;}
       const draw=String(r[cD]==null?"":r[cD]).trim();const d=normDate(draw.slice(0,10)||draw);
       const nm=String(r[cN]==null?"":r[cN]).trim();
-      raw.push({date:d,channel:"WooCommerce",dir:"out",batchRef:String(r[cO]==null?"":r[cO]).trim(),code,qty,unitPrice:parseNum(r[cP]),note:nm,_name:nm,_type:"book"});}
+      raw.push({date:d,channel:"WooCommerce",dir:"out",batchRef:String(r[cO]==null?"":r[cO]).trim(),code,qty,unitPrice:parseNum(r[cP]),note:nm,_name:nm,_type:guessType(code)});}
     return {raw,format:"woo",defDate:"",skipped,warnings};
   }
   // vektori
@@ -699,8 +739,8 @@ function parseSales(rows,override){
   for(const r of data){const name=String(r[cN]==null?"":r[cN]).trim();const code=String(r[cC]==null?"":r[cC]).trim();
     if(isNon(name,code))continue;if(!code){skipped++;continue;}
     const sp=parseNum(r[cQ])||0,rp=cRQ>=0?(parseNum(r[cRQ])||0):0;const net=sp-rp;if(net<=0){skipped++;continue;}
-    const sale=parseNum(r[cS])||0,ref=cR>=0?(parseNum(r[cR])||0):0;const unit=Math.round(((sale+ref)/net)*100)/100;
-    raw.push({date:defDate,channel:"Vektori",dir:"out",batchRef:"VEK-"+(defDate||"period"),code,qty:net,unitPrice:unit,note:name,_name:name,_type:"book"});}
+    const sale=parseNum(r[cS])||0,ref=cR>=0?(parseNum(r[cR])||0):0;const unit=Math.round(((sale+ref)/net)*1e6)/1e6;
+    raw.push({date:defDate,channel:"Vektori",dir:"out",batchRef:"VEK-"+(defDate||"period"),code,qty:net,unitPrice:unit,note:name,_name:name,_type:guessType(code)});}
   return {raw,format:"vektori",defDate,skipped,warnings};
 }
 
@@ -730,6 +770,28 @@ function stockByCode(st){const m={};for(const r of st.ledger){const k=normCode(r
 function lastOrderedByCode(st){const m={};for(const r of st.ledger){if(r.dir!=="in")continue;const k=normCode(r.code);if(!k)continue;if(!m[k]||(r.date||"")>m[k])m[k]=r.date||"";}return m;}
 function channelDir(st,name){const c=st.channels.find(x=>x.name===name);return c?c.dir:"in";}
 function channelMode(st,name){const c=st.channels.find(x=>x.name===name);return c?(c.mode||null):null;}
+/* One app-wide channel colour map. Every out-channel the app knows about — from the channel
+   list, the ledger and the finance records — in a fixed order: in-person first, then online,
+   then the rest alphabetically. Colour follows the channel, not its rank, so it survives a
+   filter, a re-sort and a move between tabs. */
+function channelPalette(st){
+  const md={},names=[];
+  const add=(n,m)=>{if(!n)return;if(names.indexOf(n)<0)names.push(n);if(m&&!md[n])md[n]=m;};
+  for(const c of (st.channels||[]))if(c.dir==="out"){md[c.name]=c.mode||"";add(c.name,c.mode||"");}
+  for(const r of (st.ledger||[]))if(r.dir==="out")add(r.channel,md[r.channel]||"");
+  for(const r of (st.finance||[]))add(r.channel,r.mode||"");
+  const rank=n=>md[n]==="in_person"?0:(md[n]==="online"?1:2);
+  names.sort((a,b)=>rank(a)-rank(b)||a.localeCompare(b));
+  const m={};names.forEach((n,i)=>{m[n]="var(--s"+((i%4)+1)+")";});
+  return {order:names,of:n=>m[n]||"var(--s4)"};}
+/* Out-movement kind, carried by the channel. All out lines consume stock — FIFO doesn't care
+   why the unit left — but only `sale` lines count as takings for analytics, margin and the
+   till reconciliation. A write-off or a stock-count correction should not depress ROI as if
+   it had been sold for nothing. */
+const KINDS=[["sale","Sale"],["adjustment","Adjustment"],["writeoff","Write-off"],["gift","Gift / sample"]];
+const KIND_LBL={sale:"Sale",adjustment:"Adjustment",writeoff:"Write-off",gift:"Gift / sample"};
+function kindMap(st){const m={};for(const c of (st.channels||[]))if(c.dir==="out")m[c.name]=c.kind||"sale";return m;}
+function isSaleKind(k){return !k||k==="sale";}
 
 /* ===================== Finance — Vektori Transaction Report ===================== */
 function parseFinanceRows(rows){
@@ -805,7 +867,7 @@ function isoMonday(iso){const d=new Date(iso+"T00:00:00Z");const wd=(d.getUTCDay
 function fbucketKey(date,grain){if(grain==="month")return date.slice(0,7);if(grain==="week")return isoMonday(date);return date;}
 function bucketFinance(recs,grain){const m={};for(const r of recs){const k=fbucketKey(r.date,grain);(m[k]=m[k]||[]).push(r);}
   return Object.keys(m).sort().map(k=>({k,gross:m[k].reduce((s,r)=>s+(+r.gross||0),0),net:m[k].reduce((s,r)=>s+(+r.net||0),0),recs:m[k]}));}
-function ledgerSalesInRange(st,start,end,chanSet){let rev=0,units=0;for(const r of st.ledger){if(r.dir!=="out")continue;if(chanSet&&!chanSet.has(r.channel))continue;const d=r.date||"";if(start&&d<start)continue;if(end&&d>end)continue;rev+=(+r.qty||0)*(+r.unitPrice||0);units+=+r.qty||0;}return {rev,units};}
+function ledgerSalesInRange(st,start,end,chanSet){const km=kindMap(st);let rev=0,units=0;for(const r of st.ledger){if(r.dir!=="out")continue;if(!isSaleKind(km[r.channel]))continue;if(chanSet&&!chanSet.has(r.channel))continue;const d=r.date||"";if(start&&d<start)continue;if(end&&d>end)continue;rev+=(+r.qty||0)*(+r.unitPrice||0);units+=+r.qty||0;}return {rev,units};}
 
 /* ---------- shared UI ---------- */
 function Icon({name}){const P={
@@ -935,7 +997,7 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
     show(editing?"Product saved":"Product added");onClose();}
   const canType=TYPES;
   const footer=html`<${React.Fragment}>
-    ${editing&&!fromStaging?html`<button class="btn danger" onClick=${()=>{if(stockHere!==0){show("Can't delete — "+stockHere+" on hand / ledger movements exist");return;}const n=st.ledger.filter(r=>normCode(r.code)===normCode(origCode)).length;if(n>0){show("Can't delete — "+n+" ledger movements reference this code");return;}act.deleteProduct(origCode);show("Product deleted");onClose();}}>Delete</button>`:null}
+    ${editing&&!fromStaging?html`<button class="btn danger" onClick=${()=>{if(stockHere!==0){show("Can't delete — "+stockHere+" on hand / ledger movements exist");return;}const n=st.ledger.filter(r=>normCode(r.code)===normCode(origCode)).length;if(n>0){show("Can't delete — "+n+" ledger movements reference this code");return;}act.deleteProduct(origCode);show("Product deleted",true);onClose();}}>Delete</button>`:null}
     <span class="sp"></span>
     <button class="btn" onClick=${onClose}>Cancel</button>
     <button class="btn primary" onClick=${commit} disabled=${!valid}>${fromStaging?"Confirm into catalogue":(editing?"Save changes":"Add product")}</button>
@@ -973,26 +1035,39 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
 /* ===================== Ledger ===================== */
 function Ledger({st,act,openMovement,openProduct}){
   const [fch,setFch]=useState("");const [fbatch,setFbatch]=useState("");const [q,setQ]=useState("");const [group,setGroup]=useState(false);
+  const [fFrom,setFFrom]=useState("");const [fTo,setFTo]=useState("");
+  const [qd,setQd]=useState("");const [lim,setLim]=useState(200);const [delBatch,setDelBatch]=useState(false);
+  /* the search box types freely; filtering runs a beat later so a long ledger doesn't stutter */
+  useEffect(()=>{const t=setTimeout(()=>setQd(q),180);return ()=>clearTimeout(t);},[q]);
+  useEffect(()=>{setLim(200);},[fch,fbatch,qd,fFrom,fTo,group]);
   const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
   const batches=useMemo(()=>[...new Set(st.ledger.map(r=>r.batchRef).filter(Boolean))],[st.ledger]);
-  const ql=q.trim().toLowerCase();
-  let rows=st.ledger.filter(r=>{
-    if(fch&&r.channel!==fch)return false;if(fbatch&&r.batchRef!==fbatch)return false;
-    if(ql){const p=byCode[normCode(r.code)];if(![r.code,r.batchRef,r.note,p&&p.name].join(" ").toLowerCase().includes(ql))return false;}
-    return true;});
-  rows=[...rows].sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.createdAt||"").localeCompare(a.createdAt||""));
-  const total=rows.reduce((a,r)=>a+(r.dir==="in"?1:-1)*(+r.qty||0),0);
-  function line(r){const p=byCode[normCode(r.code)];return html`<tr key=${r.id} class="clickable" onClick=${()=>openMovement(r)}>
-    <td class="mono">${fmtD(r.date)}</td><td><${Badge} dir=${r.dir}/> <span class="muted" style=${{marginLeft:"4px"}}>${r.channel}</span></td>
+  const km=useMemo(()=>kindMap(st),[st.channels]);
+  const rows=useMemo(()=>{const ql=qd.trim().toLowerCase();
+    const out=st.ledger.filter(r=>{
+      if(fch&&r.channel!==fch)return false;if(fbatch&&r.batchRef!==fbatch)return false;
+      const d=r.date||"";if(fFrom&&d<fFrom)return false;if(fTo&&d>fTo)return false;
+      if(ql){const p=byCode[normCode(r.code)];if(![r.code,r.batchRef,r.note,p&&p.name].join(" ").toLowerCase().includes(ql))return false;}
+      return true;});
+    out.sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.createdAt||"").localeCompare(a.createdAt||""));
+    return out;},[st.ledger,byCode,fch,fbatch,qd,fFrom,fTo]);
+  const total=useMemo(()=>rows.reduce((a,r)=>a+(r.dir==="in"?1:-1)*(+r.qty||0),0),[rows]);
+  const win=useMemo(()=>rows.slice(0,lim),[rows,lim]);
+  function line(r){const p=byCode[normCode(r.code)];const kd=r.dir==="out"?(km[r.channel]||"sale"):null;
+    return html`<tr key=${r.id} class="clickable" onClick=${()=>openMovement(r)}>
+    <td class="mono">${fmtD(r.date)}</td><td><${Badge} dir=${r.dir}/> <span class="muted" style=${{marginLeft:"4px"}}>${r.channel}</span>${kd&&!isSaleKind(kd)?html`<div class="meta">${KIND_LBL[kd]}</div>`:null}</td>
     <td class="code" onClick=${e=>{if(p){e.stopPropagation();openProduct(p);}}} style=${{cursor:p?"pointer":"default"}}>${r.code||"—"}</td>
     <td>${p?html`<span class="name">${p.name}</span>`:html`<span class="faint">unlinked</span>`}</td>
     <td class="num">${num(r.qty)}</td><td class="num mono">${r.unitPrice==null?"—":money(r.unitPrice)}</td>
     <td class="num mono">${r.unitPrice==null?"—":money((+r.qty||0)*(+r.unitPrice||0))}</td>
     <td class="code">${r.batchRef||"—"}${r.provider?html`<div class="meta">${r.provider}</div>`:null}</td>
     <td class="code">${r.providerRef||"—"}</td>
-    <td class="num"><button class="btn sm ghost rowact" onClick=${e=>{e.stopPropagation();act.deleteMovement(r.id);show&&show("Deleted");}}>Delete</button></td></tr>`;}
+    <td class="num"><button class="btn sm ghost rowact" onClick=${e=>{e.stopPropagation();act.deleteMovement(r.id);show&&show("Movement deleted",true);}}>Delete</button></td></tr>`;}
   const show=act.toast;
-  const grouped=useMemo(()=>{const g={};for(const r of rows){const k=r.batchRef||"(no batch)";(g[k]=g[k]||[]).push(r);}return Object.entries(g);},[rows]);
+  const grouped=useMemo(()=>{const g={};for(const r of win){const k=r.batchRef||"(no batch)";(g[k]=g[k]||[]).push(r);}return Object.entries(g);},[win]);
+  const more=rows.length>win.length?html`<div class="rowbetween" style=${{padding:"10px 14px",borderTop:"1px solid var(--line)"}}>
+    <span class="note">Showing ${num(win.length)} of ${num(rows.length)} rows</span>
+    <div class="hintrow"><button class="btn sm" onClick=${()=>setLim(l=>l+500)}>Show 500 more</button><button class="btn sm ghost" onClick=${()=>setLim(rows.length)}>Show all</button></div></div>`:null;
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Movements</h2></div>
       <div class="hintrow"><button class="btn" onClick=${()=>act.openImport()}><${Icon} name="upload"/>Import ledger</button><button class="btn primary" onClick=${()=>openMovement(null)}><${Icon} name="plus"/>New movement</button></div></div>
@@ -1000,15 +1075,23 @@ function Ledger({st,act,openMovement,openProduct}){
       <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, product, batch, note…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
       <select class="filter" value=${fch} onChange=${e=>setFch(e.target.value)}><option value="">All channels</option>${st.channels.map(c=>html`<option key=${c.id} value=${c.name}>${c.name}</option>`)}</select>
       <select class="filter" value=${fbatch} onChange=${e=>setFbatch(e.target.value)}><option value="">All batches</option>${batches.map(b=>html`<option key=${b} value=${b}>${b}</option>`)}</select>
+      <input type="date" class="filter" style=${{width:"auto"}} value=${fFrom} onInput=${e=>setFFrom(e.target.value)} title="From date"/>
+      <input type="date" class="filter" style=${{width:"auto"}} value=${fTo} onInput=${e=>setFTo(e.target.value)} title="To date"/>
+      ${fFrom||fTo?html`<button class="btn sm ghost" onClick=${()=>{setFFrom("");setFTo("");}}>Clear dates</button>`:null}
       <label class="switch" style=${{marginLeft:"4px"}}><input type="checkbox" checked=${group} onChange=${e=>setGroup(e.target.checked)}/> Group by batch</label>
-      <span style=${{flex:1}}></span><span class="note">${rows.length} rows · net ${num(total)} units</span>
+      ${fbatch?html`<button class="btn sm danger" onClick=${()=>setDelBatch(true)}>Delete batch…</button>`:null}
+      <span style=${{flex:1}}></span><span class="note">${num(rows.length)} rows · net ${num(total)} units</span>
     </div>
+    ${delBatch?html`<${ConfirmModal} title=${"Delete every line of "+fbatch+"?"} confirmLabel=${"Delete "+st.ledger.filter(r=>(r.batchRef||"")===fbatch).length+" lines"}
+      body=${html`<span>This removes all <b>${st.ledger.filter(r=>(r.batchRef||"")===fbatch).length}</b> movements carrying the batch reference <span class="code">${fbatch}</span> — the way to undo a mis-import in one go. Stock, margins and the Batches view all recompute from what is left, and the toast offers one Undo.</span>`}
+      onConfirm=${()=>{const n=st.ledger.filter(r=>(r.batchRef||"")===fbatch).length;act.deleteBatch(fbatch);setFbatch("");setDelBatch(false);show&&show("Deleted "+n+" lines of "+fbatch,true);}}
+      onClose=${()=>setDelBatch(false)}/>`:null}
     ${rows.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">${st.ledger.length===0?"No movements yet":"Nothing matches"}</div><div class="note">${st.ledger.length===0?"Record a purchase, or import a ledger file.":"Adjust the filters."}</div>${st.ledger.length===0?html`<button class="btn primary" onClick=${()=>openMovement(null)}><${Icon} name="plus"/>New movement</button>`:null}</div></div>`:
     group?html`<div style=${{display:"flex",flexDirection:"column",gap:"14px"}}>${grouped.map(([bk,list])=>html`<div class="panel" key=${bk}>
       <div class="panel-h"><h3><span class="code" style=${{fontSize:"13px"}}>${bk}</span></h3><span class="note">${list.length} lines · net ${num(list.reduce((a,r)=>a+(r.dir==="in"?1:-1)*(+r.qty||0),0))} units</span></div>
-      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Channel</th><th>Code</th><th>Product</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Line</th><th>Batch</th><th>Prov. ref</th><th></th></tr></thead><tbody>${list.map(line)}</tbody></table></div></div>`)}</div>`:
+      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Channel</th><th>Code</th><th>Product</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Line</th><th>Batch</th><th>Prov. ref</th><th></th></tr></thead><tbody>${list.map(line)}</tbody></table></div></div>`).concat(more?[more]:[])}</div>`:
     html`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Date</th><th>Channel</th><th>Code</th><th>Product</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Line</th><th>Batch</th><th>Prov. ref</th><th></th></tr></thead>
-      <tbody>${rows.map(line)}</tbody></table></div></div>`}
+      <tbody>${win.map(line)}</tbody></table></div>${more}</div>`}
   </div>`;}
 
 function MovementModal({st,act,editing,onClose,show}){
@@ -1025,7 +1108,7 @@ function MovementModal({st,act,editing,onClose,show}){
     act.saveMovement({id:f.id,date:f.date||today(),channel:f.channel,dir,batchRef:bref,code:f.code.trim(),qty:qn,unitPrice,vatRate:(vr==null?null:vr),transport:(tr==null?null:tr),note:f.note.trim(),country:(f.country||"").trim(),provider:(f.provider||"").trim(),providerRef:(f.providerRef||"").trim()});
     show(editing?"Movement updated":"Movement recorded");onClose();}
   const codes=st.catalogue.map(p=>p.code).filter(Boolean);
-  const footer=html`<${React.Fragment}>${editing?html`<button class="btn danger" onClick=${()=>{act.deleteMovement(editing.id);show("Deleted");onClose();}}>Delete</button>`:null}<span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${commit} disabled=${!valid}>${editing?"Save":"Record"}</button></${React.Fragment}>`;
+  const footer=html`<${React.Fragment}>${editing?html`<button class="btn danger" onClick=${()=>{act.deleteMovement(editing.id);show("Movement deleted",true);onClose();}}>Delete</button>`:null}<span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${commit} disabled=${!valid}>${editing?"Save":"Record"}</button></${React.Fragment}>`;
   return html`<${Modal} title=${editing?"Edit movement":"New movement"} onClose=${onClose} footer=${footer}>
     <div class="grid3">
       <${Field} label="Date">${html`<input type="date" value=${f.date} onInput=${e=>up("date",e.target.value)}/>`}</${Field}>
@@ -1056,23 +1139,25 @@ function MovementModal({st,act,editing,onClose,show}){
 function Staging({st,act,openProduct,show}){
   const stg=st.staging;
   return html`<div class="content">
-    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Unconfirmed items</h2>${stg.length?html`<button class="btn" onClick=${()=>{const n=stg.length;act.confirmAllStaging();show("Confirmed "+n+" into the catalogue");}}>Confirm all · ${stg.length}</button>`:null}</div>
+    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Unconfirmed items</h2>${stg.length?html`<button class="btn" onClick=${()=>{const n=stg.length;act.confirmAllStaging();show("Confirmed "+n+" into the catalogue",true);}}>Confirm all · ${stg.length}</button>`:null}</div>
     <div class="note" style=${{marginBottom:"14px",maxWidth:"620px"}}>Codes seen in a ledger import that aren't in the catalogue land here. Review each, complete its details, and confirm it into the catalogue — the code stays the anchor. Discard the ones you don't want.</div>
     ${stg.length===0?html`<div class="panel"><div class="empty"><${Icon} name="staging"/><div class="big">Staging is clear</div><div class="note">New codes from a ledger import will appear here for review.</div></div></div>`:
     html`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th class="num">Seen</th><th class="num">Qty</th><th>First date</th><th></th></tr></thead>
       <tbody>${stg.map(s=>html`<tr key=${normCode(s.code)} class="clickable" onClick=${()=>openProduct(s,true)}>
         <td class="code">${s.code}</td><td><span class="name">${s.name||html`<span class="faint">(no name)</span>`}</span></td>
         <td><span class="badge type">${typeLabel(s.type||"goods")}</span></td><td class="num">${num(s.seenCount||1)}</td><td class="num">${num(s.qty||0)}</td><td class="mono muted">${s.firstDate?fmtD(s.firstDate):"—"}</td>
-        <td class="num"><button class="btn sm" onClick=${e=>{e.stopPropagation();openProduct(s,true);}}>Confirm…</button> <button class="btn sm ghost rowact" onClick=${e=>{e.stopPropagation();act.discardStaging(s.code);show("Discarded");}}>Discard</button></td></tr>`)}</tbody></table></div></div>`}
+        <td class="num"><button class="btn sm" onClick=${e=>{e.stopPropagation();openProduct(s,true);}}>Confirm…</button> <button class="btn sm ghost rowact" onClick=${e=>{e.stopPropagation();act.discardStaging(s.code);show("Discarded "+s.code,true);}}>Discard</button></td></tr>`)}</tbody></table></div></div>`}
   </div>`;}
 
 /* ===================== Settings ===================== */
 function Settings({st,act,show}){
-  const [newCh,setNewCh]=useState({name:"",dir:"out",mode:""});
+  const [newCh,setNewCh]=useState({name:"",dir:"out",mode:"",kind:"sale"});
+  const sinfo=storageInfo();const lastExp=st.settings.lastExport||"";
   const vrs=st.settings.vatRates||{book:13.5,goods:25.5,other:0};
   const [vr,setVr]=useState(()=>({book:String(vrs.book??13.5),goods:String(vrs.goods??25.5),other:String(vrs.other??0)}));
   const fileRef=useRef();
   function exportCore(){const txt=JSON.stringify(makeCore(st),null,2);const name="rosa-mystica_core_"+today()+".json";
+    act.markExport();
     if(IN_FRAME||!downloadText(name,txt)){act.openExport("Core data — copy and keep safe",txt);}else show("Saved "+name);}
   function exportCatalogueCSV(){const head=["code","type","name","author","year","category","supplier","supplierRef","cost","price","sellable","online","reorderPoint","notes"];
     const rows=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost,p.price,p.sellable!==false,!!p.online,p.reorderPoint==null?"":p.reorderPoint,p.notes]);
@@ -1083,15 +1168,15 @@ function Settings({st,act,show}){
   function onOpen(e){const file=e.target.files&&e.target.files[0];if(!file)return;const r=new FileReader();
     r.onload=()=>{try{const o=JSON.parse(r.result);if(isEncrypted(o)){act.openDecrypt(o);return;}if(!isCoreLike(o))throw 0;act.replaceAll(o);show("Loaded "+file.name);}catch(err){show("Couldn't read that file");}};r.readAsText(file);e.target.value="";}
   const r2=x=>x==null?"":Math.round(x*100)/100;
-  function salesSheets(){const out=st.ledger.filter(r=>r.dir==="out");const byCode=indexCatalogue(st.catalogue);const prod={},chan={},month={};
+  function salesSheets(){const km=kindMap(st);const out=st.ledger.filter(r=>r.dir==="out"&&isSaleKind(km[r.channel]));const byCode=indexCatalogue(st.catalogue);const prod={},chan={},month={};
     for(const r of out){const q=+r.qty||0,v=q*(+r.unitPrice||0);const k=normCode(r.code);(prod[k]=prod[k]||{code:r.code,units:0,rev:0});prod[k].units+=q;prod[k].rev+=v;
       const c=r.channel||"—";(chan[c]=chan[c]||{units:0,rev:0});chan[c].units+=q;chan[c].rev+=v;const m=(r.date||"").slice(0,7);if(/^\d{4}-\d{2}$/.test(m)){(month[m]=month[m]||{units:0,rev:0});month[m].units+=q;month[m].rev+=v;}}
     const pr=[["Code","Name","Units","Revenue"]].concat(Object.values(prod).sort((a,b)=>b.rev-a.rev).map(p=>{const nm=byCode[normCode(p.code)];return [p.code,nm?nm.name:"",p.units,r2(p.rev)];}));
     const ch=[["Channel","Units","Revenue"]].concat(Object.entries(chan).sort((a,b)=>b[1].rev-a[1].rev).map(([c,v])=>[c,v.units,r2(v.rev)]));
     const mo=[["Month","Units","Revenue"]].concat(Object.keys(month).sort().map(m=>[m,month[m].units,r2(month[m].rev)]));
     return [{name:"By product",rows:pr},{name:"By channel",rows:ch},{name:"By month",rows:mo}];}
-  function invSheets(){const rows=computeInventory(st);const head=["Code","Name","Received","Sold","On hand","Sell-through %","Stock value","Realized profit","ROI %","Provider","Provider ref","Reorder point"];
-    const body=rows.slice().sort((a,b)=>b.onHandValue-a.onHandValue).map(r=>[r.code,r.name,r.received,r.sold,r.onHand,r.sellThrough==null?"":r2(r.sellThrough*100),r2(r.onHandValue),r2(r.realProfit),r.roi==null?"":r2(r.roi*100),r.provider,r.providerRef,r.reorderPoint||0]);
+  function invSheets(){const rows=computeInventory(st);const head=["Code","Name","Received","Sold","Not sold (adj.)","Not-sold cost","On hand","Sell-through %","Stock value","Realized profit","ROI %","Provider","Provider ref","Reorder point"];
+    const body=rows.slice().sort((a,b)=>b.onHandValue-a.onHandValue).map(r=>[r.code,r.name,r.received,r.sold,r.shrink||0,r2(r.shrinkCost||0),r.onHand,r.sellThrough==null?"":r2(r.sellThrough*100),r2(r.onHandValue),r2(r.realProfit),r.roi==null?"":r2(r.roi*100),r.provider,r.providerRef,r.reorderPoint||0]);
     return [{name:"Inventory",rows:[head].concat(body)}];}
   function catSheets(){const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost","Price","Sellable","Online","Reorder point","Notes"];
     const body=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost==null?"":+p.cost,p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
@@ -1102,15 +1187,17 @@ function Settings({st,act,show}){
   return html`<div class="content" style=${{maxWidth:"780px"}}>
     <div style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Configuration</h2></div>
     <div class="panel" style=${{marginBottom:"18px"}}>
-      <div class="panel-h"><h3>Channels</h3><span class="note">direction drives stock · mode splits in-person / online</span></div>
+      <div class="panel-h"><h3>Channels</h3><span class="note">direction drives stock · mode splits in-person / online · kind decides what counts as a sale</span></div>
       <div class="tablewrap"><table><tbody>
         ${st.channels.map(c=>html`<tr key=${c.id}><td><span class="name">${c.name}</span></td><td style=${{width:"96px"}}><${Badge} dir=${c.dir}/></td>
-          <td style=${{width:"160px"}}>${c.dir==="out"?html`<select value=${c.mode||""} onChange=${e=>act.setChannelMode(c.id,e.target.value)}><option value="">— unset —</option><option value="in_person">In-person</option><option value="online">Online</option></select>`:html`<span class="faint">—</span>`}</td>
+          <td style=${{width:"150px"}}>${c.dir==="out"?html`<select value=${c.mode||""} onChange=${e=>act.setChannelMode(c.id,e.target.value)}><option value="">— unset —</option><option value="in_person">In-person</option><option value="online">Online</option></select>`:html`<span class="faint">—</span>`}</td>
+          <td style=${{width:"150px"}}>${c.dir==="out"?html`<select value=${c.kind||"sale"} onChange=${e=>act.setChannelKind(c.id,e.target.value)}>${KINDS.map(k=>html`<option key=${k[0]} value=${k[0]}>${k[1]}</option>`)}</select>`:html`<span class="faint">—</span>`}</td>
           <td class="num" style=${{width:"90px"}}>${st.channels.length>1?html`<button class="btn sm ghost" onClick=${()=>{if(st.ledger.some(r=>r.channel===c.name)){show("Channel is used by ledger rows");return;}act.removeChannel(c.id);}}>Remove</button>`:null}</td></tr>`)}
         <tr><td><input type="text" placeholder="New channel name" value=${newCh.name} onInput=${e=>setNewCh(o=>({...o,name:e.target.value}))}/></td>
           <td><select value=${newCh.dir} onChange=${e=>setNewCh(o=>({...o,dir:e.target.value}))}><option value="in">In (stock +)</option><option value="out">Out (stock −)</option></select></td>
           <td>${newCh.dir==="out"?html`<select value=${newCh.mode} onChange=${e=>setNewCh(o=>({...o,mode:e.target.value}))}><option value="">— unset —</option><option value="in_person">In-person</option><option value="online">Online</option></select>`:html`<span class="faint">—</span>`}</td>
-          <td class="num"><button class="btn sm primary" disabled=${!newCh.name.trim()} onClick=${()=>{act.addChannel(newCh.name.trim(),newCh.dir,newCh.mode);setNewCh({name:"",dir:"out",mode:""});}}>Add</button></td></tr>
+          <td>${newCh.dir==="out"?html`<select value=${newCh.kind} onChange=${e=>setNewCh(o=>({...o,kind:e.target.value}))}>${KINDS.map(k=>html`<option key=${k[0]} value=${k[0]}>${k[1]}</option>`)}</select>`:html`<span class="faint">—</span>`}</td>
+          <td class="num"><button class="btn sm primary" disabled=${!newCh.name.trim()} onClick=${()=>{act.addChannel(newCh.name.trim(),newCh.dir,newCh.mode,newCh.kind);setNewCh({name:"",dir:"out",mode:"",kind:"sale"});}}>Add</button></td></tr>
       </tbody></table></div>
     </div>
     <div class="panel" style=${{marginBottom:"18px"}}>
@@ -1140,6 +1227,18 @@ function Settings({st,act,show}){
     <div class="panel" style=${{marginBottom:"18px"}}>
       <div class="panel-h"><h3>Your data</h3><span class="note">lives in this browser</span></div>
       <div style=${{padding:"16px",display:"flex",flexDirection:"column",gap:"12px"}}>
+        <div>
+          <div class="rowbetween" style=${{fontSize:"12.5px",marginBottom:"6px"}}>
+            <span><b>${fmtBytes(sinfo.bytes)}</b> <span class="faint">of about ${fmtBytes(sinfo.budget)} of browser storage</span></span>
+            <span class="mono faint">${sinfo.pct}%</span></div>
+          <div class=${"meter"+(sinfo.pct>=80?" hot":"")}><i style=${{width:Math.max(1.5,sinfo.pct)+"%"}}></i></div>
+          <div class="note" style=${{marginTop:"7px"}}>${sinfo.pct>=80?"Nearly full — export a core file and consider archiving closed years, or saves will start to fail.":"A ledger line costs roughly 260 characters, so this holds on the order of 19 000 movements alongside the catalogue."}</div>
+        </div>
+        <div class="rowbetween" style=${{fontSize:"12.5px",borderTop:"1px solid var(--line)",paddingTop:"11px"}}>
+          <span>Last core export <b>${lastExp?fmtD(lastExp):"never"}</b></span>
+          ${(()=>{const stale=!lastExp||(new Date()-new Date(lastExp+"T00:00:00"))/86400000>7;
+            return stale?html`<span class="err">⚠ back it up — this browser is the only copy</span>`:html`<span class="faint">up to date</span>`;})()}
+        </div>
         <div class="note">Everything is stored locally in this browser. Export a portable core file to back up or move between machines — optionally AES-256 encrypted with a passphrase.</div>
         <div class="hintrow">
           <button class="btn" onClick=${exportCore}><${Icon} name="download"/>Export core (.json)</button>
@@ -1209,6 +1308,7 @@ function LedgerImportModal({st,act,onClose,show}){
       <div class="kpi"><div class="k">Duplicates skipped</div><div class="v">${num(res.stats.dup)}</div></div>
       <div class="kpi"><div class="k">New channels</div><div class="v">${num(res.newChannels.length)}</div></div>
     </div>`:null}
+    ${res&&res.clash&&res.clash.length?html`<div class="err" style=${{lineHeight:"1.5"}}>${res.clash.map((c,i)=>html`<div key=${i}>⚠ <b>${c.batchRef||"(no batch)"}</b> on ${c.channel||"—"} already holds ${num(c.held)} line${c.held>1?"s":""} — importing adds ${num(c.adding)} more. Delete that batch in the Ledger first if this is a corrected re-import.</div>`)}</div>`:null}
     ${res&&res.warnings.length?html`<div class="note">${res.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
   </${Modal}>`;}
 
@@ -1240,6 +1340,7 @@ function SalesImportModal({st,act,onClose,show}){
       <div class="kpi"><div class="k">New → staging</div><div class="v">${num(prep.stats.newCodes)}</div></div>
       <div class="kpi"><div class="k">Duplicates skipped</div><div class="v">${num(prep.stats.dup)}</div></div>
     </div>`:null}
+    ${prep&&prep.clash&&prep.clash.length?html`<div class="err" style=${{lineHeight:"1.5"}}>${prep.clash.map((c,i)=>html`<div key=${i}>⚠ <b>${c.batchRef||"(no batch)"}</b> on ${c.channel||"—"} already holds ${num(c.held)} line${c.held>1?"s":""} — importing adds ${num(c.adding)} more. Delete that batch in the Ledger first if this is a corrected re-import.</div>`)}</div>`:null}
     ${prep&&prep.warnings.length?html`<div class="note">${prep.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
   </${Modal}>`;}
 
@@ -1248,69 +1349,120 @@ const WDAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 function wdOf(iso){if(!/^\d{4}-\d{2}-\d{2}/.test(String(iso||"")))return"";const d=new Date(String(iso).slice(0,10)+"T00:00:00Z");return isNaN(d)?"":WDAYS[d.getUTCDay()];}
 function monLbl(k){const p=String(k).split("-");return (MONTHS[(+p[1])-1]||"?")+" ’"+(p[0]||"").slice(2);}
 function niceTicks(max,count){max=Math.max(max,1);const s0=max/Math.max(1,count);const mag=Math.pow(10,Math.floor(Math.log10(s0)));const nm=s0/mag;let st2;if(nm<=1)st2=mag;else if(nm<=2)st2=2*mag;else if(nm<=5)st2=5*mag;else st2=10*mag;const out=[];for(let v=0;v<=max+1e-9;v+=st2)out.push(Math.round(v*1000)/1000);return out;}
+/* Shared period resolution — Analytics and Finance offer the same presets and mean the same
+   thing by them, so a figure in one tab can be compared with a figure in the other. */
+const PERIODS=[["all","All data"],["thismonth","This month"],["lastmonth","Last month"],["30","Last 30 days"],["90","Last 90 days"],["ytd","Year to date"],["custom","Custom…"]];
+function resolvePeriod(preset,from,to,minD,maxD){
+  const monB=(y,m)=>{const last=new Date(Date.UTC(y,m,0)).getUTCDate();return [y+"-"+pad2(m)+"-01",y+"-"+pad2(m)+"-"+pad2(last)];};
+  let start=minD,end=maxD;
+  if(preset==="custom"){start=from||minD;end=to||maxD;}
+  else if(preset==="thismonth"){const t=today();const b=monB(+t.slice(0,4),+t.slice(5,7));start=b[0];end=b[1];}
+  else if(preset==="lastmonth"){const t=today();let y=+t.slice(0,4),m=+t.slice(5,7)-1;if(m<1){m=12;y--;}const b=monB(y,m);start=b[0];end=b[1];}
+  else if(preset==="ytd"){const t=today();start=t.slice(0,4)+"-01-01";end=t;}
+  else if(preset==="30"||preset==="90"){const n=+preset;const d=new Date(today()+"T00:00:00Z");start=new Date(d.getTime()-(n-1)*86400000).toISOString().slice(0,10);end=today();}
+  return {start:start||"",end:end||""};}
+/* keep a cursor-following tooltip inside the window */
+function clampX(x){const w=(typeof window!=="undefined"&&window.innerWidth)||900;return Math.max(96,Math.min(x,w-96));}
+
 function Analytics({st,act,show}){
-  const [tip,setTip]=useState(null);const [metric,setMetric]=useState("rev");
+  const [tip,setTip]=useState(null);const [metric,setMetric]=useState("rev");const [basis,setBasis]=useState("gross");
+  const [preset,setPreset]=useState("all");const [from,setFrom]=useState("");const [to,setTo]=useState("");
+  const [showAll,setShowAll]=useState(false);
   const tp=label=>({onMouseEnter:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseMove:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseLeave:()=>setTip(null)});
   const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
-  const out=st.ledger.filter(r=>r.dir==="out");
-  const chModeMap={};st.channels.forEach(c=>chModeMap[c.name]=c.mode||null);
-  let units=0,rev=0;const chan={},monthMap={},prod={},modeMap={in_person:{units:0,rev:0},online:{units:0,rev:0},unset:{units:0,rev:0}};
-  for(const r of out){const q=+r.qty||0,v=q*(+r.unitPrice||0);units+=q;rev+=v;
-    const c=r.channel||"—";(chan[c]=chan[c]||{units:0,rev:0});chan[c].units+=q;chan[c].rev+=v;
-    const md=chModeMap[r.channel]||"unset";modeMap[md].units+=q;modeMap[md].rev+=v;
-    const m=(r.date||"").slice(0,7);if(/^\d{4}-\d{2}$/.test(m)){(monthMap[m]=monthMap[m]||{units:0,rev:0});monthMap[m].units+=q;monthMap[m].rev+=v;}
-    const k=normCode(r.code);(prod[k]=prod[k]||{code:r.code,units:0,rev:0});prod[k].units+=q;prod[k].rev+=v;}
-  const months=Object.keys(monthMap).sort().map(k=>({k,...monthMap[k]}));
-  const channels=Object.entries(chan).map(([c,v])=>({c,...v})).sort((a,b)=>b.rev-a.rev);
+  const km=useMemo(()=>kindMap(st),[st.channels]);
+  const modeOf=useMemo(()=>{const m={};for(const c of (st.channels||[]))m[c.name]=c.mode||null;return m;},[st.channels]);
+  const pal=useMemo(()=>channelPalette(st),[st.channels,st.ledger,st.finance]);
+  const outAll=useMemo(()=>st.ledger.filter(r=>r.dir==="out"),[st.ledger]);
+  const span=useMemo(()=>{const d=outAll.map(r=>r.date).filter(Boolean).sort();return [d.length?d[0]:"",d.length?d[d.length-1]:""];},[outAll]);
+  const per=resolvePeriod(preset,from,to,span[0],span[1]);const start=per.start,end=per.end;
+  /* One pass over the out-movements in range. Only sale-kind channels become takings; a
+     write-off or correction is tallied separately so it can be seen but never inflates sales. */
+  const A=useMemo(()=>{
+    const chan={},monthMap={},prod={},modeMap={in_person:{units:0,rev:0},online:{units:0,rev:0},unset:{units:0,rev:0}};
+    let units=0,rev=0,lines=0,exUnits=0,exLines=0;
+    for(const r of outAll){const d=r.date||"";if(start&&d<start)continue;if(end&&d>end)continue;
+      const q=+r.qty||0;const p=byCode[normCode(r.code)];
+      const v=q*(basis==="net"?netSaleUnit(r,saleRateFor(p,st)):(+r.unitPrice||0));
+      if(!isSaleKind(km[r.channel])){exUnits+=q;exLines++;continue;}
+      units+=q;rev+=v;lines++;
+      const c=r.channel||"—";(chan[c]=chan[c]||{units:0,rev:0});chan[c].units+=q;chan[c].rev+=v;
+      const md=modeOf[r.channel]||"unset";modeMap[md].units+=q;modeMap[md].rev+=v;
+      const m=d.slice(0,7);if(/^\d{4}-\d{2}$/.test(m)){(monthMap[m]=monthMap[m]||{units:0,rev:0});monthMap[m].units+=q;monthMap[m].rev+=v;}
+      const k=normCode(r.code);(prod[k]=prod[k]||{code:r.code,units:0,rev:0,ch:{}});prod[k].units+=q;prod[k].rev+=v;prod[k].ch[c]=(prod[k].ch[c]||0)+q;}
+    return {chan,monthMap,prod,modeMap,units,rev,lines,exUnits,exLines};
+  },[outAll,byCode,km,modeOf,start,end,basis,st.settings]);
+  const months=Object.keys(A.monthMap).sort().map(k=>Object.assign({k},A.monthMap[k]));
+  const channels=pal.order.filter(n=>A.chan[n]).concat(Object.keys(A.chan).filter(n=>pal.order.indexOf(n)<0).sort())
+    .map(n=>Object.assign({c:n},A.chan[n]));
   const mv=o=>metric==="rev"?o.rev:o.units;const mfmt=x=>metric==="rev"?money(x):num(x);
-  const top=Object.values(prod).sort((a,b)=>mv(b)-mv(a)).slice(0,12);
-  const unmatched=Object.keys(prod).filter(k=>k&&!byCode[k]);
-  function report(){const head=["code","name","units","revenue",...channels.map(c=>c.c+" units")];
-    const rows=Object.values(prod).sort((a,b)=>b.rev-a.rev).map(p=>{const nm=byCode[normCode(p.code)];
-      const perCh=channels.map(c=>out.filter(r=>normCode(r.code)===normCode(p.code)&&r.channel===c.c).reduce((a,r)=>a+(+r.qty||0),0));
-      return [p.code,nm?nm.name:"",p.units,Math.round(p.rev*100)/100,...perCh];});
+  const prods=Object.values(A.prod).sort((a,b)=>mv(b)-mv(a));
+  const top=showAll?prods:prods.slice(0,12);
+  const unmatched=Object.keys(A.prod).filter(k=>k&&!byCode[k]);
+  const basisNote=basis==="net"?"net of VAT":"incl. VAT";
+  function report(){const head=["code","name","units","revenue ("+basisNote+")"].concat(channels.map(c=>c.c+" units"));
+    const rows=prods.map(p=>{const nm=byCode[normCode(p.code)];
+      return [p.code,nm?nm.name:"",p.units,Math.round(p.rev*100)/100].concat(channels.map(c=>p.ch[c.c]||0));});
     const csv=toCSV(head,rows);if(IN_FRAME||!downloadText("rosa-mystica_sales_"+today()+".csv",csv,"text/csv"))act.openExport("Sales report — CSV",csv);else show("Saved CSV");}
-  function monthChart(){ if(!months.length)return html`<div class="empty"><div class="note">No dated sales yet.</div></div>`;
+  function monthChart(){ if(!months.length)return html`<div class="empty"><div class="note">No dated sales in this period.</div></div>`;
     const W=720,H=230,padL=54,padR=14,padT=18,padB=28,iw=W-padL-padR,ih=H-padT-padB;
     const maxV=Math.max(1,...months.map(mv));const ticks=niceTicks(maxV,4);let topv=ticks[ticks.length-1];const ts=ticks.length>1?ticks[1]-ticks[0]:topv;while(topv<=maxV){topv+=ts;ticks.push(topv);}
-    const step=iw/months.length,bw=Math.min(54,step*0.6),y=v=>padT+ih-(v/topv)*ih;
+    const step=iw/months.length,bw=Math.min(54,step*0.6),y=v=>padT+ih-(v/topv)*ih;const skip=months.length>18;
     return html`<svg viewBox="0 0 ${W} ${H}" style=${{width:"100%",height:"auto"}}>
       ${ticks.map(t=>html`<g key=${t}><line x1=${padL} x2=${W-padR} y1=${y(t)} y2=${y(t)} style=${{stroke:"var(--line)"}}/><text x=${padL-8} y=${y(t)+3} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${metric==="rev"?Math.round(t):num(t)}</text></g>`)}
-      ${months.map((m,i)=>{const cx=padL+step*i+step/2,yy=y(mv(m));return html`<g key=${m.k} ...${tp(monLbl(m.k)+" · "+mfmt(mv(m)))}>
+      ${months.map((m,i)=>{const cx=padL+step*i+step/2,yy=y(mv(m));const hide=skip&&(i%2);
+        return html`<g key=${m.k} ...${tp(monLbl(m.k)+" · "+mfmt(mv(m))+(metric==="rev"?" "+basisNote:"")+" · "+num(m.units)+" units")}>
         <rect x=${cx-bw/2} y=${yy} width=${bw} height=${Math.max(0,padT+ih-yy)} rx="4" style=${{fill:"var(--accent)"}}/>
-        <text x=${cx} y=${H-padB+15} text-anchor="middle" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${monLbl(m.k)}</text></g>`;})}
+        <text x=${cx} y=${H-padB+15} text-anchor="middle" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${hide?"":monLbl(m.k)}</text></g>`;})}
     </svg>`;}
   function channelChart(){if(!channels.length)return null;const maxV=Math.max(1,...channels.map(mv));
     return html`<div style=${{display:"flex",flexDirection:"column",gap:"13px"}}>${channels.map(c=>html`<div key=${c.c}>
-      <div style=${{display:"flex",justifyContent:"space-between",marginBottom:"5px",fontSize:"13px"}}><span style=${{fontWeight:"500"}}>${c.c}</span><span class="mono">${mfmt(mv(c))}</span></div>
-      <div style=${{height:"10px",borderRadius:"6px",background:"var(--surface-2)",overflow:"hidden"}} ...${tp(c.c+" · "+num(c.units)+" units · "+money(c.rev))}><div style=${{height:"100%",width:(mv(c)/maxV*100)+"%",background:"var(--accent)",borderRadius:"6px"}}></div></div></div>`)}</div>`;}
+      <div style=${{display:"flex",justifyContent:"space-between",marginBottom:"5px",fontSize:"13px"}}>
+        <span style=${{display:"inline-flex",alignItems:"center",gap:"7px",fontWeight:"500"}}><span style=${{width:"10px",height:"10px",borderRadius:"3px",background:pal.of(c.c),flex:"none"}}></span>${c.c}</span>
+        <span class="mono">${mfmt(mv(c))}</span></div>
+      <div style=${{height:"10px",borderRadius:"6px",background:"var(--surface-2)",overflow:"hidden"}} ...${tp(c.c+" · "+num(c.units)+" units · "+money(c.rev)+" "+basisNote)}><div style=${{height:"100%",width:(mv(c)/maxV*100)+"%",background:pal.of(c.c),borderRadius:"6px"}}></div></div></div>`)}</div>`;}
+  function shareBar(){
+    const items=[["In-person",A.modeMap.in_person,"var(--s1)"],["Online",A.modeMap.online,"var(--s2)"]]
+      .concat((A.modeMap.unset.units||A.modeMap.unset.rev)?[["Unassigned",A.modeMap.unset,"var(--s3)"]]:[]);
+    const tot=items.reduce((a,it)=>a+mv(it[1]),0);
+    if(tot<=0)return html`<div class="note">Nothing in this period.</div>`;
+    return html`<div>
+      <div style=${{display:"flex",height:"24px",borderRadius:"7px",overflow:"hidden",gap:"2px",background:"var(--surface-2)"}}>
+        ${items.map(it=>{const pc=mv(it[1])/tot*100;return pc<=0?null:html`<div key=${it[0]} ...${tp(it[0]+" · "+Math.round(pc)+"% · "+num(it[1].units)+" units · "+money(it[1].rev)+" "+basisNote)} style=${{width:pc+"%",background:it[2]}}></div>`;})}
+      </div>
+      <div class="hintrow" style=${{marginTop:"11px",gap:"18px"}}>${items.map(it=>html`<span key=${it[0]} style=${{display:"inline-flex",alignItems:"center",gap:"7px",fontSize:"12.5px"}}>
+        <span style=${{width:"10px",height:"10px",borderRadius:"3px",background:it[2],flex:"none"}}></span><span style=${{fontWeight:"500"}}>${it[0]}</span>
+        <span class="mono">${Math.round(mv(it[1])/tot*100)}%</span><span class="mono faint">${mfmt(mv(it[1]))}</span></span>`)}</div></div>`;}
   return html`<div class="content">
-    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Sales & analytics</h2>
+    <div class="rowbetween" style=${{marginBottom:"14px"}}><h2 style=${{fontSize:"22px"}}>Sales & analytics</h2>
       <div class="hintrow"><div class="seg"><button aria-pressed=${metric==="rev"} onClick=${()=>setMetric("rev")}>Revenue</button><button aria-pressed=${metric==="units"} onClick=${()=>setMetric("units")}>Units</button></div>
-        ${out.length?html`<button class="btn" onClick=${report}><${Icon} name="download"/>Sales report</button>`:null}
+        ${metric==="rev"?html`<div class="seg"><button aria-pressed=${basis==="gross"} onClick=${()=>setBasis("gross")} title="Including VAT — comparable with till takings">Gross</button><button aria-pressed=${basis==="net"} onClick=${()=>setBasis("net")} title="VAT stripped at each product's rate — comparable with margins">Net</button></div>`:null}
+        <select class="filter" style=${{width:"auto"}} value=${preset} onChange=${e=>setPreset(e.target.value)}>${PERIODS.map(p=>html`<option key=${p[0]} value=${p[0]}>${p[1]}</option>`)}</select>
+        ${A.lines?html`<button class="btn" onClick=${report}><${Icon} name="download"/>Sales report</button>`:null}
         <button class="btn primary" onClick=${()=>act.openSalesImport()}><${Icon} name="upload"/>Import sales</button></div></div>
-    ${out.length===0?html`<div class="panel"><div class="empty"><${Icon} name="analytics"/><div class="big">No sales yet</div><div class="note" style=${{maxWidth:"440px"}}>Import a Vektori or WooCommerce export — each line becomes an out-movement in the ledger, and this tab compartmentalises them by channel, month and product.</div><button class="btn primary" onClick=${()=>act.openSalesImport()}><${Icon} name="upload"/>Import sales</button></div></div>`:html`<${React.Fragment}>
+    ${preset==="custom"?html`<div class="hintrow" style=${{marginBottom:"12px"}}><label class="note">From</label><input type="date" style=${{width:"auto"}} value=${from} onInput=${e=>setFrom(e.target.value)}/><label class="note">to</label><input type="date" style=${{width:"auto"}} value=${to} onInput=${e=>setTo(e.target.value)}/><span class="note">blank = open-ended</span></div>`:null}
+    ${outAll.length===0?html`<div class="panel"><div class="empty"><${Icon} name="analytics"/><div class="big">No sales yet</div><div class="note" style=${{maxWidth:"440px"}}>Import a Vektori or WooCommerce export — each line becomes an out-movement in the ledger, and this tab compartmentalises them by channel, month and product.</div><button class="btn primary" onClick=${()=>act.openSalesImport()}><${Icon} name="upload"/>Import sales</button></div></div>`:html`<${React.Fragment}>
+    <div class="note" style=${{marginBottom:"14px"}}>Showing <b>${fmtD(start)||"—"}</b> → <b>${fmtD(end)||"—"}</b> · ${num(A.lines)} sale line${A.lines===1?"":"s"} · revenue shown <b>${basisNote}</b></div>
     <div class="kpis" style=${{marginBottom:"20px"}}>
-      <div class="kpi"><div class="k">Revenue</div><div class="v">${money(rev)}</div><div class="f">${num(out.length)} lines</div></div>
-      <div class="kpi"><div class="k">Units sold</div><div class="v">${num(units)}</div></div>
-      <div class="kpi"><div class="k">Channels</div><div class="v">${num(channels.length)}</div><div class="f">${channels.map(c=>c.c).join(" · ")}</div></div>
-      <div class="kpi"><div class="k">Unmatched codes</div><div class="v">${num(unmatched.length)}</div><div class="f">${unmatched.length?"in staging for review":"all linked"}</div></div>
+      <div class="kpi"><div class="k">Revenue</div><div class="v">${money(A.rev)}</div><div class="f">${basisNote}</div></div>
+      <div class="kpi"><div class="k">Units sold</div><div class="v">${num(A.units)}</div><div class="f">${num(prods.length)} codes</div></div>
+      <div class="kpi"><div class="k">Channels</div><div class="v">${num(channels.length)}</div><div class="f">${channels.map(c=>c.c).join(" · ")||"—"}</div></div>
+      ${A.exLines?html`<div class="kpi"><div class="k">Not sales</div><div class="v">${num(A.exUnits)}</div><div class="f">${num(A.exLines)} adjustment/write-off line${A.exLines===1?"":"s"}, excluded</div></div>`
+        :html`<div class="kpi"><div class="k">Unmatched codes</div><div class="v">${num(unmatched.length)}</div><div class="f">${unmatched.length?"in staging for review":"all linked"}</div></div>`}
     </div>
     <div class="anrow" style=${{display:"grid",gridTemplateColumns:"1.5fr 1fr",gap:"18px",marginBottom:"18px"}}>
-      <div class="panel"><div class="panel-h"><h3>By month</h3><span class="note">${metric==="rev"?"revenue":"units"}</span></div><div style=${{padding:"12px 14px"}}>${monthChart()}</div></div>
+      <div class="panel"><div class="panel-h"><h3>By month</h3><span class="note">${metric==="rev"?"revenue · "+basisNote:"units"}</span></div><div style=${{padding:"12px 14px"}}>${monthChart()}</div></div>
       <div class="panel"><div class="panel-h"><h3>By channel</h3><span class="note">${metric==="rev"?"revenue":"units"}</span></div><div style=${{padding:"16px"}}>${channelChart()}</div></div>
     </div>
-    <div class="panel" style=${{marginBottom:"18px"}}><div class="panel-h"><h3>In-person vs online</h3><span class="note">${metric==="rev"?"revenue":"units"} by channel mode</span></div>
-      <div style=${{padding:"16px"}}>${(()=>{const items=[["In-person",modeMap.in_person],["Online",modeMap.online]].concat((modeMap.unset.units||modeMap.unset.rev)?[["Unassigned",modeMap.unset]]:[]);const mm=Math.max(1,...items.map(it=>mv(it[1])));
-        return html`<div style=${{display:"flex",flexDirection:"column",gap:"13px"}}>${items.map(([lbl,o])=>html`<div key=${lbl}>
-          <div style=${{display:"flex",justifyContent:"space-between",marginBottom:"5px",fontSize:"13px"}}><span style=${{fontWeight:"500"}}>${lbl}</span><span class="mono">${mfmt(mv(o))}</span></div>
-          <div style=${{height:"10px",borderRadius:"6px",background:"var(--surface-2)",overflow:"hidden"}} ...${tp(lbl+" · "+num(o.units)+" units · "+money(o.rev))}><div style=${{height:"100%",width:(mv(o)/mm*100)+"%",background:"var(--accent)",borderRadius:"6px"}}></div></div></div>`)}</div>`;})()}
-        <div class="note" style=${{marginTop:"10px"}}>Set each channel's mode in Settings → Channels. Vektori is in-person; WooCommerce is online.</div></div></div>
-    <div class="panel"><div class="panel-h"><h3>Top products</h3><span class="note">by ${metric==="rev"?"revenue":"units"}</span></div>
+    <div class="panel" style=${{marginBottom:"18px"}}><div class="panel-h"><h3>In-person vs online</h3><span class="note">share of ${metric==="rev"?"revenue":"units"} by channel mode</span></div>
+      <div style=${{padding:"16px"}}>${shareBar()}
+        <div class="note" style=${{marginTop:"12px"}}>Set each channel's mode and kind in Settings → Channels. Vektori is in-person; WooCommerce is online.</div></div></div>
+    <div class="panel"><div class="panel-h"><h3>${showAll?"All products":"Top products"}</h3>
+      <div class="hintrow"><span class="note">by ${metric==="rev"?"revenue":"units"}</span>${prods.length>12?html`<button class="btn sm ghost" onClick=${()=>setShowAll(v=>!v)}>${showAll?"Show top 12":"Show all "+num(prods.length)}</button>`:null}</div></div>
       <div class="tablewrap"><table><thead><tr><th>Code</th><th>Product</th><th class="num">Units</th><th class="num">Revenue</th></tr></thead>
       <tbody>${top.map(p=>{const nm=byCode[normCode(p.code)];return html`<tr key=${normCode(p.code)}><td class="code">${p.code}</td><td>${nm?html`<span class="name">${nm.name}</span>`:html`<span class="faint">unlinked</span>`}</td><td class="num">${num(p.units)}</td><td class="num mono">${money(p.rev)}</td></tr>`;})}</tbody></table></div></div>
     </${React.Fragment}>`}
-    ${tip?html`<div class="charttip" style=${{left:tip.x+"px",top:tip.y+"px"}}>${Array.isArray(tip.label)?tip.label.map((l,i)=>html`<div key=${i}>${l}</div>`):tip.label}</div>`:null}
+    ${tip?html`<div class="charttip" style=${{left:clampX(tip.x)+"px",top:tip.y+"px"}}>${Array.isArray(tip.label)?tip.label.map((l,i)=>html`<div key=${i}>${l}</div>`):tip.label}</div>`:null}
   </div>`;}
 
 /* VAT helpers — purchase cost carries an explicit per-line rate; sale price is stripped
@@ -1327,7 +1479,7 @@ function batchTransportInfo(st){const q={},t={};
   const per={},total={};for(const b in t){total[b]=t[b];if(q[b]>0&&t[b]>0)per[b]=t[b]/q[b];}
   return {per,total};}
 function computeInventory(st){
-  const byCode=indexCatalogue(st.catalogue);const groups={};const tperU=batchTransportInfo(st).per;
+  const byCode=indexCatalogue(st.catalogue);const groups={};const tperU=batchTransportInfo(st).per;const km=kindMap(st);
   for(const r of st.ledger){const k=normCode(r.code);if(!k)continue;(groups[k]=groups[k]||[]).push(r);}
   const rows=[];
   for(const k in groups){const mvs=groups[k];const p=byCode[k];const saleRate=saleRateFor(p,st);
@@ -1335,38 +1487,42 @@ function computeInventory(st){
     const outs=mvs.filter(m=>m.dir==="out").sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0)}));
     const received=lots.reduce((a,l)=>a+l.qty,0);
-    let sold=0,cogs=0,revenue=0,revenueNet=0,matchedNetRev=0,unmatched=0;
-    for(const o of outs){const priceGross=+o.unitPrice||0;const priceNet=netSaleUnit(o,saleRate);let q=+o.qty||0;sold+=q;revenue+=q*priceGross;revenueNet+=q*priceNet;
-      for(const l of lots){if(q<=0)break;if(l.left<=0)continue;const take=Math.min(l.left,q);l.left-=take;q-=take;cogs+=take*l.cost;matchedNetRev+=take*priceNet;}
-      if(q>0)unmatched+=q;}
-    const onHand=received-sold;const onHandValue=lots.reduce((a,l)=>a+l.left*l.cost,0);
+    let sold=0,shrink=0,cogs=0,shrinkCost=0,revenue=0,revenueNet=0,matchedNetRev=0,unmatched=0;
+    /* every out line consumes stock in FIFO order; only a sale line books takings and COGS */
+    for(const o of outs){const isSale=isSaleKind(km[o.channel]);const priceGross=+o.unitPrice||0;const priceNet=netSaleUnit(o,saleRate);let q=+o.qty||0;
+      if(isSale){sold+=q;revenue+=q*priceGross;revenueNet+=q*priceNet;}else shrink+=q;
+      for(const l of lots){if(q<=0)break;if(l.left<=0)continue;const take=Math.min(l.left,q);l.left-=take;q-=take;
+        if(isSale){cogs+=take*l.cost;matchedNetRev+=take*priceNet;}else shrinkCost+=take*l.cost;}
+      if(q>0&&isSale)unmatched+=q;}
+    const onHand=received-sold-shrink;const onHandValue=lots.reduce((a,l)=>a+l.left*l.cost,0);
     const realProfit=matchedNetRev-cogs;const roi=cogs>0?realProfit/cogs:null;
     const lastIn=ins.length?ins[ins.length-1]:null;
     const avgCost=received>0?lots.reduce((a,l)=>a+l.qty*l.cost,0)/received:null;
     rows.push({code:mvs[0].code,name:p?p.name:"",inCat:!!p,sellable:p?p.sellable!==false:true,
-      received,sold,onHand,unmatched,sellThrough:received>0?sold/received:null,onHandValue,cogs,revenue,revenueNet,realProfit,roi,avgCost,reorderPoint:(p&&p.reorderPoint!=null)?+p.reorderPoint:0,
+      received,sold,shrink,shrinkCost,onHand,unmatched,sellThrough:received>0?sold/received:null,onHandValue,cogs,revenue,revenueNet,realProfit,roi,avgCost,reorderPoint:(p&&p.reorderPoint!=null)?+p.reorderPoint:0,
       provider:(p&&p.supplier)||(lastIn?lastIn.provider:"")||"",providerRef:(p&&p.supplierRef)||(lastIn?lastIn.providerRef:"")||"",lastInDate:lastIn?lastIn.date:""});}
   return rows;
 }
 /* Per-invoice (batch) progress — FIFO lot→batch attribution from the one ledger. */
 function computeBatches(st){
-  const byCode=indexCatalogue(st.catalogue);const insBy={},outsBy={};const ti=batchTransportInfo(st);const tperU=ti.per;const ttotal=ti.total;
+  const byCode=indexCatalogue(st.catalogue);const insBy={},outsBy={};const ti=batchTransportInfo(st);const tperU=ti.per;const ttotal=ti.total;const km=kindMap(st);
   for(const r of st.ledger){const k=normCode(r.code);if(!k)continue;if(r.dir==="in")(insBy[k]=insBy[k]||[]).push(r);else if(r.dir==="out")(outsBy[k]=outsBy[k]||[]).push(r);}
   const agg={},meta={};
   for(const k in insBy){const p=byCode[k];const saleRate=saleRateFor(p,st);
     const ins=insBy[k].slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const outs=(outsBy[k]||[]).slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0),batchRef:m.batchRef||"(no batch)",date:m.date||"",provider:m.provider||"",country:m.country||""}));
-    for(const l of lots){const b=l.batchRef;(agg[b]=agg[b]||{received:0,investedNet:0,sold:0,cogsNet:0,netRev:0});
+    for(const l of lots){const b=l.batchRef;(agg[b]=agg[b]||{received:0,investedNet:0,sold:0,shrink:0,cogsNet:0,shrinkCost:0,netRev:0});
       agg[b].received+=l.qty;agg[b].investedNet+=l.qty*l.cost;
       const mm=(meta[b]=meta[b]||{date:l.date,provider:l.provider,country:l.country,codes:new Set()});mm.codes.add(k);
       if(l.date&&(!mm.date||l.date<mm.date))mm.date=l.date;if(!mm.provider&&l.provider)mm.provider=l.provider;if(!mm.country&&l.country)mm.country=l.country;}
-    for(const o of outs){const priceNet=netSaleUnit(o,saleRate);let q=+o.qty||0;
-      for(const l of lots){if(q<=0)break;if(l.left<=0)continue;const take=Math.min(l.left,q);l.left-=take;q-=take;const a=agg[l.batchRef];a.sold+=take;a.cogsNet+=take*l.cost;a.netRev+=take*priceNet;}}
+    for(const o of outs){const isSale=isSaleKind(km[o.channel]);const priceNet=netSaleUnit(o,saleRate);let q=+o.qty||0;
+      for(const l of lots){if(q<=0)break;if(l.left<=0)continue;const take=Math.min(l.left,q);l.left-=take;q-=take;const a=agg[l.batchRef];
+        if(isSale){a.sold+=take;a.cogsNet+=take*l.cost;a.netRev+=take*priceNet;}else{a.shrink+=take;a.shrinkCost+=take*l.cost;}}}
   }
   const rows=Object.keys(agg).map(b=>{const a=agg[b];const mm=meta[b]||{};const profit=a.netRev-a.cogsNet;
     return {batchRef:b,date:mm.date||"",provider:mm.provider||"",country:mm.country||"",codes:mm.codes?mm.codes.size:0,
-      received:a.received,sold:a.sold,onHand:a.received-a.sold,sellThrough:a.received>0?a.sold/a.received:null,transport:(ttotal[b]||0),
+      received:a.received,sold:a.sold,shrink:a.shrink,shrinkCost:a.shrinkCost,onHand:a.received-a.sold-a.shrink,sellThrough:a.received>0?a.sold/a.received:null,transport:(ttotal[b]||0),
       investedNet:a.investedNet,recoupedNet:a.netRev,cogsNet:a.cogsNet,profit,roi:a.investedNet>0?profit/a.investedNet:null};});
   rows.sort((x,y)=>(y.date||"").localeCompare(x.date||""));
   return rows;
@@ -1375,8 +1531,8 @@ function Inventory({st,act,show}){
   const [view,setView]=useState("stock");const [q,setQ]=useState("");const [fstock,setFstock]=useState("");const [sort,setSort]=useState({k:"onHandValue",d:-1});
   const rows=useMemo(()=>computeInventory(st),[st]);
   const batches=useMemo(()=>computeBatches(st),[st]);
-  let onHand=0,stockVal=0,profit=0,cogs=0,inStock=0,recvT=0,soldT=0;
-  for(const r of rows){onHand+=r.onHand;stockVal+=r.onHandValue;profit+=r.realProfit;cogs+=r.cogs;if(r.onHand>0)inStock++;if(r.received>0){recvT+=r.received;soldT+=r.sold;}}
+  let onHand=0,stockVal=0,profit=0,cogs=0,inStock=0,recvT=0,soldT=0,shrinkU=0,shrinkC=0;
+  for(const r of rows){onHand+=r.onHand;stockVal+=r.onHandValue;profit+=r.realProfit;cogs+=r.cogs;shrinkU+=(r.shrink||0);shrinkC+=(r.shrinkCost||0);if(r.onHand>0)inStock++;if(r.received>0){recvT+=r.received;soldT+=r.sold;}}
   const roi=cogs>0?profit/cogs:null;const sellThrough=recvT>0?soldT/recvT:null;
   const ql=q.trim().toLowerCase();
   let list=rows.filter(r=>{if(fstock==="in"&&!(r.onHand>0))return false;if(fstock==="out"&&r.onHand>0)return false;
@@ -1395,11 +1551,12 @@ function Inventory({st,act,show}){
       <div class="seg"><button aria-pressed=${view==="stock"} onClick=${()=>setView("stock")}>Stock</button><button aria-pressed=${view==="reorder"} onClick=${()=>setView("reorder")}>Reorder${reorder.length?" · "+reorder.length:""}</button><button aria-pressed=${view==="batches"} onClick=${()=>setView("batches")}>Batches${batches.length?" · "+batches.length:""}</button></div></div>
     ${rows.length===0?html`<div class="panel"><div class="empty"><${Icon} name="inventory"/><div class="big">Nothing to track yet</div><div class="note" style=${{maxWidth:"440px"}}>Record purchases (in) and sales (out) in the ledger — FIFO stock, sell-through and ROI build from the one ledger.</div></div></div>`:
     view==="stock"?html`<${React.Fragment}>
-    <div class="kpis" style=${{marginBottom:"20px"}}>
+    <div class=${"kpis"+(shrinkU?" five":"")} style=${{marginBottom:"20px"}}>
       <div class="kpi"><div class="k">On hand</div><div class="v">${num(onHand)}</div><div class="f">${num(inStock)} codes in stock</div></div>
       <div class="kpi"><div class="k">Stock value (FIFO)</div><div class="v">${money(stockVal)}</div></div>
       <div class="kpi"><div class="k">Realized profit</div><div class="v">${money(profit)}</div><div class="f">ROI ${roi==null?"—":pct(roi)}</div></div>
       <div class="kpi"><div class="k">Sell-through</div><div class="v">${sellThrough==null?"—":pct(sellThrough)}</div><div class="f">${num(soldT)} sold / ${num(recvT)} recv</div></div>
+      ${shrinkU?html`<div class="kpi"><div class="k">Left without a sale</div><div class="v">${num(shrinkU)}</div><div class="f">${money(shrinkC)} at cost · adjustments, write-offs, gifts</div></div>`:null}
     </div>
     <div class="toolbar">
       <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, name, provider…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
@@ -1407,10 +1564,11 @@ function Inventory({st,act,show}){
       <span style=${{flex:1}}></span><span class="note">${list.length} codes</span>
     </div>
     <div class="panel"><div class="tablewrap"><table><thead><tr>
-      ${Th("code","Code")}${Th("name","Product")}${Th("received","Recv","num")}${Th("sold","Sold","num")}${Th("onHand","On hand","num")}${Th("sellThrough","Sell-thru","num")}${Th("onHandValue","Stock value","num")}${Th("roi","ROI","num")}</tr></thead>
+      ${Th("code","Code")}${Th("name","Product")}${Th("received","Recv","num")}${Th("sold","Sold","num")}${shrinkU?Th("shrink","Not sold","num"):null}${Th("onHand","On hand","num")}${Th("sellThrough","Sell-thru","num")}${Th("onHandValue","Stock value","num")}${Th("roi","ROI","num")}</tr></thead>
       <tbody>${list.map(r=>html`<tr key=${normCode(r.code)}><td class="code">${r.code}</td>
         <td>${r.inCat?html`<span class="name">${r.name}</span>`:html`<span class="faint">unlinked</span>`}${r.providerRef?html`<div class="meta">ref ${r.providerRef}</div>`:null}</td>
         <td class="num">${num(r.received)}</td><td class="num">${num(r.sold)}</td>
+        ${shrinkU?html`<td class="num faint" title="units out on adjustment / write-off / gift lines">${r.shrink?num(r.shrink):"—"}</td>`:null}
         <td class="num" style=${{fontWeight:"500",color:r.onHand<0?"var(--bad)":"inherit"}}>${num(r.onHand)}</td>
         <td class="num">${r.sellThrough==null?"—":pct(r.sellThrough)}</td><td class="num mono">${money(r.onHandValue)}</td>
         <td class="num">${r.roi==null?"—":pct(r.roi)}</td></tr>`)}</tbody></table></div></div>
@@ -1423,8 +1581,8 @@ function Inventory({st,act,show}){
     </${React.Fragment}>`:html`<${React.Fragment}>
     ${batches.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"470px"}}>Purchases that share a batch reference form an invoice. Record or import in-movements and each invoice's progress — sold vs received, capital recouped, ROI — builds here.</div></div></div>`:html`<${React.Fragment}>
     <div class="note" style=${{marginBottom:"14px",maxWidth:"660px"}}>Each row is one invoice / batch. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT.</div>
-    <div class="panel"><div class="tablewrap"><table><thead><tr><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num">Sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
-      <tbody>${batches.map(b=>html`<tr key=${b.batchRef}><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${b.transport?money(b.transport):"—"}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"—":pct(b.roi)}</td></tr>`)}</tbody></table></div></div>
+    <div class="panel"><div class="tablewrap"><table><thead><tr><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num">Sold</th><th class="num" title="units out on adjustment / write-off / gift lines">Not sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
+      <tbody>${batches.map(b=>html`<tr key=${b.batchRef}><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}</td><td class="num faint">${b.shrink?num(b.shrink):"—"}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${b.transport?money(b.transport):"—"}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"—":pct(b.roi)}</td></tr>`)}</tbody></table></div></div>
     </${React.Fragment}>`}
     </${React.Fragment}>`}
   </div>`;}
@@ -1457,16 +1615,59 @@ function CatalogueImportModal({st,act,onClose,show}){
     ${res&&res.warnings.length?html`<div class="note">${res.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
   </${Modal}>`;}
 
+/* Stands in for the whole app when the saved payload cannot be read. While this is on screen
+   nothing is written to storage, so the unreadable bytes remain there to be rescued. */
+function RecoverScreen({info,onEmpty,onLoaded}){
+  const [err,setErr]=useState("");const fileRef=useRef();
+  const bytes=info.raw?info.raw.length:0;
+  function dl(){const name="rosa-mystica_unreadable_"+today()+".txt";
+    if(IN_FRAME||!downloadText(name,info.raw||"","text/plain"))setErr("This browser blocked the download — copy the text from the box below instead.");else setErr("");}
+  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");const rd=new FileReader();
+    rd.onerror=()=>setErr("Couldn't read that file.");
+    rd.onload=()=>{try{const o=JSON.parse(String(rd.result));
+      if(isEncrypted(o)){setErr("That core file is encrypted. Choose “Start with an empty app”, then open it from Settings → Open core file.");return;}
+      const core=isCoreLike(o);
+      if(!core&&!(o&&typeof o==="object"&&(Array.isArray(o.catalogue)||Array.isArray(o.ledger)))){setErr("That doesn't look like a Rosa Mystica core file.");return;}
+      onLoaded(migrate(Object.assign({},blankState(),core?readCore(o):o)));}
+      catch(x){setErr("That file isn't readable JSON.");}};
+    rd.readAsText(f);e.target.value="";}
+  return html`<div class="content" style=${{maxWidth:"760px",margin:"0 auto",padding:"44px 26px 60px"}}>
+    <div class="rowbetween" style=${{marginBottom:"14px"}}><h2 style=${{fontSize:"22px"}}>Rosa Mystica — saved data unreadable</h2></div>
+    <div class="panel">
+      <div class="panel-h"><h3>Nothing has been overwritten</h3><span class="note">${bytes?fmtBytes(bytes)+" still in this browser":"no payload found"}</span></div>
+      <div style=${{padding:"16px 18px",display:"flex",flexDirection:"column",gap:"14px"}}>
+        <div class="err">${info.err}</div>
+        <div class="note">${bytes?"The payload below is exactly what is stored. Save a copy before you go on — a truncated file can often be repaired by hand, and this is the only moment it is still available.":"There was nothing readable to load."}</div>
+        <div class="hintrow">
+          ${bytes?html`<button class="btn primary" onClick=${dl}><${Icon} name="download"/>Download the raw data</button>`:null}
+          <button class="btn" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Open a core file…</button>
+          <input ref=${fileRef} type="file" accept=".json" style=${{display:"none"}} onChange=${onFile}/>
+        </div>
+        ${err?html`<div class="err">${err}</div>`:null}
+        ${bytes?html`<textarea class="mono" readOnly=${true} rows="9" style=${{fontSize:"11px",lineHeight:"1.45"}} value=${info.raw.slice(0,20000)}></textarea>`:null}
+        ${bytes>20000?html`<div class="note">Showing the first 20 000 characters; the download holds all of it.</div>`:null}
+        <div class="rowbetween" style=${{borderTop:"1px solid var(--line)",paddingTop:"13px"}}>
+          <span class="note">Starting empty replaces the payload above with a fresh, empty state.</span>
+          <button class="btn danger" onClick=${onEmpty}>Start with an empty app</button></div>
+      </div></div></div>`;}
+
 function App(){
-  const [st,setSt]=useState(load);
+  const boot=useMemo(()=>loadState(),[]);
+  const [recover,setRecover]=useState(boot.ok?null:{raw:boot.raw,err:boot.err});
+  const [st,setSt]=useState(()=>boot.ok?boot.state:blankState());
   const [tab,setTab]=useState("overview");
   const [modal,setModal]=useState(null);
   const [toast,setToast]=useState("");
   const [q,setQ]=useState("");
+  const [saveErr,setSaveErr]=useState("");
+  const undoRef=useRef(null);
+  const [undoable,setUndoable]=useState(null);
   const [theme,setTheme]=useState(()=>st.settings.theme||"system");
-  useEffect(()=>{save(st);},[st]);
+  /* while the recovery screen is up nothing is written — the unreadable payload stays intact */
+  useEffect(()=>{if(recover)return;const r=save(st);setSaveErr(r.ok?"":r.msg);},[st,recover]);
   useEffect(()=>{const el=document.documentElement;if(theme==="system")el.removeAttribute("data-theme");else el.setAttribute("data-theme",theme);setSt(s=>s.settings.theme===theme?s:{...s,settings:{...s.settings,theme}});},[theme]);
-  const show=msg=>{setToast(msg);clearTimeout(window.__rmt);window.__rmt=setTimeout(()=>setToast(""),2200);};
+  const show=(msg,undo)=>{setToast(msg);setUndoable(undo?1:null);clearTimeout(window.__rmt);window.__rmt=setTimeout(()=>{setToast("");setUndoable(null);},undo?7000:2200);};
+  const doUndo=()=>{const prev=undoRef.current;if(!prev)return;undoRef.current=null;setSt(prev);show("Undone");};
 
   const act={
     toast:show, go:setTab, openImport:()=>setModal({type:"ledgerimport"}), openSalesImport:()=>setModal({type:"salesimport"}), openCatImport:()=>setModal({type:"catimport"}), openFinanceImport:()=>setModal({type:"financeimport"}),
@@ -1487,13 +1688,16 @@ function App(){
       let staging=s.staging;
       if(fromStaging)staging=staging.filter(x=>normCode(x.code)!==nc&&normCode(x.code)!==oc);
       return {...s,catalogue,ledger,staging};}),
-    deleteProduct:code=>setSt(s=>({...s,catalogue:s.catalogue.filter(p=>normCode(p.code)!==normCode(code))})),
+    deleteProduct:code=>setSt(s=>{undoRef.current=s;return {...s,catalogue:s.catalogue.filter(p=>normCode(p.code)!==normCode(code))};}),
     saveMovement:rec=>setSt(s=>{const now=new Date().toISOString();
       if(rec.id&&s.ledger.some(r=>r.id===rec.id))return {...s,ledger:s.ledger.map(r=>r.id===rec.id?{...r,...rec}:r)};
       return {...s,ledger:[...s.ledger,{...rec,id:rec.id||uid(),createdAt:now}]};}),
-    deleteMovement:id=>setSt(s=>({...s,ledger:s.ledger.filter(r=>r.id!==id)})),
-    discardStaging:code=>setSt(s=>({...s,staging:s.staging.filter(x=>normCode(x.code)!==normCode(code))})),
-    addChannel:(name,dir,mode)=>setSt(s=>s.channels.some(c=>c.name===name)?s:{...s,channels:[...s.channels,{id:uid(),name,dir,mode:(mode!==undefined?(mode||null):(dir==="out"?inferMode(name):null))}]}),
+    deleteMovement:id=>setSt(s=>{undoRef.current=s;return {...s,ledger:s.ledger.filter(r=>r.id!==id)};}),
+    deleteBatch:ref=>setSt(s=>{undoRef.current=s;return {...s,ledger:s.ledger.filter(r=>(r.batchRef||"")!==ref)};}),
+    discardStaging:code=>setSt(s=>{undoRef.current=s;return {...s,staging:s.staging.filter(x=>normCode(x.code)!==normCode(code))};}),
+    addChannel:(name,dir,mode,kind)=>setSt(s=>s.channels.some(c=>c.name===name)?s:{...s,channels:[...s.channels,{id:uid(),name,dir,mode:(mode!==undefined?(mode||null):(dir==="out"?inferMode(name):null)),kind:(kind!==undefined?(kind||null):(dir==="out"?"sale":null))}]}),
+    setChannelKind:(id,kind)=>setSt(s=>({...s,channels:s.channels.map(c=>c.id===id?{...c,kind:(kind||null)}:c)})),
+    markExport:()=>setSt(s=>({...s,settings:{...s.settings,lastExport:new Date().toISOString().slice(0,10)}})),
     removeChannel:id=>setSt(s=>({...s,channels:s.channels.filter(c=>c.id!==id)})),
     replaceAll:raw=>setSt(s=>{const d=readCore(raw);return migrate({...blankState(),...d});}),
     openExport:(title,text)=>setModal({type:"export",title,text}),
@@ -1505,13 +1709,14 @@ function App(){
       for(const it of items){const nc=normCode(it.code);const clean={code:it.code,type:it.type,name:it.name,author:it.author,year:it.year,category:it.category,supplier:it.supplier,supplierRef:it.supplierRef,cost:it.cost,price:it.price,sellable:it.sellable,online:it.online,reorderPoint:it.reorderPoint,notes:it.notes};
         if(idx[nc]!=null)cat[idx[nc]]=Object.assign({},cat[idx[nc]],clean,{updatedAt:now});else{idx[nc]=cat.length;cat.push(Object.assign({createdAt:now,updatedAt:now},clean));}}
       return {...s,catalogue:cat};}),
-    confirmAllStaging:()=>setSt(s=>{const now=new Date().toISOString();const cat=s.catalogue.slice();const have=new Set(cat.map(p=>normCode(p.code)));
+    confirmAllStaging:()=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();const cat=s.catalogue.slice();const have=new Set(cat.map(p=>normCode(p.code)));
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
         cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:true,online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
       return {...s,catalogue:cat,staging:[]};}),
     importLedger:parsed=>setSt(s=>{const now=new Date().toISOString();
       const channels=s.channels.slice();
-      for(const nc of parsed.newChannels)if(!channels.some(c=>c.name.toLowerCase()===nc.name.toLowerCase()))channels.push({id:uid(),name:nc.name,dir:nc.dir,mode:(nc.dir==="out"?inferMode(nc.name):null)});
+      undoRef.current=s;
+      for(const nc of parsed.newChannels)if(!channels.some(c=>c.name.toLowerCase()===nc.name.toLowerCase()))channels.push({id:uid(),name:nc.name,dir:nc.dir,mode:(nc.dir==="out"?inferMode(nc.name):null),kind:(nc.dir==="out"?"sale":null)});
       const ledger=[...s.ledger,...parsed.movements.map(m=>({...m,id:uid(),createdAt:now}))];
       const catSet=new Set(s.catalogue.map(p=>normCode(p.code)));
       const staging=s.staging.slice();
@@ -1529,6 +1734,10 @@ function App(){
   const cycleTheme=()=>setTheme(p=>p==="system"?"light":p==="light"?"dark":"system");
   const where={overview:"Hub",catalogue:"Catalogue",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",settings:"Settings"}[tab];
 
+  if(recover)return html`<${RecoverScreen} info=${recover}
+    onEmpty=${()=>{setSt(blankState());setRecover(null);}}
+    onLoaded=${s=>{setSt(s);setRecover(null);}}/>`;
+
   return html`<div class="app">
     <nav class="rail">
       <div class="brand"><span class="mk"><${Icon} name="rose"/></span><div><div class="nm">Rosa Mystica</div><div class="sub">${st.settings.shop}</div></div></div>
@@ -1538,6 +1747,9 @@ function App(){
       <div class="railfoot"><button class="iconbtn" title="Theme" onClick=${cycleTheme}>${themeLabel} <span style=${{textTransform:"capitalize"}}>${theme}</span></button></div>
     </nav>
     <div class="main">
+      ${saveErr?html`<div class="savebar" role="alert"><span>⚠ ${saveErr}</span><span class="sp"></span>
+        <button class="btn sm" onClick=${()=>{const r=save(st);setSaveErr(r.ok?"":r.msg);if(r.ok)show("Saved");}}>Try again</button>
+        <button class="btn sm primary" onClick=${()=>{setTab("settings");}}>Export a backup</button></div>`:null}
       <div class="topbar"><div><div class="where">${where}</div><h1>${where==="Hub"?"Rosa Mystica":where}</h1></div><div class="sp"></div></div>
       ${tab==="overview"?html`<${Overview} st=${st} go=${setTab}/>`:null}
       ${tab==="catalogue"?html`<${Catalogue} st=${st} act=${act} openProduct=${openProduct} q=${q} setQ=${setQ}/>`:null}
@@ -1551,14 +1763,14 @@ function App(){
     ${modal&&modal.type==="product"?html`<${ProductModal} st=${st} act=${act} editing=${modal.editing} fromStaging=${modal.fromStaging} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="movement"?html`<${MovementModal} st=${st} act=${act} editing=${modal.editing} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="export"?html`<${ExportModal} title=${modal.title} text=${modal.text} onClose=${()=>setModal(null)}/>`:null}
-    ${modal&&modal.type==="encsave"?html`<${PassModal} mode="save" onClose=${()=>setModal(null)} onSubmit=${async pass=>{const text=JSON.stringify(await encryptCore(st,pass),null,2);const name="rosa-mystica_core_"+today()+".enc.json";if(IN_FRAME||!downloadText(name,text)){setModal({type:"export",title:"Encrypted core — copy and keep safe",text});}else{setModal(null);show("Saved "+name);}}}/>`:null}
+    ${modal&&modal.type==="encsave"?html`<${PassModal} mode="save" onClose=${()=>setModal(null)} onSubmit=${async pass=>{const text=JSON.stringify(await encryptCore(st,pass),null,2);const name="rosa-mystica_core_"+today()+".enc.json";act.markExport();if(IN_FRAME||!downloadText(name,text)){setModal({type:"export",title:"Encrypted core — copy and keep safe",text});}else{setModal(null);show("Saved "+name);}}}/>`:null}
     ${modal&&modal.type==="encopen"?html`<${PassModal} mode="open" onClose=${()=>setModal(null)} onSubmit=${async pass=>{const d=await decryptCore(modal.payload,pass);act.replaceAll(d);setModal(null);show("Data loaded");}}/>`:null}
     ${modal&&modal.type==="ledgerimport"?html`<${LedgerImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="salesimport"?html`<${SalesImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="catimport"?html`<${CatalogueImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="financeimport"?html`<${FinanceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="wipe"?html`<${ConfirmModal} title="Erase everything?" confirmLabel="Erase all data" body=${html`<span>This clears the catalogue, ledger and staging in this browser. Export a backup first if you might want it back.</span>`} onConfirm=${act.wipe} onClose=${()=>setModal(null)}/>`:null}
-    ${toast?html`<div class="toast">${toast}</div>`:null}
+    ${toast?html`<div class="toast"><span>${toast}</span>${undoable&&undoRef.current?html`<button class="ubtn" onClick=${doUndo}>Undo</button>`:null}</div>`:null}
   </div>`;}
 
 /* ===================== Finance tab ===================== */
@@ -1597,23 +1809,17 @@ function Finance({st,act,show}){
   const purch=st.ledger.filter(r=>r.dir==="in"&&r.vatRate!=null&&+r.vatRate>0&&r.date);
   const allDates=recsAll.map(r=>r.date).concat(purch.map(r=>r.date)).filter(Boolean).sort();
   const minD=allDates.length?allDates[0]:"";const maxD=allDates.length?allDates[allDates.length-1]:"";
-  const monB=(y,m)=>{const last=new Date(Date.UTC(y,m,0)).getUTCDate();return [y+"-"+pad2(m)+"-01",y+"-"+pad2(m)+"-"+pad2(last)];};
-  let start=minD,end=maxD;
-  if(preset==="custom"){start=from||minD;end=to||maxD;}
-  else if(preset==="thismonth"){const t=today();const b=monB(+t.slice(0,4),+t.slice(5,7));start=b[0];end=b[1];}
-  else if(preset==="lastmonth"){const t=today();let y=+t.slice(0,4),m=+t.slice(5,7)-1;if(m<1){m=12;y--;}const b=monB(y,m);start=b[0];end=b[1];}
+  const per=resolvePeriod(preset,from,to,minD,maxD);const start=per.start,end=per.end;
   const recs=recsAll.filter(r=>(!start||r.date>=start)&&(!end||r.date<=end));
   const agg=financeAgg(recs);const buckets=bucketFinance(recs,grain);const tx=agg.salesPcs+agg.refundPcs;
   /* Channel series. Colour follows the channel itself and is assigned from ALL finance data,
      so narrowing the period never repaints the surviving series. Fixed slot order, never cycled. */
-  const chanAll=(()=>{const seen=[],md={};
-    for(const r of recsAll){const c=r.channel||"—";if(seen.indexOf(c)<0){seen.push(c);md[c]=r.mode||"";}}
-    const rank=c=>md[c]==="in_person"?0:(md[c]==="online"?1:2);
-    return seen.slice().sort((a,b)=>rank(a)-rank(b)||a.localeCompare(b));})();
+  const pal=useMemo(()=>channelPalette(st),[st.channels,st.ledger,st.finance]);
+  const chanAll=pal.order.filter(n=>recsAll.some(r=>(r.channel||"—")===n));
   const seriesNames=chanAll.length>4?chanAll.slice(0,3).concat(["Other"]):chanAll;
   const cumSeries=(()=>{const m={};seriesNames.forEach(nm=>m[nm]=new Array(buckets.length).fill(0));
     buckets.forEach((b,i)=>{for(const r of b.recs){const c=r.channel||"—";const nm=seriesNames.indexOf(c)>=0?c:"Other";if(m[nm])m[nm][i]+=(+r.gross||0);}});
-    return seriesNames.map((nm,si)=>{let run=0;return {name:nm,color:"var(--s"+((si%4)+1)+")",vals:m[nm].map(v=>(run+=v))};});})();
+    return seriesNames.map(nm=>{let run=0;return {name:nm,color:(nm==="Other"?"var(--s4)":pal.of(nm)),vals:m[nm].map(v=>(run+=v))};});})();
   const rates=Object.keys(agg.vat).sort((a,b)=>(+a)-(+b));const pays=Object.keys(agg.pay);
   const inPerson=new Set(st.channels.filter(c=>c.mode==="in_person").map(c=>c.name));
   const led=ledgerSalesInRange(st,start,end,inPerson);const variance=agg.gross-led.rev;
@@ -1675,7 +1881,7 @@ function Finance({st,act,show}){
     <div class="rowbetween" style=${{marginBottom:"14px",flexWrap:"wrap",gap:"10px"}}><h2 style=${{fontSize:"22px"}}>Financial tracker</h2>
       <div class="hintrow">
         <div class="seg"><button aria-pressed=${grain==="day"} onClick=${()=>setGrain("day")}>Day</button><button aria-pressed=${grain==="week"} onClick=${()=>setGrain("week")}>Week</button><button aria-pressed=${grain==="month"} onClick=${()=>setGrain("month")}>Month</button></div>
-        <select value=${preset} onChange=${e=>setPreset(e.target.value)}><option value="all">All data</option><option value="thismonth">This month</option><option value="lastmonth">Last month</option><option value="custom">Custom…</option></select>
+        <select class="filter" style=${{width:"auto"}} value=${preset} onChange=${e=>setPreset(e.target.value)}>${PERIODS.map(p=>html`<option key=${p[0]} value=${p[0]}>${p[1]}</option>`)}</select>
         <button class="btn" onClick=${exportX}><${Icon} name="download"/>Export</button>
         <button class="btn primary" onClick=${()=>act.openFinanceImport()}><${Icon} name="upload"/>Import</button>
       </div></div>
@@ -1751,7 +1957,7 @@ function Finance({st,act,show}){
           ${postRecs.length?html`<div class="tablewrap"><table><tbody>${postRecs.map(e=>html`<tr key=${e.id}><td class="note">${fmtD(e.date)}</td><td class="num mono">${money(e.amount)}</td><td>${e.note||""}</td><td class="num"><button class="btn sm ghost rowact" onClick=${()=>{act.removePostage(e.id);show("Removed");}}>Remove</button></td></tr>`)}<tr style=${{fontWeight:"600",borderTop:"2px solid var(--line)"}}><td>Total paid</td><td class="num mono">${money(postPaid)}</td><td></td><td></td></tr></tbody></table></div>`:html`<div class="note faint">No postage entries in range yet.</div>`}
         </div>
       </div></div>`:null}
-    ${tip?html`<div class="charttip" style=${{left:tip.x+"px",top:tip.y+"px"}}>${Array.isArray(tip.label)?tip.label.map((l,i)=>html`<div key=${i}>${l}</div>`):tip.label}</div>`:null}
+    ${tip?html`<div class="charttip" style=${{left:clampX(tip.x)+"px",top:tip.y+"px"}}>${Array.isArray(tip.label)?tip.label.map((l,i)=>html`<div key=${i}>${l}</div>`):tip.label}</div>`:null}
   </div>`;}
 function FinanceImportModal({st,act,onClose,show}){
   const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();

@@ -34,6 +34,20 @@ Lives in this browser (localStorage). Export a portable **core file** (`.json`),
 AES-256 encrypted, from Settings. Catalogue and ledger also export to CSV. No data is stored in
 this repository — only the app code.
 
+Two rules make that safe to rely on. A payload the app **cannot read is never replaced**: instead of
+starting blank over it, a recovery screen shows the raw bytes, offers them as a download and waits —
+nothing is written until you choose. And a **refused save is reported**, not swallowed: if the browser
+is out of room, a banner says so and stays up, rather than letting a day's work look saved. Settings
+shows how much of the ~4.8 MB budget is used (a ledger line costs about 260 characters, so roughly
+19 000 movements fit) and how long it has been since the last core export.
+
+## Out-movement kinds
+Each out-channel carries a **kind** — sale, adjustment, write-off or gift. Every out line consumes
+stock in FIFO order, because a unit that left the shelf has left it either way; only a *sale* line
+books takings, COGS and margin. A breakage or a stock-count correction therefore shows up as units
+*not sold* (with their cost) in Inventory and Batches, instead of quietly depressing ROI and
+sell-through as a sale at zero.
+
 ## Inventory (FIFO) & invoice progress
 An Inventory tab derives, from the one ledger, FIFO stock per code — received, sold, on-hand,
 sell-through, FIFO cost, realized profit and ROI (only units matched to a cost lot count), plus a
@@ -87,3 +101,8 @@ same totals plus daily detail.
    margins and the Batches view; Transport column in the ledger template, movement form and exports. ✅
 10. Finance charts: weekday names above the dates on the day axis, and a **Cumulative income** view —
     stacked areas by channel, with a validated categorical palette for light and dark. ✅
+11. Hardening pass: unreadable data is never overwritten (recovery screen) and a refused save is
+    reported, not swallowed; **out-movement kinds** so a write-off consumes stock without counting as a
+    sale; a windowed Ledger with date filters, batch deletion and Undo; an Analytics period control and
+    a gross/net basis; one app-wide channel colour; staged types read from the code; and Vektori unit
+    prices kept at full precision. ✅
