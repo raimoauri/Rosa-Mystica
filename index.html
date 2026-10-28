@@ -725,8 +725,8 @@ function prepareMovements(raw,st,warnings0){
   if(matchedRef)warnings.push(matchedRef+" line"+(matchedRef>1?"s":"")+" matched to existing products by the provider's own reference.");
   return {movements,staging,newChannels,warnings,clash,stats:{add:movements.length,dup,newCodes:staging.length,skipped:0,matchedRef}};
 }
-function parseLedgerRows(rows,st){
-  if(!rows||!rows.length)return {movements:[],staging:[],newChannels:[],warnings:["The file looks empty."],stats:{add:0,dup:0,newCodes:0,skipped:0}};
+function mapLedgerRows(rows,st){
+  if(!rows||!rows.length)return {raw:[],skipped:0,warnings:["The file looks empty."],col:{}};
   const H=(rows[0]||[]).map(normH);const col={};const used={};
   for(const [f,pats] of LEDGER_COLS){let idx=-1;for(const p of pats){for(let i=0;i<H.length;i++){if(used[i])continue;if(H[i]===p||H[i].indexOf(p)===0){idx=i;break;}}if(idx>=0)break;}if(idx>=0){col[f]=idx;used[idx]=1;}}
   const g=(r,f)=>col[f]==null?"":(r[col[f]]==null?"":r[col[f]]);
@@ -741,7 +741,12 @@ function parseLedgerRows(rows,st){
     raw.push({date,channel,dir,batchRef,code,qty,unitPrice,vatRate,transport,note:String(g(r,"note")||"").trim(),country,provider,providerRef,_name:String(g(r,"name")||"").trim(),_type:(String(g(r,"type")||"").trim().toLowerCase()||"goods")});}
   const warnings=[];if(col.code==null)warnings.push("No Product code column found — is this the ledger template?");
   if(skipped)warnings.push(skipped+" row"+(skipped>1?"s":"")+" skipped (missing code or quantity).");
-  const prep=prepareMovements(raw,st,warnings);prep.stats.skipped=skipped;return prep;
+  return {raw,skipped,warnings,col};
+}
+function parseLedgerRows(rows,st){
+  if(!rows||!rows.length)return {movements:[],staging:[],newChannels:[],warnings:["The file looks empty."],stats:{add:0,dup:0,newCodes:0,skipped:0}};
+  const m=mapLedgerRows(rows,st);
+  const prep=prepareMovements(m.raw,st,m.warnings);prep.stats.skipped=m.skipped;return prep;
 }
 /* Sales import: Vektori Product Sales Report (monthly aggregate) or WooCommerce orders (per line). */
 function parseSales(rows,override){
@@ -977,7 +982,7 @@ function Catalogue({st,act,openProduct,q,setQ}){
   const Th=(k,label,cls)=>html`<th class=${"sortable"+(cls?" "+cls:"")} onClick=${()=>S(k)}>${label}${arrow(k)}</th>`;
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Products</h2></div>
-      <div class="hintrow"><button class="btn" onClick=${()=>act.openCatImport()}><${Icon} name="upload"/>Import catalogue</button><button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button></div></div>
+      <div class="hintrow">${st.catalogue.length?html`<button class="btn" onClick=${()=>act.openRecode()}>Re-code…</button>`:null}<button class="btn" onClick=${()=>act.openCatImport()}><${Icon} name="upload"/>Import catalogue</button><button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button></div></div>
     <div class="toolbar">
       <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, name, author…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
       <select class="filter" value=${ftype} onChange=${e=>setFtype(e.target.value)}><option value="">All types</option>${TYPES.map(([v,l])=>html`<option key=${v} value=${v}>${l}</option>`)}</select>
@@ -1461,7 +1466,8 @@ function Invoices({st,act,show,openProduct}){
     const rows=drafts.slice().sort((a,b)=>(b.date||"").localeCompare(a.date||""));
     return html`<${React.Fragment}>
     <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Invoices</h2>
-      <button class="btn primary" onClick=${()=>{const n=blankInvoice(st);act.saveInvoice(n);setSel(n.id);}}><${Icon} name="plus"/>New invoice</button></div>
+      <div class="hintrow"><button class="btn" onClick=${()=>act.openInvoiceImport()}><${Icon} name="upload"/>Import invoices…</button>
+      <button class="btn primary" onClick=${()=>{const n=blankInvoice(st);act.saveInvoice(n);setSel(n.id);}}><${Icon} name="plus"/>New invoice</button></div></div>
     <div class="note" style=${{marginBottom:"14px",maxWidth:"660px"}}>Enter a supplier invoice here before it reaches the ledger: the header carries the tax treatment, the freight and any duty; the lines carry what you were billed and what actually arrived. Posting is blocked until the draft agrees with the total printed on the invoice.</div>
     ${rows.length===0?html`<div class="panel"><div class="empty"><${Icon} name="invoice"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"430px"}}>Start one when the invoice arrives; finish it when the goods land. Quantity invoiced and quantity received are separate columns, so a short delivery is recorded as you unpack it.</div><button class="btn primary" onClick=${()=>{const n=blankInvoice(st);act.saveInvoice(n);setSel(n.id);}}><${Icon} name="plus"/>New invoice</button></div></div>`:
     html`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Provider</th><th>Date</th><th>Treatment</th><th class="num">Lines</th><th class="num">Units</th><th class="num">Freight + duty</th><th class="num">Total</th><th>Status</th></tr></thead>
@@ -1589,6 +1595,138 @@ function Invoices({st,act,show,openProduct}){
     </${React.Fragment}>`;}
 
   return html`<div class="content">${inv?editor():list()}</div>`;}
+
+/* A file of invoice lines becomes one draft per invoice reference. The header is taken from the
+   group's first line and its freight from the Transport column; the printed total is deliberately
+   left BLANK, so the gate still has to be satisfied against the paper invoice rather than against
+   the archive that produced the file. */
+function rowsToInvoices(rows,st){
+  const m=mapLedgerRows(rows,st);
+  const groups={},order=[];
+  for(const r of m.raw){
+    if(r.dir!=="in")continue;
+    const key=r.batchRef||genBatchRef(r.country,r.date,r.provider)||"(no reference)";
+    if(!groups[key]){groups[key]={id:uid(),status:"draft",provider:r.provider||"",country:r.country||"",
+      invoiceNo:key,date:r.date||today(),due:"",currency:"EUR",rate:"1",
+      treatment:treatmentForCountry(r.country),vatDefault:"",freight:"",freightVat:"",duty:"",importVat:"",
+      invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:""};order.push(key);}
+    const g=groups[key];
+    if(r.transport!=null&&+r.transport>0&&!g.freight)g.freight=String(r.transport);
+    if(!g.provider&&r.provider)g.provider=r.provider;
+    if(!g.country&&r.country)g.country=r.country;
+    if(r.date&&r.date<g.date)g.date=r.date;
+    g.lines.push({id:uid(),supplierRef:r.providerRef||"",code:r.code||"",name:r._name||r.note||"",
+      qty:String(r.qty),qtyRecv:"",lineTotal:String(Math.round(r.qty*(+r.unitPrice||0)*100)/100),
+      vatRate:(r.vatRate==null?"":String(r.vatRate)),type:r._type||"goods"});}
+  const list=order.map(k=>groups[k]);
+  for(const inv of list){
+    /* no country stated but the lines carry VAT — that is a domestic purchase */
+    if(!inv.country&&inv.lines.some(l=>(parseNum(l.vatRate)||0)>0))inv.treatment="domestic";
+    else inv.treatment=treatmentForCountry(inv.country);
+    inv.vatDefault=String(defaultVatFor(inv.treatment,st));
+    inv.freightVat=String(inv.treatment==="domestic"?defaultVatFor("domestic",st):0);}
+  return {invoices:list,skipped:m.skipped,warnings:m.warnings,col:m.col};}
+
+function InvoiceImportModal({st,act,onClose,show}){
+  const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();
+  function ingest(rows){const r=rowsToInvoices(rows,st);setRes(r);
+    setErr(r.invoices.length?"":"No invoice lines found — the file needs the ledger template's columns, with one row per line.");}
+  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setRes(null);setFn(f.name);
+    const nm=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
+    if(nm.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
+    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
+    e.target.value="";}
+  const have=new Set((st.invoices||[]).map(i=>refFromInvoiceNo(i.invoiceNo)));
+  const fresh=res?res.invoices.filter(i=>!have.has(refFromInvoiceNo(i.invoiceNo))):[];
+  const dupes=res?res.invoices.length-fresh.length:0;
+  function run(){if(!fresh.length)return;act.addInvoices(fresh);
+    show("Created "+fresh.length+" draft"+(fresh.length>1?"s":""),true);onClose();}
+  return html`<${Modal} wide=${true} title="Import invoices as drafts" onClose=${onClose}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!fresh.length}>Create ${fresh.length||""} drafts</button></${React.Fragment}>`}>
+    <div class="note">A file of invoice lines — the ledger template's columns — becomes one <b>draft</b> per invoice reference, grouped on the Batch ref column. Nothing reaches the ledger: each draft still has to be checked and posted, and the <b>printed total is left blank on purpose</b> so you key it from the paper invoice in front of you.</div>
+    <div class="hintrow"><button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Choose file…</button>
+      <input ref=${fileRef} type="file" accept=".xlsx,.csv" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}</div>
+    ${err?html`<div class="err">${err}</div>`:null}
+    ${res&&res.invoices.length?html`<${React.Fragment}>
+      <div class="kpis" style=${{marginTop:"4px"}}>
+        <div class="kpi"><div class="k">Invoices</div><div class="v">${num(fresh.length)}</div>${dupes?html`<div class="f">${num(dupes)} already here, skipped</div>`:null}</div>
+        <div class="kpi"><div class="k">Lines</div><div class="v">${num(fresh.reduce((a,i)=>a+i.lines.length,0))}</div></div>
+        <div class="kpi"><div class="k">Units</div><div class="v">${num(fresh.reduce((a,i)=>a+i.lines.reduce((b,l)=>b+(parseNum(l.qty)||0),0),0))}</div></div>
+        <div class="kpi"><div class="k">Goods + freight</div><div class="v">${money(fresh.reduce((a,i)=>{const t=invoiceTotals(i);return a+t.computed;},0))}</div></div>
+      </div>
+      <div class="tablewrap" style=${{marginTop:"12px",maxHeight:"260px",overflow:"auto"}}><table><thead><tr><th>Reference</th><th>Provider</th><th>Date</th><th>Treatment</th><th class="num">Lines</th><th class="num">Units</th><th class="num">Freight</th><th class="num">Total</th></tr></thead>
+        <tbody>${fresh.map(i=>{const t=invoiceTotals(i);return html`<tr key=${i.id}><td class="code">${i.invoiceNo}</td><td>${i.provider||"—"}${i.country?html`<div class="meta">${i.country}</div>`:null}</td>
+          <td class="mono">${fmtD(i.date)}</td><td class="note">${TREAT_LBL[i.treatment]}</td><td class="num">${num(i.lines.length)}</td>
+          <td class="num">${num(i.lines.reduce((a,l)=>a+(parseNum(l.qty)||0),0))}</td>
+          <td class="num mono">${t.freight?money(t.freight):"—"}</td><td class="num mono">${money(t.computed)}</td></tr>`;})}</tbody></table></div>
+    </${React.Fragment}>`:null}
+    ${res&&res.warnings&&res.warnings.length?html`<div class="note">${res.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
+  </${Modal}>`;}
+
+/* Bulk re-code: download the catalogue as a sheet with an empty New code column, fill in the ones
+   you want changed, upload it back. Blank rows are left alone. Every change is shown — including
+   how many ledger movements and draft lines will follow the code — before anything is written. */
+function RecodeModal({st,act,onClose,show}){
+  const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();
+  function dl(){const head=["Product code","Name","Author","Type","Supplier","Supplier ref","On hand","New code"];
+    const stock=stockByCode(st);
+    const rows=st.catalogue.slice().sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))).
+      map(p=>[p.code,p.name||"",p.author||"",p.type||"",p.supplier||"",p.supplierRef||"",stock[normCode(p.code)]||0,""]);
+    downloadXlsx("Rosa-Mystica_Re-code-template.xlsx",[{name:"Re-code",rows:[head].concat(rows)}],show);}
+  function ingest(rows){
+    if(!rows||!rows.length){setErr("The file looks empty.");return;}
+    const H=(rows[0]||[]).map(normH);
+    const ci=H.findIndex(h=>h==="productcode"||h==="code"||h==="oldcode");
+    const ni=H.findIndex(h=>h==="newcode"||h==="newproductcode");
+    if(ci<0||ni<0){setErr("Need a 'Product code' column and a 'New code' column — download the template.");setRes(null);return;}
+    const byCode=indexCatalogue(st.catalogue);
+    const pairs=[],problems=[];const taken={};let blank=0,same=0;
+    const catTaken={};for(const p of st.catalogue)catTaken[normCode(p.code)]=p.code;
+    for(let i=1;i<rows.length;i++){const r=rows[i]||[];
+      const from=String(r[ci]==null?"":r[ci]).trim();const to=String(r[ni]==null?"":r[ni]).trim();
+      if(!from&&!to)continue;
+      if(!to){blank++;continue;}
+      const p=byCode[normCode(from)];
+      if(!p){problems.push("Row "+(i+1)+": “"+from+"” is not in the catalogue.");continue;}
+      if(normCode(to)===normCode(from)){same++;continue;}
+      if(taken[normCode(to)]){problems.push("Row "+(i+1)+": “"+to+"” is used twice in this file.");continue;}
+      if(catTaken[normCode(to)]&&normCode(catTaken[normCode(to)])!==normCode(from)){
+        problems.push("Row "+(i+1)+": “"+to+"” already belongs to another product ("+catTaken[normCode(to)]+").");continue;}
+      taken[normCode(to)]=1;
+      const moves=st.ledger.filter(x=>normCode(x.code)===normCode(from)).length;
+      const dls=(st.invoices||[]).reduce((a,inv)=>a+(inv.lines||[]).filter(l=>normCode(l.code)===normCode(from)).length,0);
+      pairs.push({from:p.code,to,name:p.name||"",moves,dls});}
+    setRes({pairs,problems,blank,same});
+    setErr(pairs.length?"":(problems.length?"Nothing can be applied until the problems below are fixed.":"No new codes filled in — the New code column is empty on every row."));}
+  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setRes(null);setFn(f.name);
+    const nm=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
+    if(nm.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
+    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
+    e.target.value="";}
+  const ok=res&&res.pairs.length&&!res.problems.length;
+  function run(){if(!ok)return;act.recodeProducts(res.pairs.map(p=>({from:p.from,to:p.to})));
+    show("Re-coded "+res.pairs.length+" product"+(res.pairs.length>1?"s":""),true);onClose();}
+  return html`<${Modal} wide=${true} title="Re-code products" onClose=${onClose}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Re-code ${ok?res.pairs.length:""}</button></${React.Fragment}>`}>
+    <div class="note">Change product codes in bulk — moving to EAN numbers, say. Download the catalogue, fill in <b>New code</b> only for the ones you want changed, and upload it back: blank rows are left exactly as they are. Renaming carries the product's whole history with it — every ledger movement and every invoice draft line follows the code.</div>
+    <div class="hintrow">
+      <button class="btn" onClick=${dl}><${Icon} name="download"/>Download template · ${num(st.catalogue.length)} products</button>
+      <button class="btn" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Upload filled file…</button>
+      <input ref=${fileRef} type="file" accept=".xlsx,.csv" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}</div>
+    ${err?html`<div class="err">${err}</div>`:null}
+    ${res?html`<${React.Fragment}>
+      <div class="kpis" style=${{marginTop:"4px"}}>
+        <div class="kpi"><div class="k">To re-code</div><div class="v">${num(res.pairs.length)}</div></div>
+        <div class="kpi"><div class="k">Movements relinked</div><div class="v">${num(res.pairs.reduce((a,p)=>a+p.moves,0))}</div></div>
+        <div class="kpi"><div class="k">Left alone</div><div class="v">${num(res.blank+res.same)}</div><div class="f">${num(res.blank)} blank · ${num(res.same)} unchanged</div></div>
+        <div class="kpi"><div class="k">Problems</div><div class="v" style=${{color:res.problems.length?"var(--bad)":"inherit"}}>${num(res.problems.length)}</div></div>
+      </div>
+      ${res.problems.length?html`<div class="err" style=${{marginTop:"10px",lineHeight:"1.6"}}>${res.problems.slice(0,12).map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}${res.problems.length>12?html`<div>…and ${num(res.problems.length-12)} more</div>`:null}</div>`:null}
+      ${res.pairs.length?html`<div class="tablewrap" style=${{marginTop:"12px",maxHeight:"280px",overflow:"auto"}}><table><thead><tr><th>Old code</th><th>New code</th><th>Product</th><th class="num">Movements</th><th class="num">Draft lines</th></tr></thead>
+        <tbody>${res.pairs.slice(0,200).map(p=>html`<tr key=${p.from}><td class="code faint">${p.from}</td><td class="code">${p.to}</td><td><span class="name">${p.name}</span></td><td class="num">${num(p.moves)}</td><td class="num">${p.dls?num(p.dls):"—"}</td></tr>`)}</tbody></table></div>`:null}
+      ${res.pairs.length>200?html`<div class="note">Showing the first 200 of ${num(res.pairs.length)}.</div>`:null}
+    </${React.Fragment}>`:null}
+  </${Modal}>`;}
 
 /* ===================== App ===================== */
 function LedgerImportModal({st,act,onClose,show}){
@@ -2024,6 +2162,19 @@ function App(){
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
         cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:true,online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
       return {...s,catalogue:cat,staging:[]};}),
+    addInvoices:list=>setSt(s=>{undoRef.current=s;return {...s,invoices:(s.invoices||[]).concat(list)};}),
+    /* Renaming carries history: the code is the anchor, so every movement, staged entry and
+       draft line that points at the old code is moved to the new one in the same write. */
+    recodeProducts:pairs=>setSt(s=>{undoRef.current=s;
+      const map={};for(const p of pairs)map[normCode(p.from)]=p.to;
+      const now=new Date().toISOString();
+      const catalogue=s.catalogue.map(p=>{const t=map[normCode(p.code)];return t?Object.assign({},p,{code:t,updatedAt:now}):p;});
+      const ledger=s.ledger.map(r=>{const t=map[normCode(r.code)];return t?Object.assign({},r,{code:t}):r;});
+      const staging=(s.staging||[]).map(x=>{const t=map[normCode(x.code)];return t?Object.assign({},x,{code:t}):x;});
+      const invoices=(s.invoices||[]).map(i=>Object.assign({},i,{lines:(i.lines||[]).map(l=>{const t=map[normCode(l.code)];return t?Object.assign({},l,{code:t}):l;})}));
+      return {...s,catalogue,ledger,staging,invoices};}),
+    openRecode:()=>setModal({type:"recode"}),
+    openInvoiceImport:()=>setModal({type:"invimport"}),
     saveInvoice:v=>setSt(s=>{const list=(s.invoices||[]).slice();const i=list.findIndex(x=>x.id===v.id);
       if(i>=0)list[i]=v;else list.push(v);return {...s,invoices:list};}),
     deleteInvoice:id=>setSt(s=>{undoRef.current=s;return {...s,invoices:(s.invoices||[]).filter(x=>x.id!==id)};}),
@@ -2108,6 +2259,8 @@ function App(){
     ${modal&&modal.type==="encopen"?html`<${PassModal} mode="open" onClose=${()=>setModal(null)} onSubmit=${async pass=>{const d=await decryptCore(modal.payload,pass);act.replaceAll(d);setModal(null);show("Data loaded");}}/>`:null}
     ${modal&&modal.type==="ledgerimport"?html`<${LedgerImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="salesimport"?html`<${SalesImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
+    ${modal&&modal.type==="recode"?html`<${RecodeModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
+    ${modal&&modal.type==="invimport"?html`<${InvoiceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="catimport"?html`<${CatalogueImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="financeimport"?html`<${FinanceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="wipe"?html`<${ConfirmModal} title="Erase everything?" confirmLabel="Erase all data" body=${html`<span>This clears the catalogue, ledger, invoices and staging in this browser — ${num(st.catalogue.length)} products, ${num(st.ledger.length)} movements and ${num((st.invoices||[]).length)} invoices. <b>Export a core file first.</b> One Undo is offered afterwards, but only until the next change.</span>`} onConfirm=${()=>{act.wipe();show("Everything erased",true);}} onClose=${()=>setModal(null)}/>`:null}

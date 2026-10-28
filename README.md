@@ -64,6 +64,19 @@ beside it, so the gate compares like with like against the printed total while o
 spread per unit into landed cost. Duty is outside VAT; import VAT is recorded for the VAT return and
 deliberately never capitalised.
 
+Invoices can also be **imported as drafts**: a file of lines in the ledger template's shape becomes
+one draft per invoice reference, grouped on the batch ref, with freight lifted from the Transport
+column and the treatment inferred from the country. The printed total is left blank on purpose, so the
+gate is still satisfied against the paper invoice rather than against the file that produced it.
+
+## Re-coding products
+Product codes can be changed in bulk — moving a catalogue to EAN numbers, say. Download the catalogue
+as a sheet with an empty **New code** column, fill in only the rows to change, and upload it back:
+blank rows are left alone, and every change is previewed with the number of ledger movements and draft
+lines that will follow each code before anything is written. Unknown codes, duplicates within the file
+and collisions with existing products are reported and block the commit. Renaming carries history: the
+catalogue entry, its movements, its staged entries and any invoice draft lines all move together.
+
 ## Supplier article numbers
 The catalogue's supplier + supplier-ref pair is a live index. An imported or posted line whose code is
 unknown but whose provider and reference match a catalogue product resolves onto that product, and the
@@ -138,3 +151,4 @@ same totals plus daily detail.
     prices kept at full precision. ✅
 12. **Invoices**: drafts with a reconciliation gate, four tax treatments, freight and duty separated,
     paste-in lines with column mapping, supplier-article-number matching, and next-free-code allocation. ✅
+13. **Archived invoices as drafts** and **bulk re-coding** with a template, blank-skipping and a preview. ✅
