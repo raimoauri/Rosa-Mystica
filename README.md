@@ -78,8 +78,11 @@ gate is still satisfied against the paper invoice rather than against the file t
 Product codes can be changed in bulk — moving a catalogue to EAN numbers, say. Download the catalogue
 as a sheet with an empty **New code** column, fill in only the rows to change, and upload it back:
 blank rows are left alone, and every change is previewed with the number of ledger movements and draft
-lines that will follow each code before anything is written. Unknown codes, duplicates within the file
-and collisions with existing products are reported and block the commit. Renaming carries history: the
+lines that will follow each code before anything is written. Unknown codes and duplicates within the
+file are reported and block the commit. A new code that already belongs to another product is refused
+too — unless **fold duplicates together** is ticked, which treats it as the merge it is: the record
+whose code is kept survives, fills in anything it left empty from the other, and the other's catalogue
+entry disappears while its movements, staged entries and draft lines move across. Renaming carries history: the
 catalogue entry, its movements, its staged entries and any invoice draft lines all move together.
 
 ## Supplier article numbers

@@ -1689,20 +1689,21 @@ function InvoiceImportModal({st,act,onClose,show}){
    you want changed, upload it back. Blank rows are left alone. Every change is shown — including
    how many ledger movements and draft lines will follow the code — before anything is written. */
 function RecodeModal({st,act,onClose,show}){
-  const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();
+  const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const [merge,setMerge]=useState(false);const [rows,setRows]=useState(null);const fileRef=useRef();
   function dl(){const head=["Product code","Name","Author","Type","Supplier","Supplier ref","On hand","New code"];
     const stock=stockByCode(st);
     const rows=st.catalogue.slice().sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))).
       map(p=>[p.code,p.name||"",p.author||"",p.type||"",p.supplier||"",p.supplierRef||"",stock[normCode(p.code)]||0,""]);
     downloadXlsx("Rosa-Mystica_Re-code-template.xlsx",[{name:"Re-code",rows:[head].concat(rows)}],show);}
-  function ingest(rows){
+  function ingest(rows,allowMerge){
+    setRows(rows);
     if(!rows||!rows.length){setErr("The file looks empty.");return;}
     const H=(rows[0]||[]).map(normH);
     const ci=H.findIndex(h=>h==="productcode"||h==="code"||h==="oldcode");
     const ni=H.findIndex(h=>h==="newcode"||h==="newproductcode");
     if(ci<0||ni<0){setErr("Need a 'Product code' column and a 'New code' column — download the template.");setRes(null);return;}
     const byCode=indexCatalogue(st.catalogue);
-    const pairs=[],problems=[];const taken={};let blank=0,same=0;
+    const pairs=[],merges=[],problems=[];const taken={};let blank=0,same=0;
     const catTaken={};for(const p of st.catalogue)catTaken[normCode(p.code)]=p.code;
     for(let i=1;i<rows.length;i++){const r=rows[i]||[];
       const from=String(r[ci]==null?"":r[ci]).trim();const to=String(r[ni]==null?"":r[ni]).trim();
@@ -1711,41 +1712,50 @@ function RecodeModal({st,act,onClose,show}){
       const p=byCode[normCode(from)];
       if(!p){problems.push("Row "+(i+1)+": “"+from+"” is not in the catalogue.");continue;}
       if(normCode(to)===normCode(from)){same++;continue;}
-      if(taken[normCode(to)]){problems.push("Row "+(i+1)+": “"+to+"” is used twice in this file.");continue;}
-      if(catTaken[normCode(to)]&&normCode(catTaken[normCode(to)])!==normCode(from)){
-        problems.push("Row "+(i+1)+": “"+to+"” already belongs to another product ("+catTaken[normCode(to)]+").");continue;}
+      const hits=catTaken[normCode(to)]&&normCode(catTaken[normCode(to)])!==normCode(from);
+      if(!hits&&taken[normCode(to)]){problems.push("Row "+(i+1)+": “"+to+"” is used twice in this file.");continue;}
+      if(hits&&!allowMerge){
+        problems.push("Row "+(i+1)+": “"+to+"” already belongs to another product ("+(byCode[normCode(to)]||{}).name+"). Tick “fold duplicates together” below if they are the same product.");continue;}
       taken[normCode(to)]=1;
       const moves=st.ledger.filter(x=>normCode(x.code)===normCode(from)).length;
       const dls=(st.invoices||[]).reduce((a,inv)=>a+(inv.lines||[]).filter(l=>normCode(l.code)===normCode(from)).length,0);
-      pairs.push({from:p.code,to,name:p.name||"",moves,dls});}
-    setRes({pairs,problems,blank,same});
-    setErr(pairs.length?"":(problems.length?"Nothing can be applied until the problems below are fixed.":"No new codes filled in — the New code column is empty on every row."));}
+      const row={from:p.code,to,name:p.name||"",moves,dls,into:hits?((byCode[normCode(to)]||{}).name||to):""};
+      (hits?merges:pairs).push(row);}
+    setRes({pairs,merges,problems,blank,same});
+    setErr((pairs.length+merges.length)?"":(problems.length?"Nothing can be applied until the problems below are fixed.":"No new codes filled in — the New code column is empty on every row."));}
   function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setRes(null);setFn(f.name);
     const nm=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
-    if(nm.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
-    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
+    if(nm.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)),merge);}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
+    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result),merge);}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
     e.target.value="";}
-  const ok=res&&res.pairs.length&&!res.problems.length;
-  function run(){if(!ok)return;act.recodeProducts(res.pairs.map(p=>({from:p.from,to:p.to})));
-    show("Re-coded "+res.pairs.length+" product"+(res.pairs.length>1?"s":""),true);onClose();}
+  const ok=res&&(res.pairs.length+ (res.merges||[]).length)&&!res.problems.length;
+  function run(){if(!ok)return;const all=res.pairs.concat(res.merges||[]);
+    act.recodeProducts(all.map(p=>({from:p.from,to:p.to})));
+    const m=(res.merges||[]).length;
+    show("Re-coded "+res.pairs.length+(m?" · folded "+m:"")+" product"+(all.length>1?"s":""),true);onClose();}
   return html`<${Modal} wide=${true} title="Re-code products" onClose=${onClose}
-    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Re-code ${ok?res.pairs.length:""}</button></${React.Fragment}>`}>
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Re-code ${ok?(res.pairs.length+(res.merges||[]).length):""}</button></${React.Fragment}>`}>
     <div class="note">Change product codes in bulk — moving to EAN numbers, say. Download the catalogue, fill in <b>New code</b> only for the ones you want changed, and upload it back: blank rows are left exactly as they are. Renaming carries the product's whole history with it — every ledger movement and every invoice draft line follows the code.</div>
     <div class="hintrow">
       <button class="btn" onClick=${dl}><${Icon} name="download"/>Download template · ${num(st.catalogue.length)} products</button>
       <button class="btn" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Upload filled file…</button>
       <input ref=${fileRef} type="file" accept=".xlsx,.csv" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}</div>
+    <label class="switch"><input type="checkbox" checked=${merge} onChange=${e=>{setMerge(e.target.checked);if(rows)ingest(rows,e.target.checked);}}/> Fold duplicates together — a new code that already belongs to another product means they are the same product</label>
+    ${merge?html`<div class="note">The record whose code is being kept survives and fills in anything it left empty from the other; the other's catalogue entry disappears and its movements, staged entries and draft lines move across. One Undo afterwards.</div>`:null}
     ${err?html`<div class="err">${err}</div>`:null}
     ${res?html`<${React.Fragment}>
       <div class="kpis" style=${{marginTop:"4px"}}>
-        <div class="kpi"><div class="k">To re-code</div><div class="v">${num(res.pairs.length)}</div></div>
+        <div class="kpi"><div class="k">To re-code</div><div class="v">${num(res.pairs.length)}</div>${(res.merges||[]).length?html`<div class="f">${num(res.merges.length)} of them folded into an existing product</div>`:null}</div>
         <div class="kpi"><div class="k">Movements relinked</div><div class="v">${num(res.pairs.reduce((a,p)=>a+p.moves,0))}</div></div>
         <div class="kpi"><div class="k">Left alone</div><div class="v">${num(res.blank+res.same)}</div><div class="f">${num(res.blank)} blank · ${num(res.same)} unchanged</div></div>
         <div class="kpi"><div class="k">Problems</div><div class="v" style=${{color:res.problems.length?"var(--bad)":"inherit"}}>${num(res.problems.length)}</div></div>
       </div>
       ${res.problems.length?html`<div class="err" style=${{marginTop:"10px",lineHeight:"1.6"}}>${res.problems.slice(0,12).map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}${res.problems.length>12?html`<div>…and ${num(res.problems.length-12)} more</div>`:null}</div>`:null}
-      ${res.pairs.length?html`<div class="tablewrap" style=${{marginTop:"12px",maxHeight:"280px",overflow:"auto"}}><table><thead><tr><th>Old code</th><th>New code</th><th>Product</th><th class="num">Movements</th><th class="num">Draft lines</th></tr></thead>
-        <tbody>${res.pairs.slice(0,200).map(p=>html`<tr key=${p.from}><td class="code faint">${p.from}</td><td class="code">${p.to}</td><td><span class="name">${p.name}</span></td><td class="num">${num(p.moves)}</td><td class="num">${p.dls?num(p.dls):"—"}</td></tr>`)}</tbody></table></div>`:null}
+      ${(res.pairs.length||(res.merges||[]).length)?html`<div class="tablewrap" style=${{marginTop:"12px",maxHeight:"280px",overflow:"auto"}}><table><thead><tr><th>Old code</th><th>New code</th><th>Product</th><th class="num">Movements</th><th class="num">Draft lines</th></tr></thead>
+        <tbody>${(res.merges||[]).map(p=>html`<tr key=${"m"+p.from}><td class="code faint">${p.from}</td><td class="code">${p.to}</td>
+          <td><span class="name">${p.name}</span><div class="meta" style=${{color:"var(--accent)"}}>folds into “${p.into}”</div></td>
+          <td class="num">${num(p.moves)}</td><td class="num">${p.dls?num(p.dls):"—"}</td></tr>`)}
+        ${res.pairs.slice(0,200).map(p=>html`<tr key=${p.from}><td class="code faint">${p.from}</td><td class="code">${p.to}</td><td><span class="name">${p.name}</span></td><td class="num">${num(p.moves)}</td><td class="num">${p.dls?num(p.dls):"—"}</td></tr>`)}</tbody></table></div>`:null}
       ${res.pairs.length>200?html`<div class="note">Showing the first 200 of ${num(res.pairs.length)}.</div>`:null}
     </${React.Fragment}>`:null}
   </${Modal}>`;}
@@ -2228,10 +2238,32 @@ function App(){
     recodeProducts:pairs=>setSt(s=>{undoRef.current=s;
       const map={};for(const p of pairs)map[normCode(p.from)]=p.to;
       const now=new Date().toISOString();
-      const catalogue=s.catalogue.map(p=>{const t=map[normCode(p.code)];return t?Object.assign({},p,{code:t,updatedAt:now}):p;});
       const ledger=s.ledger.map(r=>{const t=map[normCode(r.code)];return t?Object.assign({},r,{code:t}):r;});
-      const staging=(s.staging||[]).map(x=>{const t=map[normCode(x.code)];return t?Object.assign({},x,{code:t}):x;});
       const invoices=(s.invoices||[]).map(i=>Object.assign({},i,{lines:(i.lines||[]).map(l=>{const t=map[normCode(l.code)];return t?Object.assign({},l,{code:t}):l;})}));
+      /* Rename, then fold: when a product is renamed onto a code another product already holds,
+         the two are one product. The record that was NOT renamed survives — it is the one whose
+         code is being kept — and the other fills in whatever it left empty before disappearing. */
+      const FILL=["name","author","year","category","supplier","supplierRef","cost","price","reorderPoint","notes"];
+      const out=[],at={};
+      for(const p of s.catalogue){const t=map[normCode(p.code)];
+        const rec=t?Object.assign({},p,{code:t,updatedAt:now}):p;const renamed=!!t;const k=normCode(rec.code);
+        if(at[k]==null){at[k]=out.length;out.push({rec,renamed});continue;}
+        const cur=out[at[k]];
+        const keep=(cur.renamed&&!renamed)?{rec,renamed}:cur;
+        const gone=(cur.renamed&&!renamed)?cur:{rec,renamed};
+        const fill={};for(const f of FILL){const v=keep.rec[f];if((v==null||v===""))if(gone.rec[f]!=null&&gone.rec[f]!=="")fill[f]=gone.rec[f];}
+        out[at[k]]={rec:Object.assign({},keep.rec,fill,{updatedAt:now}),renamed:keep.renamed};}
+      const catalogue=out.map(x=>x.rec);
+      /* staged entries follow the same rule, summing what each had seen */
+      const sg=[],sat={};
+      for(const x0 of (s.staging||[])){const t=map[normCode(x0.code)];const x=t?Object.assign({},x0,{code:t}):x0;const k=normCode(x.code);
+        if(sat[k]==null){sat[k]=sg.length;sg.push(x);continue;}
+        const o=sg[sat[k]];
+        sg[sat[k]]=Object.assign({},o,{seenCount:(o.seenCount||0)+(x.seenCount||0),qty:(o.qty||0)+(x.qty||0),
+          firstDate:(!o.firstDate||(x.firstDate&&x.firstDate<o.firstDate))?(x.firstDate||o.firstDate):o.firstDate,
+          name:o.name||x.name,provider:o.provider||x.provider,providerRef:o.providerRef||x.providerRef});}
+      const catSet=new Set(catalogue.map(x=>normCode(x.code)));
+      const staging=sg.filter(x=>!catSet.has(normCode(x.code)));
       return {...s,catalogue,ledger,staging,invoices};}),
     openRecode:()=>setModal({type:"recode"}),
     openInvoiceImport:()=>setModal({type:"invimport"}),
