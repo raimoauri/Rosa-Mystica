@@ -1342,7 +1342,7 @@ function defaultVatFor(treatment,st){const vr=vatRatesOf(st);
 function refFromInvoiceNo(s){return String(s||"").trim().toUpperCase().replace(/[^A-Z0-9]+/g,"-").replace(/^-|-$/g,"");}
 function blankInvoice(st){const c="";return {id:uid(),status:"draft",provider:"",country:c,invoiceNo:"",
   date:today(),due:"",currency:"EUR",rate:"1",treatment:treatmentForCountry(c),
-  freight:"",duty:"",importVat:"",invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:""};}
+  freight:"",freightVat:"",duty:"",importVat:"",vatDefault:"",invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:""};}
 function blankLine(){return {id:uid(),supplierRef:"",code:"",name:"",qty:"",qtyRecv:"",lineTotal:"",vatRate:"",type:"goods"};}
 const r2=x=>Math.round(x*100)/100;
 function invoiceTotals(inv){
@@ -1352,13 +1352,26 @@ function invoiceTotals(inv){
     const q=parseNum(l.qty)||0;units+=q;
     const rq=(l.qtyRecv===""||l.qtyRecv==null)?q:(parseNum(l.qtyRecv)||0);recv+=rq;}
   const freight=parseNum(inv.freight)||0,duty=parseNum(inv.duty)||0,importVat=parseNum(inv.importVat)||0;
+  /* Freight is keyed exactly as the invoice shows it — VAT and all, on a domestic invoice — so the
+     gate can compare like with like against the printed total. Only its NET part is capitalised:
+     deductible VAT has no business in stock value. */
+  const fv=parseNum(inv.freightVat);const freightNet=(fv&&fv>0)?freight/(1+fv/100):freight;
   const computed=lines+freight+duty;const keyed=parseNum(inv.invoiceTotal);
-  return {lines:r2(lines),units,recv,missing,freight,duty,importVat,computed:r2(computed),keyed,
+  return {lines:r2(lines),units,recv,missing,freight,freightNet:r2(freightNet),duty,importVat,
+    spread:r2(freightNet+duty),computed:r2(computed),keyed,
     diff:keyed==null?null:r2(computed-keyed),landed:r2(computed),
     ok:keyed!=null&&Math.abs(computed-keyed)<0.005};}
 /* Catalogue indexed by the supplier's own article number. The first invoice from a provider
    teaches this map (you set the code when confirming staging); every later invoice from them
    resolves straight onto your codes with no staging at all. */
+/* A line's VAT: its own value, else the product's statutory rate when we know the product and
+   the invoice is domestic, else the invoice default, else the treatment's. */
+function lineVatFor(l,inv,st,byCode){
+  const own=parseNum(l&&l.vatRate);if(own!=null)return own;
+  const p=byCode?byCode[normCode(l&&l.code)]:null;
+  if(inv.treatment==="domestic"&&p)return saleRateFor(p,st);
+  const hd=parseNum(inv.vatDefault);if(hd!=null)return hd;
+  return defaultVatFor(inv.treatment,st);}
 function normRef(s){return String(s||"").replace(/[\s\-_.\/]/g,"").toUpperCase();}
 function normProv(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"")
   .replace(/(lda|oy|ab|gmbh|srl|sarl|bv|nv|spa|sa|ltd|llc|inc|unipessoal)$/,"");}
@@ -1490,17 +1503,22 @@ function Invoices({st,act,show,openProduct}){
           ${F("Currency · rate to €",html`<div style=${{display:"flex",gap:"6px"}}><input type="text" disabled=${posted} style=${{width:"80px"}} value=${inv.currency||"EUR"} onInput=${e=>upd({currency:e.target.value})}/><input class="mono" type="text" disabled=${posted} value=${inv.rate||"1"} onInput=${e=>upd({rate:e.target.value})}/></div>`)}
         </div>
         <div style=${{marginBottom:"12px"}}>
-          <label class="lab">Tax treatment</label>
-          <select disabled=${posted} value=${inv.treatment||"eu_acq"} onChange=${e=>upd({treatment:e.target.value})}>${TREATMENTS.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select>
-          <div class="note" style=${{marginTop:"7px"}}>${treatNote}</div>
+          <div style=${{display:"flex",gap:"12px",alignItems:"flex-end"}}>
+            <div style=${{flex:1}}><label class="lab">Tax treatment</label>
+              <select disabled=${posted} value=${inv.treatment||"eu_acq"} onChange=${e=>{const v=e.target.value;upd({treatment:v,vatDefault:String(defaultVatFor(v,st)),freightVat:String(defaultVatFor(v,st))});}}>${TREATMENTS.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select></div>
+            <div style=${{width:"150px"}}><label class="lab">Default line VAT %</label>
+              <input class="mono" type="text" disabled=${posted} placeholder=${String(defaultVatFor(inv.treatment,st))} value=${inv.vatDefault||""} onInput=${e=>upd({vatDefault:e.target.value})}/></div></div>
+          <div class="note" style=${{marginTop:"7px"}}>${treatNote}${inv.treatment==="domestic"?" A line whose code is already in the catalogue takes that product's own rate — "+num(vatRatesOf(st).book)+"% for a book, "+num(vatRatesOf(st).goods)+"% for goods.":""}</div>
         </div>
         <div class="grid3">
-          ${F("Freight (net)",inp("freight","30.90","mono"))}
-          ${F("Duty & clearance (net)",inp("duty","0.00","mono"))}
+          ${F("Freight, as billed",html`<div style=${{display:"flex",gap:"6px"}}>
+            <input class="mono" type="text" disabled=${posted} placeholder="30.90" value=${inv.freight||""} onInput=${e=>upd({freight:e.target.value})}/>
+            <input class="mono" type="text" disabled=${posted} title="VAT % on the freight line" style=${{width:"68px"}} placeholder=${"VAT "+String(defaultVatFor(inv.treatment,st))} value=${inv.freightVat||""} onInput=${e=>upd({freightVat:e.target.value})}/></div>`)}
+          ${F("Duty & clearance (no VAT)",inp("duty","0.00","mono"))}
           ${F(inv.treatment==="import"?"Import VAT paid at the border":"Import VAT (not applicable)",
             html`<input class="mono" type="text" disabled=${posted||inv.treatment!=="import"} placeholder="deductible — never added to stock" value=${inv.importVat||""} onInput=${e=>upd({importVat:e.target.value})}/>`)}
         </div>
-        <div class="note" style=${{marginTop:"10px"}}>Freight and duty are spread per unit across everything received on this invoice. Import VAT is recorded for your VAT return and deliberately kept out of stock value.</div>
+        <div class="note" style=${{marginTop:"10px"}}>Key the freight exactly as the invoice shows it — including VAT on a domestic invoice — and give its rate beside it: the gate compares like with like, and only the <b>net</b> ${t&&t.freight!==t.freightNet?"("+money(t.freightNet)+") ":""}is spread per unit into landed cost. Duty is outside VAT. Import VAT is recorded for your return and never enters stock value.</div>
       </div></div>
 
     ${!posted?html`<div class="panel" style=${{marginBottom:"16px"}}>
@@ -1537,7 +1555,7 @@ function Invoices({st,act,show,openProduct}){
             <td class="num">${cell("qty","62px","mono num")}</td>
             <td class="num">${posted?html`<span class="mono">${num(rq)}</span>`:html`<input type="text" class="mono" style=${{width:"62px",padding:"5px 7px",fontSize:"12.5px"}} placeholder=${String(q||"")} value=${l.qtyRecv||""} onInput=${e=>updLine(l.id,{qtyRecv:e.target.value})}/>`}${rq!==q?html`<div class="meta" style=${{color:"var(--bad)"}}>${rq<q?"short "+num(q-rq):"over "+num(rq-q)}</div>`:null}</td>
             <td class="num">${cell("lineTotal","84px","mono num")}</td>
-            <td class="num">${posted?html`<span class="mono">${l.vatRate===""||l.vatRate==null?num(defaultVatFor(inv.treatment,st)):l.vatRate}</span>`:html`<input type="text" class="mono" style=${{width:"56px",padding:"5px 7px",fontSize:"12.5px"}} placeholder=${String(defaultVatFor(inv.treatment,st))} value=${l.vatRate||""} onInput=${e=>updLine(l.id,{vatRate:e.target.value})}/>`}</td>
+            <td class="num">${posted?html`<span class="mono">${num(lineVatFor(l,inv,st,byCode))}</span>`:html`<input type="text" class="mono" style=${{width:"56px",padding:"5px 7px",fontSize:"12.5px"}} placeholder=${String(lineVatFor(Object.assign({},l,{vatRate:""}),inv,st,byCode))} value=${l.vatRate||""} onInput=${e=>updLine(l.id,{vatRate:e.target.value})}/>`}</td>
             <td class="num">${posted?null:html`<button class="btn sm ghost rowact" onClick=${()=>upd({lines:inv.lines.filter(x=>x.id!==l.id)})}>×</button>`}</td></tr>`;})}</tbody></table></div>`}
     </div>
 
@@ -1546,7 +1564,7 @@ function Invoices({st,act,show,openProduct}){
       <div style=${{padding:"16px"}}>
         <div class="kpis" style=${{marginBottom:"14px"}}>
           <div class="kpi"><div class="k">Lines</div><div class="v">${money(t.lines)}</div><div class="f">${num(t.units)} units billed${t.recv!==t.units?" · "+num(t.recv)+" received":""}</div></div>
-          <div class="kpi"><div class="k">Freight + duty</div><div class="v">${money(t.freight+t.duty)}</div><div class="f">${t.recv?money((t.freight+t.duty)/Math.max(1,t.recv))+" per unit":"spread per unit"}</div></div>
+          <div class="kpi"><div class="k">Freight + duty</div><div class="v">${money(t.freight+t.duty)}</div><div class="f">${t.freight!==t.freightNet?money(t.spread)+" net · ":""}${t.recv?money(t.spread/Math.max(1,t.recv))+" per unit":"spread per unit"}</div></div>
           <div class="kpi"><div class="k">Computed total</div><div class="v">${money(t.computed)}</div><div class="f">lines + freight + duty</div></div>
           <div class="kpi"><div class="k">Difference</div><div class="v" style=${{color:t.keyed==null?"inherit":(t.ok?"var(--good)":"var(--bad)")}}>${t.keyed==null?"—":money(t.diff)}</div><div class="f">${t.keyed==null?"key the invoice total":(t.ok?"agrees to the cent":"does not agree")}</div></div>
         </div>
@@ -2017,16 +2035,15 @@ function App(){
       const t=invoiceTotals(inv);const rate=parseNum(inv.rate)||1;
       const bref=refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)||("INV-"+(inv.date||today()));
       const chan=(s.channels.find(c=>c.dir==="in")||{name:"Purchase"}).name;
-      const transport=r2((t.freight+t.duty)*rate);
-      const defVat=defaultVatFor(inv.treatment,s);
+      const transport=r2(t.spread*rate);
+      const byCode=indexCatalogue(s.catalogue);
       const raw=[];
       for(const l of inv.lines){const q=parseNum(l.qty)||0;const lt=parseNum(l.lineTotal);
         const rq=(l.qtyRecv===""||l.qtyRecv==null)?q:(parseNum(l.qtyRecv)||0);
         const code=String(l.code||l.supplierRef||"").trim();
         if(!code||!q||!rq||lt==null)continue;
-        const lv=parseNum(l.vatRate);
         raw.push({date:inv.date||today(),channel:chan,dir:"in",batchRef:bref,code,qty:rq,
-          unitPrice:Math.round((lt/q)*rate*1e6)/1e6,vatRate:(lv==null?defVat:lv),transport,
+          unitPrice:Math.round((lt/q)*rate*1e6)/1e6,vatRate:lineVatFor(l,inv,s,byCode),transport,
           note:l.name||"",country:inv.country||"",provider:inv.provider||"",providerRef:l.supplierRef||"",
           _name:l.name||"",_type:l.type||guessType(code)});}
       if(!raw.length)return s;

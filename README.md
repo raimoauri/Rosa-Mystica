@@ -57,8 +57,12 @@ identically. A posted invoice can be **unposted**, which removes its movements a
 
 Four **tax treatments** set the line VAT, defaulted from the country and always overridable: domestic
 Finland, intra-EU acquisition (0% on the invoice, self-accounted), import from outside the EU, and own
-print. **Freight and duty are separate fields** — both spread per unit into landed cost — while import
-VAT is recorded for the VAT return and deliberately never capitalised.
+print. On a domestic invoice a line whose code is already in the catalogue takes that product's own
+statutory rate — 13,5% for a book, 25,5% for goods — so a mixed invoice needs no per-line typing.
+**Freight and duty are separate fields**: freight is keyed exactly as billed, with its own VAT rate
+beside it, so the gate compares like with like against the printed total while only its **net** part is
+spread per unit into landed cost. Duty is outside VAT; import VAT is recorded for the VAT return and
+deliberately never capitalised.
 
 ## Supplier article numbers
 The catalogue's supplier + supplier-ref pair is a live index. An imported or posted line whose code is
