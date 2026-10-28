@@ -658,7 +658,12 @@ function xlsxToRows(buf){
   return out;
 }
 function csvParse(text,delim){const rows=[];let i=0,field="",row=[],q=false;const t=String(text||"");
-  if(!delim){const head=t.slice(0,t.indexOf("\n")>=0?t.indexOf("\n"):t.length);delim=(head.split(";").length>head.split(",").length)?";":",";}
+  /* Guess the delimiter from the first several lines, not just the first: a Vektori report
+     opens with a title line that carries no separator at all, and guessing from it alone
+     left the whole file parsed as one column. */
+  if(!delim){const head=t.slice(0,4000).split(/\r?\n/).slice(0,8).join("\n");
+    const cnt=ch=>head.split(ch).length-1;const sc=cnt(";"),cc=cnt(","),tc=cnt("\t");
+    delim=(tc>sc&&tc>cc)?"\t":((sc>0&&sc>=cc)?";":",");}
   const pushF=()=>{row.push(field);field="";};const pushR=()=>{pushF();rows.push(row);row=[];};
   for(;i<t.length;i++){const c=t[i];
     if(q){if(c==='"'){if(t[i+1]==='"'){field+='"';i++;}else q=false;}else field+=c;}
@@ -758,7 +763,7 @@ function parseSales(rows,override){
   if(hi<0)return {raw:[],format:null,defDate:"",skipped:0,warnings:["Unrecognised sales file — expected a Vektori Product Sales Report or a WooCommerce orders export."]};
   const H=(rows[hi]||[]).map(normH);
   const find=(...names)=>{for(const n of names){const e=H.indexOf(n);if(e>=0)return e;}for(const n of names){for(let i=0;i<H.length;i++)if(H[i].indexOf(n)===0)return i;}return -1;};
-  const data=rows.slice(hi+1);const raw=[];let skipped=0;const warnings=[];let defDate=override||"";
+  const data=rows.slice(hi+1);const raw=[];let skipped=0;const warnings=[];let defDate=override||"";let defStart="";
   if(fmt==="woo"){
     const cO=find("ordernumber"),cD=find("orderdate"),cS=find("sku"),cN=find("itemname","name"),cQ=find("quantity"),cP=find("productcurrentprice","price","productprice");
     for(const r of data){const code=String(r[cS]==null?"":r[cS]).trim();const qty=parseNum(r[cQ]);
@@ -766,18 +771,23 @@ function parseSales(rows,override){
       const draw=String(r[cD]==null?"":r[cD]).trim();const d=normDate(draw.slice(0,10)||draw);
       const nm=String(r[cN]==null?"":r[cN]).trim();
       raw.push({date:d,channel:"WooCommerce",dir:"out",batchRef:String(r[cO]==null?"":r[cO]).trim(),code,qty,unitPrice:parseNum(r[cP]),note:nm,_name:nm,_type:guessType(code)});}
-    return {raw,format:"woo",defDate:"",skipped,warnings};
+    return {raw,format:"woo",defDate:"",defStart:"",skipped,warnings};
   }
   // vektori
   const cN=find("name"),cC=find("productcode","code"),cQ=find("salepcs"),cS=find("sale"),cRQ=find("refundpcs"),cR=find("refund");
-  if(!defDate){for(let i=0;i<hi;i++){const line=(rows[i]||[]).join(" ");const m=/(\d{2})[.\/](\d{2})[.\/](\d{4})[^-]*-[^0-9]*(\d{2})[.\/](\d{2})[.\/](\d{4})/.exec(line);if(m){defDate=m[6]+"-"+m[5]+"-"+m[4];break;}}}
+  /* the report header carries its period; keep both ends so a week that crosses a month can be flagged */
+  if(!defDate){for(let i=0;i<hi;i++){const line=(rows[i]||[]).join(" ");
+    let m=/(\d{2})[.\/](\d{2})[.\/](\d{4})[^-]*-[^0-9]*(\d{2})[.\/](\d{2})[.\/](\d{4})/.exec(line);
+    if(m){defStart=m[3]+"-"+m[2]+"-"+m[1];defDate=m[6]+"-"+m[5]+"-"+m[4];break;}
+    m=/(\d{4})-(\d{2})-(\d{2})[^0-9]{1,6}(\d{4})-(\d{2})-(\d{2})/.exec(line);
+    if(m){defStart=m[1]+"-"+m[2]+"-"+m[3];defDate=m[4]+"-"+m[5]+"-"+m[6];break;}}}
   const isNon=(name,code)=>{const n=name.toLowerCase(),c=code.toUpperCase();return (!name&&!code)||n.indexOf("total")===0||n.indexOf("yhteens")===0||/^PR\d+$/.test(c)||c==="LHJKRTI"||n.indexOf("kassasta")===0||n.indexOf("lahjakortti")===0;};
   for(const r of data){const name=String(r[cN]==null?"":r[cN]).trim();const code=String(r[cC]==null?"":r[cC]).trim();
     if(isNon(name,code))continue;if(!code){skipped++;continue;}
     const sp=parseNum(r[cQ])||0,rp=cRQ>=0?(parseNum(r[cRQ])||0):0;const net=sp-rp;if(net<=0){skipped++;continue;}
     const sale=parseNum(r[cS])||0,ref=cR>=0?(parseNum(r[cR])||0):0;const unit=Math.round(((sale+ref)/net)*1e6)/1e6;
     raw.push({date:defDate,channel:"Vektori",dir:"out",batchRef:"VEK-"+(defDate||"period"),code,qty:net,unitPrice:unit,note:name,_name:name,_type:guessType(code)});}
-  return {raw,format:"vektori",defDate,skipped,warnings};
+  return {raw,format:"vektori",defDate,defStart,skipped,warnings};
 }
 
 const CAT_COLS=[["code",["productcode","code","sku","ean","isbn"]],["type",["type"]],["name",["name","title"]],["author",["author"]],["year",["year"]],["category",["category","section"]],["supplierRef",["providerref","supplierref","provref","supplierart"]],["supplier",["supplierprovider","supplier","provider","publisher"]],["cost",["costnet","cost"]],["price",["priceinclvat","price","retail"]],["sellable",["sellable"]],["online",["online"]],["reorderPoint",["reorderpoint","reorder"]],["notes",["notes","note"]]];
@@ -1761,34 +1771,62 @@ function LedgerImportModal({st,act,onClose,show}){
   </${Modal}>`;}
 
 function SalesImportModal({st,act,onClose,show}){
-  const [parsed,setParsed]=useState(null);const [ov,setOv]=useState("");const [err,setErr]=useState("");const [fn,setFn]=useState("");const fileRef=useRef();
-  function ingest(rows){const r=parseSales(rows,"");setParsed(r);setOv("");if(!r.raw.length)setErr(r.warnings[0]||"No sales rows found.");else setErr("");}
-  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setParsed(null);setFn(f.name);const name=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
-    if(name.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
-    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
+  const [items,setItems]=useState([]);const [err,setErr]=useState("");const fileRef=useRef();
+  function add(name,rows){const r=parseSales(rows,"");
+    setItems(list=>list.concat([{id:uid(),name,parsed:r,ov:""}]));
+    if(!r.raw.length)setErr("“"+name+"”: "+((r.warnings&&r.warnings[0])||"no sales rows found."));}
+  /* Several reports at once: a weekly export means a stack of files, and they should go in
+     together so duplicates are caught across the whole stack, not one file at a time. */
+  function onFile(e){const fs=Array.prototype.slice.call(e.target.files||[]);if(!fs.length)return;setErr("");
+    for(const f of fs){const nm=(f.name||"").toLowerCase();const rd=new FileReader();
+      rd.onerror=()=>setErr("Couldn't read "+f.name);
+      if(nm.endsWith(".csv")){rd.onload=()=>{try{add(f.name,csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse "+f.name);}};rd.readAsText(f);}
+      else{rd.onload=()=>{try{add(f.name,xlsxToRows(rd.result));}catch(x){setErr("Couldn't read "+f.name);}};rd.readAsArrayBuffer(f);}}
     e.target.value="";}
-  const eff=parsed&&parsed.raw.length?(parsed.format==="vektori"&&ov?{...parsed,raw:parsed.raw.map(m=>({...m,date:ov,batchRef:"VEK-"+ov})),defDate:ov}:parsed):null;
-  const prep=eff?prepareMovements(eff.raw,st,(eff.warnings||[]).concat(eff.skipped?[eff.skipped+" row"+(eff.skipped>1?"s":"")+" skipped (no code or zero net)."]:[])):null;
-  if(prep)prep.stats.skipped=eff.skipped;
+  const eff=items.map(it=>{const p=it.parsed;
+    if(!p||!p.raw.length)return Object.assign({},it,{raw:[],date:"",start:""});
+    const d=it.ov||p.defDate;
+    const raw=(p.format==="vektori"&&d)?p.raw.map(m=>Object.assign({},m,{date:d,batchRef:"VEK-"+d})):p.raw;
+    return Object.assign({},it,{raw,date:d,start:p.defStart||""});});
+  const ordered=eff.slice().sort((a,b)=>String(a.date).localeCompare(String(b.date))||String(a.name).localeCompare(String(b.name)));
+  const allRaw=[].concat.apply([],ordered.map(x=>x.raw));
+  const skipped=items.reduce((a,it)=>a+((it.parsed&&it.parsed.skipped)||0),0);
+  const undated=ordered.filter(x=>x.raw.length&&!x.date);
+  const straddle=ordered.filter(x=>x.start&&x.date&&x.start.slice(0,7)!==x.date.slice(0,7));
+  const warn0=[].concat(skipped?[skipped+" row"+(skipped>1?"s":"")+" skipped (no code or zero net)."]:[]);
+  const prep=allRaw.length?prepareMovements(allRaw,st,warn0):null;
   const rev=prep?prep.movements.reduce((a,m)=>a+(+m.qty||0)*(+m.unitPrice||0),0):0;
-  const ok=prep&&prep.stats.add;
-  function run(){if(!ok)return;act.importLedger(prep);show("Imported "+prep.stats.add+" sales"+(prep.stats.newCodes?" · "+prep.stats.newCodes+" to staging":""));onClose();}
-  const fmtName=parsed?(parsed.format==="woo"?"WooCommerce orders":parsed.format==="vektori"?"Vektori sales report":"Unrecognised"):"";
+  const ok=prep&&prep.stats.add&&!undated.length;
+  function run(){if(!ok)return;act.importLedger(prep);
+    show("Imported "+prep.stats.add+" sales from "+items.length+" file"+(items.length>1?"s":"")+(prep.stats.newCodes?" · "+prep.stats.newCodes+" to staging":""),true);onClose();}
+  const fmtName=f=>f==="woo"?"WooCommerce orders":f==="vektori"?"Vektori sales report":"Unrecognised";
   return html`<${Modal} wide=${true} title="Import sales (Vektori / WooCommerce)" onClose=${onClose}
-    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Import${ok?(" "+prep.stats.add):""}</button></${React.Fragment}>`}>
-    <div class="note">Upload a <b>Vektori</b> Product Sales Report or a <b>WooCommerce</b> orders export (.xlsx or .csv) — the format is detected automatically. Each line becomes an <b>out</b> movement in the ledger under its channel; unknown product codes go to staging. Re-importing the same file changes nothing (duplicates are skipped).</div>
-    <div class="hintrow"><button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Choose sales file…</button>
-      <input ref=${fileRef} type="file" accept=".xlsx,.csv" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}
-      ${parsed&&parsed.format?html`<span class="badge type">${fmtName}</span>`:null}</div>
-    ${parsed&&parsed.format==="vektori"?html`<div class="hintrow"><label class="note">Vektori has no per-line date — dated to <b>${fmtD(eff?eff.defDate:parsed.defDate)||"(set one)"}</b>. Override:</label><input type="date" style=${{width:"auto"}} value=${ov} onInput=${e=>setOv(e.target.value)}/></div>`:null}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Import${prep&&prep.stats.add?(" "+prep.stats.add):""}</button></${React.Fragment}>`}>
+    <div class="note">Upload <b>Vektori</b> Product Sales Reports or a <b>WooCommerce</b> orders export (.xlsx or .csv) — the format is detected per file, and you can choose <b>several at once</b>. Each line becomes an <b>out</b> movement under its channel; unknown product codes go to staging. Duplicates are skipped across the whole set, so re-adding a period you already imported changes nothing.</div>
+    <div class="hintrow"><button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Choose sales files…</button>
+      <input ref=${fileRef} type="file" accept=".xlsx,.csv" multiple=${true} style=${{display:"none"}} onChange=${onFile}/>
+      ${items.length?html`<button class="btn sm ghost" onClick=${()=>{setItems([]);setErr("");}}>Clear</button>`:null}
+      ${items.length?html`<span class="note">${num(items.length)} file${items.length>1?"s":""}</span>`:null}</div>
     ${err?html`<div class="err">${err}</div>`:null}
-    ${ok?html`<div class="kpis" style=${{marginTop:"4px"}}>
+    ${items.length?html`<div class="tablewrap" style=${{marginTop:"4px",maxHeight:"230px",overflow:"auto"}}>
+      <table><thead><tr><th>File</th><th>Format</th><th>Period</th><th class="num">Lines</th><th>Dated</th><th></th></tr></thead>
+      <tbody>${ordered.map(it=>html`<tr key=${it.id}>
+        <td><span class="name">${it.name}</span></td>
+        <td><span class="note">${fmtName(it.parsed&&it.parsed.format)}</span></td>
+        <td class="mono note">${it.start?fmtD(it.start)+" → ":""}${it.date?fmtD(it.date):html`<span class="err">not detected</span>`}</td>
+        <td class="num">${num(it.raw.length)}</td>
+        <td>${(it.parsed&&it.parsed.format==="vektori")?html`<input type="date" style=${{width:"145px",padding:"4px 6px",fontSize:"12px"}} value=${it.ov||it.date||""} onInput=${e=>{const v=e.target.value;setItems(l=>l.map(x=>x.id===it.id?Object.assign({},x,{ov:v}):x));}}/>`:html`<span class="note">per line</span>`}</td>
+        <td class="num"><button class="btn sm ghost rowact" onClick=${()=>setItems(l=>l.filter(x=>x.id!==it.id))}>×</button></td></tr>`)}</tbody></table></div>`:null}
+    ${prep&&!prep.stats.add&&prep.stats.dup?html`<div class="note" style=${{marginTop:"10px"}}>Every one of these ${num(prep.stats.dup)} lines is already in the ledger — this period has been imported before, so there is nothing to add.</div>`:null}
+    ${undated.length?html`<div class="err">${num(undated.length)} file${undated.length>1?"s have":" has"} no period in the header — set a date before importing, or every line will be undated.</div>`:null}
+    ${straddle.length?html`<div class="note" style=${{color:"var(--warn,var(--muted))"}}>⚠ ${num(straddle.length)} report${straddle.length>1?"s span":" spans"} a month boundary (${straddle.map(x=>fmtD(x.start)+"–"+fmtD(x.date)).join(", ")}). A Vektori report carries no per-line date, so the whole file is dated to the end of its period — those sales will count in the later month. Run those weeks as two shorter periods if the split matters for VAT.</div>`:null}
+    ${prep&&(prep.stats.add||prep.stats.dup)?html`<div class="kpis" style=${{marginTop:"10px"}}>
       <div class="kpi"><div class="k">Sales lines</div><div class="v">${num(prep.stats.add)}</div></div>
       <div class="kpi"><div class="k">Revenue</div><div class="v">${money(rev)}</div></div>
       <div class="kpi"><div class="k">New → staging</div><div class="v">${num(prep.stats.newCodes)}</div></div>
       <div class="kpi"><div class="k">Duplicates skipped</div><div class="v">${num(prep.stats.dup)}</div></div>
     </div>`:null}
-    ${prep&&prep.clash&&prep.clash.length?html`<div class="err" style=${{lineHeight:"1.5"}}>${prep.clash.map((c,i)=>html`<div key=${i}>⚠ <b>${c.batchRef||"(no batch)"}</b> on ${c.channel||"—"} already holds ${num(c.held)} line${c.held>1?"s":""} — importing adds ${num(c.adding)} more. Delete that batch in the Ledger first if this is a corrected re-import.</div>`)}</div>`:null}
+    ${prep&&prep.clash&&prep.clash.length?html`<div class="err" style=${{lineHeight:"1.5"}}>${prep.clash.map((c,i)=>html`<div key=${i}>⚠ <b>${c.batchRef||"(no batch)"}</b> on ${c.channel||"—"} already holds ${num(c.held)} line${c.held>1?"s":""} — this set adds ${num(c.adding)} more. Delete that batch in the Ledger first if it is a corrected re-import.</div>`)}</div>`:null}
     ${prep&&prep.warnings.length?html`<div class="note">${prep.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
   </${Modal}>`;}
 

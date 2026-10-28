@@ -17,6 +17,11 @@ Two sources of truth, anchored on the **product code**:
   your code to their invoice line), and a note. On import a blank batch reference auto-generates as
   `COUNTRY-YYYYMMDD-PROVIDER` so one invoice's lines share it.
 
+Sales reports import **several files at once** — a weekly Vektori export is a stack of them — each
+keeping its own period, with a warning when a period crosses a month boundary (a Vektori report carries
+no per-line date, so the whole file is dated to the end of its period). Duplicates are caught across the
+whole set, so re-adding a week already imported changes nothing.
+
 Plus a **staging** queue (codes seen in an import but not yet in the catalogue, confirmed in
 with the code intact), a **sales/analytics** layer fed by WooCommerce / Vektori exports, and a
 **financial tracker** fed by Vektori settlement data (see below).
@@ -152,3 +157,4 @@ same totals plus daily detail.
 12. **Invoices**: drafts with a reconciliation gate, four tax treatments, freight and duty separated,
     paste-in lines with column mapping, supplier-article-number matching, and next-free-code allocation. ✅
 13. **Archived invoices as drafts** and **bulk re-coding** with a template, blank-skipping and a preview. ✅
+14. Multi-file sales import with per-file periods and a month-straddle warning. ✅
