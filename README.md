@@ -74,9 +74,17 @@ one draft per invoice reference, grouped on the batch ref, with freight lifted f
 column and the treatment inferred from the country. The printed total is left blank on purpose, so the
 gate is still satisfied against the paper invoice rather than against the file that produced it.
 
-## Re-coding products
-Product codes can be changed in bulk — moving a catalogue to EAN numbers, say. Download the catalogue
-as a sheet with an empty **New code** column, fill in only the rows to change, and upload it back:
+## Bulk editing
+A catalogue import only touches the columns the file actually contains. Export the catalogue, change
+one column, import it back, and everything the file does not mention — cost, price, supplier, reorder
+point, notes — is left exactly as it was. That makes export-edit-import a safe way to replace a stack
+of supplier descriptions with your own shelf names.
+
+## Re-coding and renaming products
+Product codes and names can be changed in bulk — moving a catalogue to EAN numbers, or replacing a
+supplier's description with your own shelf name. Download the catalogue as a sheet with an empty
+**New code** column beside the editable **Name**, change either or both on the rows you want, and
+upload it back:
 blank rows are left alone, and every change is previewed with the number of ledger movements and draft
 lines that will follow each code before anything is written. Unknown codes and duplicates within the
 file are reported and block the commit. A new code that already belongs to another product is refused

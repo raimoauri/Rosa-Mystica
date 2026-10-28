@@ -816,9 +816,17 @@ function parseCatalogueRows(rows){
     if(!code){skipped++;continue;}
     const t=String(g(r,"type")||"").trim().toLowerCase();const type=(t==="book"||t==="goods"||t==="other")?t:"goods";
     const rp=parseNum(g(r,"reorderPoint"));
-    const it={code,type,name:String(g(r,"name")).trim(),author:String(g(r,"author")||"").trim(),year:String(g(r,"year")||"").trim(),category:String(g(r,"category")||"").trim(),
-      supplier:String(g(r,"supplier")||"").trim(),supplierRef:String(g(r,"supplierRef")||"").trim(),cost:parseNum(g(r,"cost")),price:parseNum(g(r,"price")),
-      sellable:col.sellable==null?true:ynCell(g(r,"sellable"),true),online:col.online==null?false:ynCell(g(r,"online"),false),reorderPoint:(rp==null?null:rp),notes:String(g(r,"notes")||"").trim()};
+    /* Only columns actually present in the file are carried. A partial file — export, change one
+       column, import back — must leave everything it does not mention exactly as it was, or bulk
+       editing silently empties the fields it was not about. */
+    const it={code};const put=(f,v)=>{if(col[f]!=null)it[f]=v;};
+    put("type",type);put("name",String(g(r,"name")).trim());put("author",String(g(r,"author")||"").trim());
+    put("year",String(g(r,"year")||"").trim());put("category",String(g(r,"category")||"").trim());
+    put("supplier",String(g(r,"supplier")||"").trim());put("supplierRef",String(g(r,"supplierRef")||"").trim());
+    put("cost",parseNum(g(r,"cost")));put("price",parseNum(g(r,"price")));
+    put("sellable",ynCell(g(r,"sellable"),true));put("stocked",ynCell(g(r,"stocked"),true));
+    put("online",ynCell(g(r,"online"),false));put("reorderPoint",(rp==null?null:rp));
+    put("notes",String(g(r,"notes")||"").trim());
     const nc=normCode(code);if(seen[nc]!=null){dupInFile++;items[seen[nc]]=it;}else{seen[nc]=items.length;items.push(it);}}
   if(col.code==null)warnings.push("No Product code column found — is this the catalogue template?");
   if(skipped)warnings.push(skipped+" row"+(skipped>1?"s":"")+" skipped (no product code).");
@@ -1006,7 +1014,7 @@ function Catalogue({st,act,openProduct,q,setQ}){
   const Th=(k,label,cls)=>html`<th class=${"sortable"+(cls?" "+cls:"")} onClick=${()=>S(k)}>${label}${arrow(k)}</th>`;
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Products</h2></div>
-      <div class="hintrow">${st.catalogue.length?html`<button class="btn" onClick=${()=>act.openRecode()}>Re-code…</button>`:null}<button class="btn" onClick=${()=>act.openCatImport()}><${Icon} name="upload"/>Import catalogue</button><button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button></div></div>
+      <div class="hintrow">${st.catalogue.length?html`<button class="btn" onClick=${()=>act.openRecode()}>Re-code / rename…</button>`:null}<button class="btn" onClick=${()=>act.openCatImport()}><${Icon} name="upload"/>Import catalogue</button><button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button></div></div>
     <div class="toolbar">
       <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, name, author…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
       <select class="filter" value=${ftype} onChange=${e=>setFtype(e.target.value)}><option value="">All types</option>${TYPES.map(([v,l])=>html`<option key=${v} value=${v}>${l}</option>`)}</select>
@@ -1706,17 +1714,24 @@ function RecodeModal({st,act,onClose,show}){
     const H=(rows[0]||[]).map(normH);
     const ci=H.findIndex(h=>h==="productcode"||h==="code"||h==="oldcode");
     const ni=H.findIndex(h=>h==="newcode"||h==="newproductcode");
-    if(ci<0||ni<0){setErr("Need a 'Product code' column and a 'New code' column — download the template.");setRes(null);return;}
+    const nmi=H.findIndex(h=>h==="name");
+    if(ci<0||(ni<0&&nmi<0)){setErr("Need a 'Product code' column, and a 'New code' or 'Name' column — download the template.");setRes(null);return;}
     const byCode=indexCatalogue(st.catalogue);
     const pairs=[],merges=[],problems=[];const taken={};let blank=0,same=0;
     const catTaken={};for(const p of st.catalogue)catTaken[normCode(p.code)]=p.code;
     for(let i=1;i<rows.length;i++){const r=rows[i]||[];
-      const from=String(r[ci]==null?"":r[ci]).trim();const to=String(r[ni]==null?"":r[ni]).trim();
+      const from=String(r[ci]==null?"":r[ci]).trim();const to=ni<0?"":String(r[ni]==null?"":r[ni]).trim();
+      const nm=nmi<0?"":String(r[nmi]==null?"":r[nmi]).trim();
       if(!from&&!to)continue;
-      if(!to){blank++;continue;}
-      const p=byCode[normCode(from)];
-      if(!p){problems.push("Row "+(i+1)+": “"+from+"” is not in the catalogue.");continue;}
-      if(normCode(to)===normCode(from)){same++;continue;}
+      const p=from?byCode[normCode(from)]:null;
+      if(from&&!p){problems.push("Row "+(i+1)+": “"+from+"” is not in the catalogue.");continue;}
+      if(!p)continue;
+      const newName=(nm&&nm!==String(p.name||""))?nm:"";
+      const codeChange=!!to&&normCode(to)!==normCode(from);
+      if(!codeChange&&!newName){if(!to)blank++;else same++;continue;}
+      if(!codeChange){
+        const moves0=st.ledger.filter(x=>normCode(x.code)===normCode(from)).length;
+        pairs.push({from:p.code,to:p.code,name:p.name||"",newName,moves:moves0,dls:0,into:""});continue;}
       const hits=catTaken[normCode(to)]&&normCode(catTaken[normCode(to)])!==normCode(from);
       if(!hits&&taken[normCode(to)]){problems.push("Row "+(i+1)+": “"+to+"” is used twice in this file.");continue;}
       if(hits&&!allowMerge){
@@ -1724,7 +1739,7 @@ function RecodeModal({st,act,onClose,show}){
       taken[normCode(to)]=1;
       const moves=st.ledger.filter(x=>normCode(x.code)===normCode(from)).length;
       const dls=(st.invoices||[]).reduce((a,inv)=>a+(inv.lines||[]).filter(l=>normCode(l.code)===normCode(from)).length,0);
-      const row={from:p.code,to,name:p.name||"",moves,dls,into:hits?((byCode[normCode(to)]||{}).name||to):""};
+      const row={from:p.code,to,name:p.name||"",newName,moves,dls,into:hits?((byCode[normCode(to)]||{}).name||to):""};
       (hits?merges:pairs).push(row);}
     setRes({pairs,merges,problems,blank,same});
     setErr((pairs.length+merges.length)?"":(problems.length?"Nothing can be applied until the problems below are fixed.":"No new codes filled in — the New code column is empty on every row."));}
@@ -1735,12 +1750,12 @@ function RecodeModal({st,act,onClose,show}){
     e.target.value="";}
   const ok=res&&(res.pairs.length+ (res.merges||[]).length)&&!res.problems.length;
   function run(){if(!ok)return;const all=res.pairs.concat(res.merges||[]);
-    act.recodeProducts(all.map(p=>({from:p.from,to:p.to})));
+    act.recodeProducts(all.map(p=>({from:p.from,to:p.to,name:p.newName||""})));
     const m=(res.merges||[]).length;
     show("Re-coded "+res.pairs.length+(m?" · folded "+m:"")+" product"+(all.length>1?"s":""),true);onClose();}
-  return html`<${Modal} wide=${true} title="Re-code products" onClose=${onClose}
+  return html`<${Modal} wide=${true} title="Re-code and rename products" onClose=${onClose}
     footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Re-code ${ok?(res.pairs.length+(res.merges||[]).length):""}</button></${React.Fragment}>`}>
-    <div class="note">Change product codes in bulk — moving to EAN numbers, say. Download the catalogue, fill in <b>New code</b> only for the ones you want changed, and upload it back: blank rows are left exactly as they are. Renaming carries the product's whole history with it — every ledger movement and every invoice draft line follows the code.</div>
+    <div class="note">Change product codes and names in bulk — moving to EAN numbers, or replacing a supplier's description with your own shelf name. Download the catalogue, edit <b>New code</b>, <b>Name</b> or both on the rows you want changed, and upload it back: rows you leave alone are untouched. Re-coding carries the product's whole history with it — every ledger movement, staged entry and invoice draft line follows the code.</div>
     <div class="hintrow">
       <button class="btn" onClick=${dl}><${Icon} name="download"/>Download template · ${num(st.catalogue.length)} products</button>
       <button class="btn" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Upload filled file…</button>
@@ -1752,15 +1767,16 @@ function RecodeModal({st,act,onClose,show}){
       <div class="kpis" style=${{marginTop:"4px"}}>
         <div class="kpi"><div class="k">To re-code</div><div class="v">${num(res.pairs.length)}</div>${(res.merges||[]).length?html`<div class="f">${num(res.merges.length)} of them folded into an existing product</div>`:null}</div>
         <div class="kpi"><div class="k">Movements relinked</div><div class="v">${num(res.pairs.reduce((a,p)=>a+p.moves,0))}</div></div>
-        <div class="kpi"><div class="k">Left alone</div><div class="v">${num(res.blank+res.same)}</div><div class="f">${num(res.blank)} blank · ${num(res.same)} unchanged</div></div>
+        <div class="kpi"><div class="k">Renamed</div><div class="v">${num(res.pairs.filter(x=>x.newName).length+(res.merges||[]).filter(x=>x.newName).length)}</div><div class="f">new shelf names</div></div>
+        <div class="kpi"><div class="k">Left alone</div><div class="v">${num(res.blank+res.same)}</div><div class="f">${num(res.blank)} blank · ${num(res.same)} already right</div></div>
         <div class="kpi"><div class="k">Problems</div><div class="v" style=${{color:res.problems.length?"var(--bad)":"inherit"}}>${num(res.problems.length)}</div></div>
       </div>
       ${res.problems.length?html`<div class="err" style=${{marginTop:"10px",lineHeight:"1.6"}}>${res.problems.slice(0,12).map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}${res.problems.length>12?html`<div>…and ${num(res.problems.length-12)} more</div>`:null}</div>`:null}
-      ${(res.pairs.length||(res.merges||[]).length)?html`<div class="tablewrap" style=${{marginTop:"12px",maxHeight:"280px",overflow:"auto"}}><table><thead><tr><th>Old code</th><th>New code</th><th>Product</th><th class="num">Movements</th><th class="num">Draft lines</th></tr></thead>
+      ${(res.pairs.length||(res.merges||[]).length)?html`<div class="tablewrap" style=${{marginTop:"12px",maxHeight:"280px",overflow:"auto"}}><table><thead><tr><th>Old code</th><th>New code</th><th>Product name</th><th class="num">Movements</th><th class="num">Draft lines</th></tr></thead>
         <tbody>${(res.merges||[]).map(p=>html`<tr key=${"m"+p.from}><td class="code faint">${p.from}</td><td class="code">${p.to}</td>
           <td><span class="name">${p.name}</span><div class="meta" style=${{color:"var(--accent)"}}>folds into “${p.into}”</div></td>
           <td class="num">${num(p.moves)}</td><td class="num">${p.dls?num(p.dls):"—"}</td></tr>`)}
-        ${res.pairs.slice(0,200).map(p=>html`<tr key=${p.from}><td class="code faint">${p.from}</td><td class="code">${p.to}</td><td><span class="name">${p.name}</span></td><td class="num">${num(p.moves)}</td><td class="num">${p.dls?num(p.dls):"—"}</td></tr>`)}</tbody></table></div>`:null}
+        ${res.pairs.slice(0,200).map(p=>html`<tr key=${p.from}><td class="code faint">${p.from}</td><td class="code">${p.to}</td><td><span class="name">${p.newName||p.name}</span>${p.newName?html`<div class="meta faint">was “${p.name}”</div>`:null}</td><td class="num">${num(p.moves)}</td><td class="num">${p.dls?num(p.dls):"—"}</td></tr>`)}</tbody></table></div>`:null}
       ${res.pairs.length>200?html`<div class="note">Showing the first 200 of ${num(res.pairs.length)}.</div>`:null}
     </${React.Fragment}>`:null}
   </${Modal}>`;}
@@ -2233,8 +2249,10 @@ function App(){
     openWipe:()=>setModal({type:"wipe"}),
     wipe:()=>setSt(s=>{undoRef.current=s;return blankState();}),
     importCatalogue:items=>setSt(s=>{const now=new Date().toISOString();const cat=s.catalogue.slice();const idx={};cat.forEach((p,i)=>idx[normCode(p.code)]=i);
-      for(const it of items){const nc=normCode(it.code);const clean={code:it.code,type:it.type,name:it.name,author:it.author,year:it.year,category:it.category,supplier:it.supplier,supplierRef:it.supplierRef,cost:it.cost,price:it.price,sellable:it.sellable,stocked:(it.stocked===undefined?!TILLCODE.test(String(it.code||"")):it.stocked),online:it.online,reorderPoint:it.reorderPoint,notes:it.notes};
-        if(idx[nc]!=null)cat[idx[nc]]=Object.assign({},cat[idx[nc]],clean,{updatedAt:now});else{idx[nc]=cat.length;cat.push(Object.assign({createdAt:now,updatedAt:now},clean));}}
+      const DEF={type:"goods",name:"",author:"",year:"",category:"",supplier:"",supplierRef:"",cost:null,price:null,sellable:true,online:false,reorderPoint:null,notes:""};
+      for(const it of items){const nc=normCode(it.code);
+        if(idx[nc]!=null)cat[idx[nc]]=Object.assign({},cat[idx[nc]],it,{updatedAt:now});
+        else{idx[nc]=cat.length;cat.push(Object.assign({createdAt:now,updatedAt:now},DEF,{stocked:!TILLCODE.test(String(it.code||""))},it));}}
       return {...s,catalogue:cat};}),
     confirmAllStaging:()=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();const cat=s.catalogue.slice();const have=new Set(cat.map(p=>normCode(p.code)));
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
@@ -2244,17 +2262,18 @@ function App(){
     /* Renaming carries history: the code is the anchor, so every movement, staged entry and
        draft line that points at the old code is moved to the new one in the same write. */
     recodeProducts:pairs=>setSt(s=>{undoRef.current=s;
-      const map={};for(const p of pairs)map[normCode(p.from)]=p.to;
+      const map={};for(const p of pairs)map[normCode(p.from)]={to:p.to,name:p.name||""};
       const now=new Date().toISOString();
-      const ledger=s.ledger.map(r=>{const t=map[normCode(r.code)];return t?Object.assign({},r,{code:t}):r;});
-      const invoices=(s.invoices||[]).map(i=>Object.assign({},i,{lines:(i.lines||[]).map(l=>{const t=map[normCode(l.code)];return t?Object.assign({},l,{code:t}):l;})}));
+      const ledger=s.ledger.map(r=>{const t=map[normCode(r.code)];return t?Object.assign({},r,{code:t.to}):r;});
+      const invoices=(s.invoices||[]).map(i=>Object.assign({},i,{lines:(i.lines||[]).map(l=>{const t=map[normCode(l.code)];return t?Object.assign({},l,{code:t.to}):l;})}));
       /* Rename, then fold: when a product is renamed onto a code another product already holds,
          the two are one product. The record that was NOT renamed survives — it is the one whose
          code is being kept — and the other fills in whatever it left empty before disappearing. */
       const FILL=["name","author","year","category","supplier","supplierRef","cost","price","reorderPoint","notes"];
       const out=[],at={};
       for(const p of s.catalogue){const t=map[normCode(p.code)];
-        const rec=t?Object.assign({},p,{code:t,updatedAt:now}):p;const renamed=!!t;const k=normCode(rec.code);
+        const rec=t?Object.assign({},p,{code:t.to},(t.name?{name:t.name}:{}),{updatedAt:now}):p;
+        const renamed=!!(t&&normCode(t.to)!==normCode(p.code));const k=normCode(rec.code);
         if(at[k]==null){at[k]=out.length;out.push({rec,renamed});continue;}
         const cur=out[at[k]];
         const keep=(cur.renamed&&!renamed)?{rec,renamed}:cur;
@@ -2264,7 +2283,7 @@ function App(){
       const catalogue=out.map(x=>x.rec);
       /* staged entries follow the same rule, summing what each had seen */
       const sg=[],sat={};
-      for(const x0 of (s.staging||[])){const t=map[normCode(x0.code)];const x=t?Object.assign({},x0,{code:t}):x0;const k=normCode(x.code);
+      for(const x0 of (s.staging||[])){const t=map[normCode(x0.code)];const x=t?Object.assign({},x0,{code:t.to}):x0;const k=normCode(x.code);
         if(sat[k]==null){sat[k]=sg.length;sg.push(x);continue;}
         const o=sg[sat[k]];
         sg[sat[k]]=Object.assign({},o,{seenCount:(o.seenCount||0)+(x.seenCount||0),qty:(o.qty||0)+(x.qty||0),
