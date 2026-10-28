@@ -41,6 +41,32 @@ is out of room, a banner says so and stays up, rather than letting a day's work 
 shows how much of the ~4.8 MB budget is used (a ledger line costs about 260 characters, so roughly
 19 000 movements fit) and how long it has been since the last core export.
 
+## Invoices (draft → reconciled → posted)
+A supplier invoice is entered as a **draft** before it reaches the ledger. The header carries the
+provider, country, invoice number, dates, currency and rate, the **tax treatment**, and the freight
+and duty; the lines carry the supplier's article number, your code, the quantity billed and the
+quantity **actually received**. Lines can be pasted straight from the supplier's own list — tabs,
+semicolons or aligned columns — and you say what each column is before they are added.
+
+Nothing is written until the draft **agrees with the total printed on the invoice**, to the cent:
+*Post to ledger* stays disabled while the difference is anything but zero. A missing, doubled or
+mistyped line shows up as a gap, which is how a 30-line invoice gets checked without reading it twice.
+Posting creates ordinary in-movements under one batch reference (the invoice number), through the same
+preparation a file import goes through, so duplicate detection, staging and the re-import guard behave
+identically. A posted invoice can be **unposted**, which removes its movements and returns it to draft.
+
+Four **tax treatments** set the line VAT, defaulted from the country and always overridable: domestic
+Finland, intra-EU acquisition (0% on the invoice, self-accounted), import from outside the EU, and own
+print. **Freight and duty are separate fields** — both spread per unit into landed cost — while import
+VAT is recorded for the VAT return and deliberately never capitalised.
+
+## Supplier article numbers
+The catalogue's supplier + supplier-ref pair is a live index. An imported or posted line whose code is
+unknown but whose provider and reference match a catalogue product resolves onto that product, and the
+import says how many lines matched that way. So the first invoice from a supplier teaches the map —
+give its lines codes in your own scheme with one button, or set them as you confirm staging — and every
+later invoice from them lands on your codes with no staging at all.
+
 ## Out-movement kinds
 Each out-channel carries a **kind** — sale, adjustment, write-off or gift. Every out line consumes
 stock in FIFO order, because a unit that left the shelf has left it either way; only a *sale* line
@@ -106,3 +132,5 @@ same totals plus daily detail.
     sale; a windowed Ledger with date filters, batch deletion and Undo; an Analytics period control and
     a gross/net basis; one app-wide channel colour; staged types read from the code; and Vektori unit
     prices kept at full precision. ✅
+12. **Invoices**: drafts with a reconciliation gate, four tax treatments, freight and duty separated,
+    paste-in lines with column mapping, supplier-article-number matching, and next-free-code allocation. ✅

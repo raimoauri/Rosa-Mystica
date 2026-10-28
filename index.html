@@ -553,18 +553,19 @@ const TYPES=[["goods","Goods"],["book","Book"],["other","Other"]];
 const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 
 /* ---------- persistence ---------- */
-const SCHEMA=3;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
-function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],
+const SCHEMA=4;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
+function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],
   channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
-  settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:""}};}
+  settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG"}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
-  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];
+  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];
   if(!s.channels||!s.channels.length)s.channels=[{id:uid(),name:"Purchase",dir:"in",mode:null}];
   s.channels=s.channels.map(c=>{const o=("mode" in c)?c:Object.assign({},c,{mode:(c.dir==="out"?inferMode(c.name):null)});
     return ("kind" in o)?o:Object.assign({},o,{kind:(o.dir==="out"?"sale":null)});});
   s.settings=Object.assign({shop:"Katolinen Kirjakauppa",theme:"system"},s.settings||{});
   if(!s.settings.vatRates||typeof s.settings.vatRates!=="object")s.settings.vatRates={book:13.5,goods:25.5,other:0};
+  if(!s.settings.codePrefix)s.settings.codePrefix="KKG";
   return s;}
 /* Loading returns {ok:true,state} or {ok:false,raw,err}. A payload we cannot read is NEVER
    replaced by a blank state — the raw bytes are handed to the recovery screen, and nothing
@@ -589,7 +590,7 @@ function storageInfo(){let bytes=0;try{bytes=(localStorage.getItem(LSKEY)||"").l
 
 /* core file (portable, optionally encrypted) */
 const APP="Rosa Mystica";
-function makeCore(s){return {app:APP,kind:"core",schema:SCHEMA,savedAt:new Date().toISOString(),data:{catalogue:s.catalogue,ledger:s.ledger,staging:s.staging,finance:s.finance,postage:s.postage,channels:s.channels,settings:s.settings}};}
+function makeCore(s){return {app:APP,kind:"core",schema:SCHEMA,savedAt:new Date().toISOString(),data:{catalogue:s.catalogue,ledger:s.ledger,staging:s.staging,finance:s.finance,postage:s.postage,invoices:s.invoices,channels:s.channels,settings:s.settings}};}
 function readCore(o){return (o&&o.kind==="core"&&o.data)?o.data:o;}
 function isCoreLike(raw){const d=readCore(raw);return !!(d&&(Array.isArray(d.catalogue)||Array.isArray(d.ledger)));}
 const HAS_CRYPTO=(typeof crypto!=="undefined")&&!!(crypto.subtle)&&(typeof TextEncoder!=="undefined");
@@ -681,8 +682,20 @@ function genBatchRef(country,date,provider){const cc=abbrevCountry(country);cons
    code starting there is a book (13.5% VAT); anything else defaults to goods (25.5%).
    The old blanket "book" quietly put goods on the book rate once confirmed. */
 function guessType(code){const c=String(code||"").replace(/[^0-9]/g,"");return (c.length===13&&/^97[89]/.test(c))?"book":"goods";}
+/* Merge freshly-staged codes into the staging queue (shared by file import and invoice posting). */
+function mergeStaging(cur,incoming,catSet){const staging=cur.slice();
+  for(const e of incoming){const nc=normCode(e.code);if(catSet.has(nc))continue;const ix=staging.findIndex(x=>normCode(x.code)===nc);
+    if(ix>=0){const o=staging[ix];staging[ix]=Object.assign({},o,{seenCount:(o.seenCount||0)+e.seenCount,qty:(o.qty||0)+e.qty,
+      firstDate:(!o.firstDate||(e.firstDate&&e.firstDate<o.firstDate))?(e.firstDate||o.firstDate):o.firstDate,
+      name:o.name||e.name,type:o.type||e.type,provider:o.provider||e.provider,providerRef:o.providerRef||e.providerRef});}
+    else staging.push({code:e.code,name:e.name,type:e.type,seenCount:e.seenCount,qty:e.qty,firstDate:e.firstDate,provider:e.provider||"",providerRef:e.providerRef||""});}
+  return staging;}
 function prepareMovements(raw,st,warnings0){
   const catSet=new Set(st.catalogue.map(p=>normCode(p.code)));
+  /* An unknown code whose provider + provider ref match a catalogue product is that product:
+     the supplier's own article number is the bridge. This is what stops the second invoice
+     from a supplier refilling staging with articles already confirmed from the first. */
+  const sidx=supplierIndex(st);let matchedRef=0;
   const sig=m=>[m.date,m.channel,normCode(m.code),m.qty,m.unitPrice==null?"":m.unitPrice,m.batchRef].join("|");
   const existing=new Set(st.ledger.map(sig));const seen=new Set();
   /* how many lines each channel+batch already holds, so a corrected re-import is flagged
@@ -690,7 +703,11 @@ function prepareMovements(raw,st,warnings0){
   const held={};for(const r of st.ledger){const k=(r.channel||"")+"|"+(r.batchRef||"");held[k]=(held[k]||0)+1;}
   const incoming={};
   const movements=[];const stage={};const newCh={};let dup=0;
-  for(const mv of raw){
+  for(const mv0 of raw){
+    let mv=mv0;
+    if(mv.code&&!catSet.has(normCode(mv.code))&&mv.providerRef){
+      const hit=sidx.lookup(mv.provider,mv.providerRef);
+      if(hit&&normCode(hit)!==normCode(mv.code)){mv=Object.assign({},mv,{code:hit});matchedRef++;}}
     const s=sig(mv);if(existing.has(s)||seen.has(s)){dup++;continue;}seen.add(s);
     const clean={date:mv.date,channel:mv.channel,dir:mv.dir,batchRef:mv.batchRef,code:mv.code,qty:mv.qty,unitPrice:mv.unitPrice,vatRate:(mv.vatRate==null?null:mv.vatRate),transport:(mv.transport==null?null:mv.transport),note:mv.note,country:mv.country||"",provider:mv.provider||"",providerRef:mv.providerRef||""};movements.push(clean);
     {const k=(mv.channel||"")+"|"+(mv.batchRef||"");incoming[k]=(incoming[k]||0)+1;}
@@ -705,7 +722,8 @@ function prepareMovements(raw,st,warnings0){
   for(const k in incoming){if(!held[k])continue;const p=k.split("|");
     clash.push({channel:p[0],batchRef:p[1],held:held[k],adding:incoming[k]});
     warnings.push("Batch "+(p[1]||"(none)")+" on "+(p[0]||"—")+" already holds "+held[k]+" line"+(held[k]>1?"s":"")+"; this file adds "+incoming[k]+" more that are not exact duplicates. If this is a corrected re-import, delete the batch in the Ledger first — otherwise it will be counted twice.");}
-  return {movements,staging,newChannels,warnings,clash,stats:{add:movements.length,dup,newCodes:staging.length,skipped:0}};
+  if(matchedRef)warnings.push(matchedRef+" line"+(matchedRef>1?"s":"")+" matched to existing products by the provider's own reference.");
+  return {movements,staging,newChannels,warnings,clash,stats:{add:movements.length,dup,newCodes:staging.length,skipped:0,matchedRef}};
 }
 function parseLedgerRows(rows,st){
   if(!rows||!rows.length)return {movements:[],staging:[],newChannels:[],warnings:["The file looks empty."],stats:{add:0,dup:0,newCodes:0,skipped:0}};
@@ -897,7 +915,8 @@ function Icon({name}){const P={
   download:"M12 3v12M7 10l5 5 5-5M5 21h14",
   upload:"M12 21V9M7 14l5-5 5 5M5 3h14",
   finance:"M2 6h20v12H2zM12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6M6 9v6M18 9v6",
-  reconcile:"M4 7h11M4 7l3-3M4 7l3 3M20 17H9m11 0l-3-3m3 3l-3 3"
+  reconcile:"M4 7h11M4 7l3-3M4 7l3 3M20 17H9m11 0l-3-3m3 3l-3 3",
+  invoice:"M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h3"
 };return html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d=${P[name]||""}/></svg>`;}
 
 function Modal({title,code,wide,onClose,footer,children}){
@@ -1018,7 +1037,9 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
   return html`<${Modal} title=${fromStaging?"Confirm staged item":(editing?"Edit product":"New product")} code=${editing?editing.code:null} onClose=${onClose} footer=${footer}>
     ${fromStaging?html`<div class="warnbox">This item came from a ledger import and isn't in the catalogue yet. Complete its details and confirm — the product code stays the anchor.</div>`:null}
     <div class="grid3">
-      <${Field} label="Product code *">${html`<input class="mono" type="text" value=${f.code} onInput=${e=>up("code",e.target.value)} placeholder="SKU / EAN / ISBN"/>`}</${Field}>
+      <${Field} label="Product code *">${html`<div style=${{display:"flex",gap:"6px"}}>
+        <input class="mono" type="text" value=${f.code} onInput=${e=>up("code",e.target.value)} placeholder="SKU / EAN / ISBN"/>
+        <button class="btn sm" style=${{flex:"none"}} title="Take the next free code in your own scheme — the supplier's code stays in Provider ref" onClick=${()=>up("code",nextFreeCode(st))}>Next</button></div>`}</${Field}>
       <${Field} label="Type">${html`<select value=${f.type} onChange=${e=>up("type",e.target.value)}>${canType.map(([v,l])=>html`<option key=${v} value=${v}>${l}</option>`)}</select>`}</${Field}>
       <${Field} label="Category">${html`<input type="text" value=${f.category} onInput=${e=>up("category",e.target.value)} placeholder="e.g. Rosary, Theology"/>`}</${Field}>
     </div>
@@ -1166,6 +1187,7 @@ function Staging({st,act,openProduct,show}){
 function Settings({st,act,show}){
   const [newCh,setNewCh]=useState({name:"",dir:"out",mode:"",kind:"sale"});
   const sinfo=storageInfo();const lastExp=st.settings.lastExport||"";
+  const [pfx,setPfx]=useState(()=>st.settings.codePrefix||"KKG");
   const vrs=st.settings.vatRates||{book:13.5,goods:25.5,other:0};
   const [vr,setVr]=useState(()=>({book:String(vrs.book??13.5),goods:String(vrs.goods??25.5),other:String(vrs.other??0)}));
   const fileRef=useRef();
@@ -1222,6 +1244,11 @@ function Settings({st,act,show}){
           <${Field} label="Other %">${html`<input class="mono" type="text" inputmode="decimal" value=${vr.other} onInput=${e=>setVr(o=>({...o,other:e.target.value}))} onBlur=${()=>act.setVatRate("other",vr.other)}/>`}</${Field}>
         </div>
         <div class="note" style=${{marginTop:"10px"}}>Sales are stripped to net at the rate for each product's type when computing margin; a movement's own VAT % overrides. Purchases carry their own per-line VAT %, keyed with the VAT-inclusive total.</div>
+        <div class="rowbetween" style=${{marginTop:"14px",borderTop:"1px solid var(--line)",paddingTop:"13px",gap:"12px"}}>
+          <div><div class="lab">Code prefix for new products</div>
+            <div class="note">The <b>Next</b> button on a product offers the next free code in this scheme — currently <span class="code">${nextFreeCode(st)}</span>.</div></div>
+          <input class="mono" type="text" style=${{width:"110px"}} value=${pfx} onInput=${e=>setPfx(e.target.value)} onBlur=${()=>act.setCodePrefix(pfx)}/>
+        </div>
       </div>
     </div>
     <div class="panel" style=${{marginBottom:"18px"}}>
@@ -1292,6 +1319,258 @@ function ExportModal({title,text,onClose}){const ref=useRef();
     <textarea ref=${ref} class="io" readOnly value=${text}></textarea></${Modal}>`;}
 function ConfirmModal({title,body,confirmLabel,onConfirm,onClose}){
   return html`<${Modal} title=${title} onClose=${onClose} footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn danger" onClick=${()=>{onConfirm();onClose();}}>${confirmLabel||"Confirm"}</button></${React.Fragment}>`}><div>${body}</div></${Modal}>`;}
+
+/* ===================== Invoices (draft → checked → posted) =====================
+   A supplier invoice is entered as a draft: a header (who, when, which tax treatment, what
+   freight and duty), then its lines. Nothing touches stock until the draft reconciles to the
+   total printed on the invoice and you post it — at which point the lines become ordinary
+   ledger in-movements under one batch reference, exactly as a file import would. */
+const TREATMENTS=[
+  ["domestic","Domestic (Finland)","VAT is on the invoice; net is counted back from each line total."],
+  ["eu_acq","Intra-EU acquisition","0% on the invoice — you self-account the Finnish VAT and deduct it. The line total is already net."],
+  ["import","Import (outside EU)","0% on the invoice. Duty and clearance are landed cost; import VAT is deductible, so it never enters stock value."],
+  ["own","Own print","Service-fee VAT on the total, as the printer bills it."]];
+const TREAT_LBL={};TREATMENTS.forEach(t=>{TREAT_LBL[t[0]]=t[1];});
+const EU=["at","austria","be","belgium","bg","bulgaria","hr","croatia","cy","cyprus","cz","czechia","czech republic","dk","denmark","ee","estonia","fi","finland","suomi","fr","france","ranska","de","germany","saksa","gr","greece","hu","hungary","ie","ireland","it","italy","italia","lv","latvia","lt","lithuania","lu","luxembourg","mt","malta","nl","netherlands","alankomaat","pl","poland","puola","pt","portugal","portugali","ro","romania","sk","slovakia","si","slovenia","es","spain","espanja","se","sweden","ruotsi"];
+/* A sensible default only — the shopkeeper can always override it on the invoice. */
+function treatmentForCountry(c){const n=String(c||"").trim().toLowerCase();if(!n)return "eu_acq";
+  if(/^(fi|finland|suomi)$/.test(n))return "domestic";
+  return EU.indexOf(n)>=0?"eu_acq":"import";}
+function defaultVatFor(treatment,st){const vr=vatRatesOf(st);
+  if(treatment==="domestic")return vr.goods;if(treatment==="own")return vr.goods;return 0;}
+/* An invoice number makes the best batch reference; keep it filterable. */
+function refFromInvoiceNo(s){return String(s||"").trim().toUpperCase().replace(/[^A-Z0-9]+/g,"-").replace(/^-|-$/g,"");}
+function blankInvoice(st){const c="";return {id:uid(),status:"draft",provider:"",country:c,invoiceNo:"",
+  date:today(),due:"",currency:"EUR",rate:"1",treatment:treatmentForCountry(c),
+  freight:"",duty:"",importVat:"",invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:""};}
+function blankLine(){return {id:uid(),supplierRef:"",code:"",name:"",qty:"",qtyRecv:"",lineTotal:"",vatRate:"",type:"goods"};}
+const r2=x=>Math.round(x*100)/100;
+function invoiceTotals(inv){
+  let lines=0,units=0,recv=0,missing=0;
+  for(const l of (inv.lines||[])){
+    const t=parseNum(l.lineTotal);if(t==null)missing++;else lines+=t;
+    const q=parseNum(l.qty)||0;units+=q;
+    const rq=(l.qtyRecv===""||l.qtyRecv==null)?q:(parseNum(l.qtyRecv)||0);recv+=rq;}
+  const freight=parseNum(inv.freight)||0,duty=parseNum(inv.duty)||0,importVat=parseNum(inv.importVat)||0;
+  const computed=lines+freight+duty;const keyed=parseNum(inv.invoiceTotal);
+  return {lines:r2(lines),units,recv,missing,freight,duty,importVat,computed:r2(computed),keyed,
+    diff:keyed==null?null:r2(computed-keyed),landed:r2(computed),
+    ok:keyed!=null&&Math.abs(computed-keyed)<0.005};}
+/* Catalogue indexed by the supplier's own article number. The first invoice from a provider
+   teaches this map (you set the code when confirming staging); every later invoice from them
+   resolves straight onto your codes with no staging at all. */
+function normRef(s){return String(s||"").replace(/[\s\-_.\/]/g,"").toUpperCase();}
+function normProv(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"")
+  .replace(/(lda|oy|ab|gmbh|srl|sarl|bv|nv|spa|sa|ltd|llc|inc|unipessoal)$/,"");}
+function supplierIndex(st){const byPair={},byRef={},refSeen={};
+  for(const p of (st.catalogue||[])){const r=normRef(p.supplierRef);if(!r)continue;
+    const pv=normProv(p.supplier);if(pv)byPair[pv+"|"+r]=p.code;
+    refSeen[r]=(refSeen[r]||0)+1;byRef[r]=p.code;}
+  return {lookup(provider,ref){const r=normRef(ref);if(!r)return null;
+    const pv=normProv(provider);
+    if(pv&&byPair[pv+"|"+r])return byPair[pv+"|"+r];
+    if(pv)for(const k in byPair){const kp=k.split("|");if(kp[1]!==r)continue;
+      if(kp[0]===pv||(kp[0].length>=3&&pv.length>=3&&(kp[0].indexOf(pv)===0||pv.indexOf(kp[0])===0)))return byPair[k];}
+    return (refSeen[r]===1)?byRef[r]:null;}};}
+/* Next free code in the shop's own scheme, e.g. KKG-142. */
+function nextFreeCode(st){const pre=((st.settings&&st.settings.codePrefix)||"KKG").toUpperCase();
+  const re=new RegExp("^"+pre.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"-(\\d+)$","i");
+  let max=0,width=3;
+  for(const p of (st.catalogue||[])){const m=re.exec(String(p.code||"").trim());if(!m)continue;
+    const n=+m[1];if(n>max)max=n;if(m[1].length>width)width=m[1].length;}
+  return pre+"-"+String(max+1).padStart(width,"0");}
+/* Pasted supplier text: rows on newlines, columns on tabs, semicolons or runs of spaces. */
+function splitPaste(text){const rows=[];
+  for(const raw of String(text||"").split(/\r?\n/)){const ln=raw.replace(/\s+$/,"");if(!ln.trim())continue;
+    let parts=ln.indexOf("\t")>=0?ln.split("\t"):(ln.indexOf(";")>=0&&ln.split(";").length>2?ln.split(";"):ln.split(/\s{2,}/));
+    parts=parts.map(x=>x.trim()).filter((x,i,a)=>!(x===""&&(i===0||i===a.length-1)));
+    if(parts.length>1)rows.push(parts);}
+  return rows;}
+const PASTE_FIELDS=[["skip","— skip —"],["supplierRef","Supplier ref"],["code","Our code"],["name","Description"],
+  ["qty","Quantity"],["qtyRecv","Received"],["unit","Unit price"],["lineTotal","Line total"],["vatRate","VAT %"]];
+function guessPasteMap(rows){
+  const w=Math.max(...rows.map(r=>r.length));const map=new Array(w).fill("skip");
+  const numeric=i=>rows.filter(r=>r[i]!=null&&parseNum(r[i])!=null&&/\d/.test(String(r[i]))).length/rows.length>0.7;
+  const nums=[];for(let i=0;i<w;i++)if(numeric(i))nums.push(i);
+  for(let i=0;i<w;i++)if(!numeric(i)){map[i]="supplierRef";break;}
+  let named=false;
+  for(let i=0;i<w;i++)if(!numeric(i)&&map[i]==="skip"&&!named){map[i]="name";named=true;}
+  if(nums.length>=2){map[nums[0]]="qty";map[nums[nums.length-1]]="lineTotal";}
+  else if(nums.length===1)map[nums[0]]="qty";
+  return map;}
+
+function Invoices({st,act,show,openProduct}){
+  const drafts=(st.invoices||[]);
+  const [sel,setSel]=useState(null);
+  const [paste,setPaste]=useState("");const [pasteRows,setPasteRows]=useState(null);const [pmap,setPmap]=useState([]);
+  const [confirmPost,setConfirmPost]=useState(false);const [confirmUnpost,setConfirmUnpost]=useState(null);
+  const inv=sel?drafts.find(d=>d.id===sel):null;
+  const idx=useMemo(()=>supplierIndex(st),[st.catalogue]);
+  const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
+  const t=inv?invoiceTotals(inv):null;
+  const upd=patch=>act.saveInvoice(Object.assign({},inv,patch));
+  const updLine=(id,patch)=>upd({lines:inv.lines.map(l=>l.id===id?Object.assign({},l,patch):l)});
+  function setRef(l,v){const patch={supplierRef:v};
+    if(!l.code){const hit=idx.lookup(inv.provider,v);if(hit)patch.code=hit;}
+    updLine(l.id,patch);}
+  function addLines(rows,map){const add=[];
+    for(const r of rows){const o=blankLine();let any=false;
+      map.forEach((f,i)=>{if(f==="skip"||r[i]==null)return;const v=String(r[i]).trim();if(!v)return;any=true;
+        if(f==="qty"||f==="qtyRecv"||f==="lineTotal"||f==="vatRate"||f==="unit"){const n=parseNum(v);if(n==null)return;
+          if(f==="unit")o._unit=n;else o[f]=String(n);}
+        else o[f]=v;});
+      if(o._unit!=null&&!o.lineTotal&&parseNum(o.qty)!=null)o.lineTotal=String(r2(o._unit*parseNum(o.qty)));
+      delete o._unit;
+      if(!any||(!o.supplierRef&&!o.code&&!o.name))continue;
+      if(!o.code&&o.supplierRef){const hit=idx.lookup(inv.provider,o.supplierRef);if(hit)o.code=hit;}
+      add.push(o);}
+    if(!add.length){show("Nothing to add from that paste");return;}
+    upd({lines:inv.lines.concat(add)});setPaste("");setPasteRows(null);
+    const matched=add.filter(l=>l.code).length;
+    show("Added "+add.length+" line"+(add.length>1?"s":"")+(matched?" · "+matched+" matched to existing products":""));}
+  /* Give every unmatched line a code in the shop's own scheme, continuing past anything already
+     taken in the catalogue or sitting in another draft. The supplier's reference stays on the
+     line, which is what teaches the map for their next invoice. */
+  function allocCodes(){const pre=((st.settings&&st.settings.codePrefix)||"KKG").toUpperCase();
+    const used=new Set((st.catalogue||[]).map(p=>normCode(p.code)));
+    (st.invoices||[]).forEach(d=>(d.lines||[]).forEach(l=>{if(l.code)used.add(normCode(l.code));}));
+    const m=/^(.*)-(\d+)$/.exec(nextFreeCode(st));let n=m?+m[2]:1;const width=m?m[2].length:3;
+    let given=0;
+    const lines=inv.lines.map(l=>{if(l.code)return l;
+      let c;do{c=pre+"-"+String(n++).padStart(width,"0");}while(used.has(normCode(c)));
+      used.add(normCode(c));given++;return Object.assign({},l,{code:c});});
+    upd({lines});show("Gave our codes to "+given+" line"+(given>1?"s":""));}
+  const postable=inv&&inv.status==="draft"&&t&&t.ok&&inv.lines.length>0&&
+    inv.lines.every(l=>(l.code||l.supplierRef)&&(parseNum(l.qty)||0)>0&&parseNum(l.lineTotal)!=null);
+  const treatNote=(TREATMENTS.find(x=>x[0]===(inv&&inv.treatment))||["","",""])[2];
+
+  function list(){
+    const rows=drafts.slice().sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    return html`<${React.Fragment}>
+    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Invoices</h2>
+      <button class="btn primary" onClick=${()=>{const n=blankInvoice(st);act.saveInvoice(n);setSel(n.id);}}><${Icon} name="plus"/>New invoice</button></div>
+    <div class="note" style=${{marginBottom:"14px",maxWidth:"660px"}}>Enter a supplier invoice here before it reaches the ledger: the header carries the tax treatment, the freight and any duty; the lines carry what you were billed and what actually arrived. Posting is blocked until the draft agrees with the total printed on the invoice.</div>
+    ${rows.length===0?html`<div class="panel"><div class="empty"><${Icon} name="invoice"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"430px"}}>Start one when the invoice arrives; finish it when the goods land. Quantity invoiced and quantity received are separate columns, so a short delivery is recorded as you unpack it.</div><button class="btn primary" onClick=${()=>{const n=blankInvoice(st);act.saveInvoice(n);setSel(n.id);}}><${Icon} name="plus"/>New invoice</button></div></div>`:
+    html`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Provider</th><th>Date</th><th>Treatment</th><th class="num">Lines</th><th class="num">Units</th><th class="num">Freight + duty</th><th class="num">Total</th><th>Status</th></tr></thead>
+      <tbody>${rows.map(d=>{const tt=invoiceTotals(d);return html`<tr key=${d.id} class="clickable" onClick=${()=>setSel(d.id)}>
+        <td class="code">${d.invoiceNo||html`<span class="faint">(no number)</span>`}</td>
+        <td><span class="name">${d.provider||"—"}</span>${d.country?html`<div class="meta">${d.country}</div>`:null}</td>
+        <td class="mono">${fmtD(d.date)}</td>
+        <td><span class="note">${TREAT_LBL[d.treatment]||"—"}</span></td>
+        <td class="num">${num(d.lines.length)}</td><td class="num">${num(tt.units)}</td>
+        <td class="num mono">${(tt.freight+tt.duty)?money(tt.freight+tt.duty):"—"}</td>
+        <td class="num mono">${money(tt.computed)}</td>
+        <td>${d.status==="posted"?html`<span class="badge in">Posted</span>`:(tt.ok?html`<span class="badge type">Reconciled</span>`:html`<span class="badge out">Draft</span>`)}</td></tr>`;})}</tbody></table></div></div>`}
+    </${React.Fragment}>`;}
+
+  function editor(){
+    const posted=inv.status==="posted";
+    const F=(label,child)=>html`<${Field} label=${label}>${child}</${Field}>`;
+    const inp=(k,ph,extra)=>html`<input type="text" disabled=${posted} placeholder=${ph||""} class=${extra||""} value=${inv[k]||""} onInput=${e=>upd({[k]:e.target.value})}/>`;
+    return html`<${React.Fragment}>
+    <div class="rowbetween" style=${{marginBottom:"14px"}}>
+      <div><button class="btn sm ghost" onClick=${()=>setSel(null)}>← All invoices</button>
+        <h2 style=${{fontSize:"22px",marginTop:"8px"}}>${inv.invoiceNo||"New invoice"} ${posted?html`<span class="badge in">Posted</span>`:null}</h2></div>
+      <div class="hintrow">
+        ${posted?html`<button class="btn danger" onClick=${()=>setConfirmUnpost(inv.id)}>Unpost…</button>`:
+          html`<${React.Fragment}><button class="btn danger" onClick=${()=>{act.deleteInvoice(inv.id);setSel(null);show("Draft deleted",true);}}>Delete draft</button>
+          <button class="btn primary" disabled=${!postable} onClick=${()=>setConfirmPost(true)}>Post to ledger</button></${React.Fragment}>`}</div></div>
+
+    <div class="panel" style=${{marginBottom:"16px"}}>
+      <div class="panel-h"><h3>Invoice</h3><span class="note">${posted?"posted "+fmtD(inv.postedAt)+" as batch "+inv.batchRef:"nothing is written to the ledger yet"}</span></div>
+      <div style=${{padding:"16px"}}>
+        <div class="grid3" style=${{marginBottom:"12px"}}>
+          ${F("Provider",inp("provider","e.g. MRP Unipessoal, Lda"))}
+          ${F("Country",html`<input type="text" disabled=${posted} placeholder="Portugal" value=${inv.country||""} onInput=${e=>{const v=e.target.value;const auto=treatmentForCountry(v);upd({country:v,treatment:auto,vatDefault:defaultVatFor(auto,st)});}}/>`)}
+          ${F("Invoice number",inp("invoiceNo","FAT 90SED26/2654","mono"))}
+        </div>
+        <div class="grid3" style=${{marginBottom:"12px"}}>
+          ${F("Document date",html`<input type="date" disabled=${posted} value=${inv.date||""} onInput=${e=>upd({date:e.target.value})}/>`)}
+          ${F("Due date",html`<input type="date" disabled=${posted} value=${inv.due||""} onInput=${e=>upd({due:e.target.value})}/>`)}
+          ${F("Currency · rate to €",html`<div style=${{display:"flex",gap:"6px"}}><input type="text" disabled=${posted} style=${{width:"80px"}} value=${inv.currency||"EUR"} onInput=${e=>upd({currency:e.target.value})}/><input class="mono" type="text" disabled=${posted} value=${inv.rate||"1"} onInput=${e=>upd({rate:e.target.value})}/></div>`)}
+        </div>
+        <div style=${{marginBottom:"12px"}}>
+          <label class="lab">Tax treatment</label>
+          <select disabled=${posted} value=${inv.treatment||"eu_acq"} onChange=${e=>upd({treatment:e.target.value})}>${TREATMENTS.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select>
+          <div class="note" style=${{marginTop:"7px"}}>${treatNote}</div>
+        </div>
+        <div class="grid3">
+          ${F("Freight (net)",inp("freight","30.90","mono"))}
+          ${F("Duty & clearance (net)",inp("duty","0.00","mono"))}
+          ${F(inv.treatment==="import"?"Import VAT paid at the border":"Import VAT (not applicable)",
+            html`<input class="mono" type="text" disabled=${posted||inv.treatment!=="import"} placeholder="deductible — never added to stock" value=${inv.importVat||""} onInput=${e=>upd({importVat:e.target.value})}/>`)}
+        </div>
+        <div class="note" style=${{marginTop:"10px"}}>Freight and duty are spread per unit across everything received on this invoice. Import VAT is recorded for your VAT return and deliberately kept out of stock value.</div>
+      </div></div>
+
+    ${!posted?html`<div class="panel" style=${{marginBottom:"16px"}}>
+      <div class="panel-h"><h3>Add lines</h3><span class="note">paste from the supplier's list — tabs, semicolons or columns</span></div>
+      <div style=${{padding:"16px"}}>
+        ${!pasteRows?html`<${React.Fragment}>
+          <textarea class="mono" rows="4" style=${{fontSize:"12px"}} placeholder="Paste rows here, one per line" value=${paste} onInput=${e=>setPaste(e.target.value)}></textarea>
+          <div class="hintrow" style=${{marginTop:"10px"}}>
+            <button class="btn" disabled=${!paste.trim()} onClick=${()=>{const rows=splitPaste(paste);if(!rows.length){show("Couldn't see any columns in that");return;}setPasteRows(rows);setPmap(guessPasteMap(rows));}}>Read ${splitPaste(paste).length||""} rows…</button>
+            <button class="btn sm ghost" onClick=${()=>upd({lines:inv.lines.concat([blankLine()])})}>Add an empty line</button></div>
+        </${React.Fragment}>`:html`<${React.Fragment}>
+          <div class="note" style=${{marginBottom:"10px"}}>Say what each column is — the guess is only a guess.</div>
+          <div class="tablewrap"><table><thead><tr>${pmap.map((f,i)=>html`<th key=${i}><select value=${f} onChange=${e=>setPmap(m=>m.map((x,j)=>j===i?e.target.value:x))}>${PASTE_FIELDS.map(p=>html`<option key=${p[0]} value=${p[0]}>${p[1]}</option>`)}</select></th>`)}</tr></thead>
+            <tbody>${pasteRows.slice(0,4).map((r,i)=>html`<tr key=${i}>${pmap.map((f,j)=>html`<td key=${j} class=${f==="skip"?"faint":""} style=${{fontSize:"12px"}}>${r[j]==null?"":r[j]}</td>`)}</tr>`)}</tbody></table></div>
+          <div class="hintrow" style=${{marginTop:"10px"}}>
+            <button class="btn primary" onClick=${()=>addLines(pasteRows,pmap)}>Add ${pasteRows.length} lines</button>
+            <button class="btn" onClick=${()=>{setPasteRows(null);}}>Back</button>
+            <span class="note">${pasteRows.length>4?"showing the first 4 of "+pasteRows.length:""}</span></div>
+        </${React.Fragment}>`}
+      </div></div>`:null}
+
+    <div class="panel" style=${{marginBottom:"16px"}}>
+      <div class="panel-h"><h3>Lines</h3>
+        <div class="hintrow"><span class="note">${num(inv.lines.length)} line${inv.lines.length===1?"":"s"} · quantity billed vs received</span>
+        ${(!posted&&inv.lines.some(l=>!l.code))?html`<button class="btn sm" title="Give every unmatched line the next free code in your own scheme; the supplier's reference stays beside it" onClick=${allocCodes}>Give our codes to ${num(inv.lines.filter(l=>!l.code).length)}</button>`:null}</div></div>
+      ${inv.lines.length===0?html`<div class="empty"><div class="note">No lines yet — paste them above.</div></div>`:
+      html`<div class="tablewrap"><table><thead><tr><th>Supplier ref</th><th>Our code</th><th>Description</th><th class="num">Qty</th><th class="num">Recv</th><th class="num">Line total</th><th class="num">VAT %</th><th></th></tr></thead>
+        <tbody>${inv.lines.map(l=>{const known=!!byCode[normCode(l.code)];const q=parseNum(l.qty)||0;const rq=(l.qtyRecv===""||l.qtyRecv==null)?q:(parseNum(l.qtyRecv)||0);
+          const cell=(k,w,cls,ph)=>html`<input type="text" disabled=${posted} class=${cls||""} style=${{width:w,padding:"5px 7px",fontSize:"12.5px"}} placeholder=${ph||""} value=${l[k]||""} onInput=${e=>updLine(l.id,{[k]:e.target.value})}/>`;
+          return html`<tr key=${l.id}>
+            <td>${posted?html`<span class="code">${l.supplierRef||"—"}</span>`:html`<input type="text" class="mono" style=${{width:"130px",padding:"5px 7px",fontSize:"12.5px"}} value=${l.supplierRef||""} onInput=${e=>setRef(l,e.target.value)}/>`}</td>
+            <td>${cell("code","130px","mono")}${l.code?html`<div class="meta" style=${{color:known?"var(--good)":"var(--muted)"}}>${known?byCode[normCode(l.code)].name:"new → staging"}</div>`:null}</td>
+            <td>${cell("name","100%")}</td>
+            <td class="num">${cell("qty","62px","mono num")}</td>
+            <td class="num">${posted?html`<span class="mono">${num(rq)}</span>`:html`<input type="text" class="mono" style=${{width:"62px",padding:"5px 7px",fontSize:"12.5px"}} placeholder=${String(q||"")} value=${l.qtyRecv||""} onInput=${e=>updLine(l.id,{qtyRecv:e.target.value})}/>`}${rq!==q?html`<div class="meta" style=${{color:"var(--bad)"}}>${rq<q?"short "+num(q-rq):"over "+num(rq-q)}</div>`:null}</td>
+            <td class="num">${cell("lineTotal","84px","mono num")}</td>
+            <td class="num">${posted?html`<span class="mono">${l.vatRate===""||l.vatRate==null?num(defaultVatFor(inv.treatment,st)):l.vatRate}</span>`:html`<input type="text" class="mono" style=${{width:"56px",padding:"5px 7px",fontSize:"12.5px"}} placeholder=${String(defaultVatFor(inv.treatment,st))} value=${l.vatRate||""} onInput=${e=>updLine(l.id,{vatRate:e.target.value})}/>`}</td>
+            <td class="num">${posted?null:html`<button class="btn sm ghost rowact" onClick=${()=>upd({lines:inv.lines.filter(x=>x.id!==l.id)})}>×</button>`}</td></tr>`;})}</tbody></table></div>`}
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><h3>Reconciliation</h3><span class="note">the gate: this must agree with the invoice</span></div>
+      <div style=${{padding:"16px"}}>
+        <div class="kpis" style=${{marginBottom:"14px"}}>
+          <div class="kpi"><div class="k">Lines</div><div class="v">${money(t.lines)}</div><div class="f">${num(t.units)} units billed${t.recv!==t.units?" · "+num(t.recv)+" received":""}</div></div>
+          <div class="kpi"><div class="k">Freight + duty</div><div class="v">${money(t.freight+t.duty)}</div><div class="f">${t.recv?money((t.freight+t.duty)/Math.max(1,t.recv))+" per unit":"spread per unit"}</div></div>
+          <div class="kpi"><div class="k">Computed total</div><div class="v">${money(t.computed)}</div><div class="f">lines + freight + duty</div></div>
+          <div class="kpi"><div class="k">Difference</div><div class="v" style=${{color:t.keyed==null?"inherit":(t.ok?"var(--good)":"var(--bad)")}}>${t.keyed==null?"—":money(t.diff)}</div><div class="f">${t.keyed==null?"key the invoice total":(t.ok?"agrees to the cent":"does not agree")}</div></div>
+        </div>
+        <div class="hintrow">
+          <label class="note">Total printed on the invoice</label>
+          <input class="mono" type="text" disabled=${posted} style=${{width:"140px"}} placeholder="480.18" value=${inv.invoiceTotal||""} onInput=${e=>upd({invoiceTotal:e.target.value})}/>
+          ${t.missing?html`<span class="err">${num(t.missing)} line${t.missing>1?"s have":" has"} no total</span>`:null}
+          ${t.keyed!=null&&!t.ok?html`<span class="err">Off by ${money(Math.abs(t.diff))} — a line is missing, doubled or mistyped</span>`:null}
+          ${postable?html`<span class="note" style=${{color:"var(--good)"}}>✓ ready to post${t.recv!==t.units?" · "+num(t.recv)+" of "+num(t.units)+" units":""}</span>`:null}
+        </div>
+        ${!posted?html`<div class="note" style=${{marginTop:"10px"}}>Posting creates ${num(inv.lines.length)} in-movements under batch <span class="code">${refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)||"(auto)"}</span>. Codes not in the catalogue go to staging, as with any import.</div>`:null}
+      </div></div>
+
+    ${confirmPost?html`<${ConfirmModal} title="Post this invoice to the ledger?" confirmLabel=${"Post "+num(inv.lines.length)+" lines"}
+      body=${html`<span>This writes <b>${num(inv.lines.length)}</b> in-movements totalling <b>${money(t.landed)}</b> landed, under batch <span class="code">${refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)}</span>. Stock rises by ${num(t.recv)} units. The invoice stays here as a record, and can be unposted.</span>`}
+      onConfirm=${()=>{const res=act.postInvoice(inv.id);setConfirmPost(false);show("Posted "+num(inv.lines.length)+" lines to the ledger",true);}}
+      onClose=${()=>setConfirmPost(false)}/>`:null}
+    ${confirmUnpost?html`<${ConfirmModal} title="Unpost this invoice?" confirmLabel="Remove from the ledger"
+      body=${html`<span>Every movement under batch <span class="code">${inv.batchRef}</span> is removed and the invoice returns to draft. Stock, margins and the Batches view recompute from what is left.</span>`}
+      onConfirm=${()=>{act.unpostInvoice(inv.id);setConfirmUnpost(null);show("Unposted — back to draft",true);}}
+      onClose=${()=>setConfirmUnpost(null)}/>`:null}
+    </${React.Fragment}>`;}
+
+  return html`<div class="content">${inv?editor():list()}</div>`;}
 
 /* ===================== App ===================== */
 function LedgerImportModal({st,act,onClose,show}){
@@ -1711,6 +1990,7 @@ function App(){
     addChannel:(name,dir,mode,kind)=>setSt(s=>s.channels.some(c=>c.name===name)?s:{...s,channels:[...s.channels,{id:uid(),name,dir,mode:(mode!==undefined?(mode||null):(dir==="out"?inferMode(name):null)),kind:(kind!==undefined?(kind||null):(dir==="out"?"sale":null))}]}),
     setChannelKind:(id,kind)=>setSt(s=>({...s,channels:s.channels.map(c=>c.id===id?{...c,kind:(kind||null)}:c)})),
     markExport:()=>setSt(s=>({...s,settings:{...s.settings,lastExport:new Date().toISOString().slice(0,10)}})),
+    setCodePrefix:v=>setSt(s=>({...s,settings:{...s.settings,codePrefix:(String(v||"KKG").trim().toUpperCase()||"KKG")}})),
     removeChannel:id=>setSt(s=>({...s,channels:s.channels.filter(c=>c.id!==id)})),
     replaceAll:raw=>setSt(s=>{const d=readCore(raw);return migrate({...blankState(),...d});}),
     openExport:(title,text)=>setModal({type:"export",title,text}),
@@ -1726,26 +2006,56 @@ function App(){
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
         cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:true,online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
       return {...s,catalogue:cat,staging:[]};}),
+    saveInvoice:v=>setSt(s=>{const list=(s.invoices||[]).slice();const i=list.findIndex(x=>x.id===v.id);
+      if(i>=0)list[i]=v;else list.push(v);return {...s,invoices:list};}),
+    deleteInvoice:id=>setSt(s=>{undoRef.current=s;return {...s,invoices:(s.invoices||[]).filter(x=>x.id!==id)};}),
+    /* Posting turns a reconciled draft into ordinary ledger in-movements under one batch
+       reference, through the same preparation a file import goes through — so duplicate
+       detection, staging and the re-import guard all behave identically. */
+    postInvoice:id=>setSt(s=>{const inv=(s.invoices||[]).find(x=>x.id===id);if(!inv||inv.status==="posted")return s;
+      undoRef.current=s;
+      const t=invoiceTotals(inv);const rate=parseNum(inv.rate)||1;
+      const bref=refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)||("INV-"+(inv.date||today()));
+      const chan=(s.channels.find(c=>c.dir==="in")||{name:"Purchase"}).name;
+      const transport=r2((t.freight+t.duty)*rate);
+      const defVat=defaultVatFor(inv.treatment,s);
+      const raw=[];
+      for(const l of inv.lines){const q=parseNum(l.qty)||0;const lt=parseNum(l.lineTotal);
+        const rq=(l.qtyRecv===""||l.qtyRecv==null)?q:(parseNum(l.qtyRecv)||0);
+        const code=String(l.code||l.supplierRef||"").trim();
+        if(!code||!q||!rq||lt==null)continue;
+        const lv=parseNum(l.vatRate);
+        raw.push({date:inv.date||today(),channel:chan,dir:"in",batchRef:bref,code,qty:rq,
+          unitPrice:Math.round((lt/q)*rate*1e6)/1e6,vatRate:(lv==null?defVat:lv),transport,
+          note:l.name||"",country:inv.country||"",provider:inv.provider||"",providerRef:l.supplierRef||"",
+          _name:l.name||"",_type:l.type||guessType(code)});}
+      if(!raw.length)return s;
+      const prep=prepareMovements(raw,s,[]);
+      const now=new Date().toISOString();
+      const ledger=[...s.ledger,...prep.movements.map(m=>({...m,id:uid(),createdAt:now}))];
+      const staging=mergeStaging(s.staging,prep.staging,new Set(s.catalogue.map(p=>normCode(p.code))));
+      const invoices=(s.invoices||[]).map(x=>x.id===id?Object.assign({},x,{status:"posted",batchRef:bref,postedAt:today()}):x);
+      return {...s,ledger,staging,invoices};}),
+    unpostInvoice:id=>setSt(s=>{const inv=(s.invoices||[]).find(x=>x.id===id);if(!inv||inv.status!=="posted")return s;
+      undoRef.current=s;
+      return {...s,ledger:s.ledger.filter(r=>(r.batchRef||"")!==inv.batchRef),
+        invoices:s.invoices.map(x=>x.id===id?Object.assign({},x,{status:"draft",postedAt:""}):x)};}),
     importLedger:parsed=>setSt(s=>{const now=new Date().toISOString();
       const channels=s.channels.slice();
       undoRef.current=s;
       for(const nc of parsed.newChannels)if(!channels.some(c=>c.name.toLowerCase()===nc.name.toLowerCase()))channels.push({id:uid(),name:nc.name,dir:nc.dir,mode:(nc.dir==="out"?inferMode(nc.name):null),kind:(nc.dir==="out"?"sale":null)});
       const ledger=[...s.ledger,...parsed.movements.map(m=>({...m,id:uid(),createdAt:now}))];
-      const catSet=new Set(s.catalogue.map(p=>normCode(p.code)));
-      const staging=s.staging.slice();
-      for(const e of parsed.staging){const nc=normCode(e.code);if(catSet.has(nc))continue;const ix=staging.findIndex(x=>normCode(x.code)===nc);
-        if(ix>=0){const o=staging[ix];staging[ix]={...o,seenCount:(o.seenCount||0)+e.seenCount,qty:(o.qty||0)+e.qty,firstDate:(!o.firstDate||(e.firstDate&&e.firstDate<o.firstDate))?(e.firstDate||o.firstDate):o.firstDate,name:o.name||e.name,type:o.type||e.type};}
-        else staging.push({code:e.code,name:e.name,type:e.type,seenCount:e.seenCount,qty:e.qty,firstDate:e.firstDate});}
+      const staging=mergeStaging(s.staging,parsed.staging,new Set(s.catalogue.map(p=>normCode(p.code))));
       return {...s,channels,ledger,staging};}),
   };
   const openProduct=(p,fromStaging)=>setModal({type:"product",editing:p,fromStaging:!!fromStaging});
   const openMovement=r=>setModal({type:"movement",editing:r});
 
-  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["settings","Settings","settings"]];
-  const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length,finance:(st.finance||[]).length};
+  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["invoices","Invoices","invoice"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["settings","Settings","settings"]];
+  const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length,finance:(st.finance||[]).length,invoices:(st.invoices||[]).filter(i=>i.status!=="posted").length};
   const themeLabel={system:"◐",light:"☀",dark:"☾"}[theme];
   const cycleTheme=()=>setTheme(p=>p==="system"?"light":p==="light"?"dark":"system");
-  const where={overview:"Hub",catalogue:"Catalogue",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",settings:"Settings"}[tab];
+  const where={overview:"Hub",catalogue:"Catalogue",invoices:"Invoices",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",settings:"Settings"}[tab];
 
   if(recover)return html`<${RecoverScreen} info=${recover}
     onEmpty=${()=>{setSt(blankState());setRecover(null);}}
@@ -1766,6 +2076,7 @@ function App(){
       <div class="topbar"><div><div class="where">${where}</div><h1>${where==="Hub"?"Rosa Mystica":where}</h1></div><div class="sp"></div></div>
       ${tab==="overview"?html`<${Overview} st=${st} go=${setTab}/>`:null}
       ${tab==="catalogue"?html`<${Catalogue} st=${st} act=${act} openProduct=${openProduct} q=${q} setQ=${setQ}/>`:null}
+      ${tab==="invoices"?html`<${Invoices} st=${st} act=${act} show=${show} openProduct=${openProduct}/>`:null}
       ${tab==="ledger"?html`<${Ledger} st=${st} act=${act} openMovement=${openMovement} openProduct=${openProduct}/>`:null}
       ${tab==="inventory"?html`<${Inventory} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="staging"?html`<${Staging} st=${st} act=${act} openProduct=${openProduct} show=${show}/>`:null}
