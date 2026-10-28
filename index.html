@@ -2015,7 +2015,7 @@ function App(){
     openEncrypt:()=>setModal({type:"encsave"}),
     openDecrypt:obj=>setModal({type:"encopen",payload:obj}),
     openWipe:()=>setModal({type:"wipe"}),
-    wipe:()=>setSt(blankState()),
+    wipe:()=>setSt(s=>{undoRef.current=s;return blankState();}),
     importCatalogue:items=>setSt(s=>{const now=new Date().toISOString();const cat=s.catalogue.slice();const idx={};cat.forEach((p,i)=>idx[normCode(p.code)]=i);
       for(const it of items){const nc=normCode(it.code);const clean={code:it.code,type:it.type,name:it.name,author:it.author,year:it.year,category:it.category,supplier:it.supplier,supplierRef:it.supplierRef,cost:it.cost,price:it.price,sellable:it.sellable,online:it.online,reorderPoint:it.reorderPoint,notes:it.notes};
         if(idx[nc]!=null)cat[idx[nc]]=Object.assign({},cat[idx[nc]],clean,{updatedAt:now});else{idx[nc]=cat.length;cat.push(Object.assign({createdAt:now,updatedAt:now},clean));}}
@@ -2110,7 +2110,7 @@ function App(){
     ${modal&&modal.type==="salesimport"?html`<${SalesImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="catimport"?html`<${CatalogueImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="financeimport"?html`<${FinanceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
-    ${modal&&modal.type==="wipe"?html`<${ConfirmModal} title="Erase everything?" confirmLabel="Erase all data" body=${html`<span>This clears the catalogue, ledger and staging in this browser. Export a backup first if you might want it back.</span>`} onConfirm=${act.wipe} onClose=${()=>setModal(null)}/>`:null}
+    ${modal&&modal.type==="wipe"?html`<${ConfirmModal} title="Erase everything?" confirmLabel="Erase all data" body=${html`<span>This clears the catalogue, ledger, invoices and staging in this browser — ${num(st.catalogue.length)} products, ${num(st.ledger.length)} movements and ${num((st.invoices||[]).length)} invoices. <b>Export a core file first.</b> One Undo is offered afterwards, but only until the next change.</span>`} onConfirm=${()=>{act.wipe();show("Everything erased",true);}} onClose=${()=>setModal(null)}/>`:null}
     ${toast?html`<div class="toast"><span>${toast}</span>${undoable&&undoRef.current?html`<button class="ubtn" onClick=${doUndo}>Undo</button>`:null}</div>`:null}
   </div>`;}
 
