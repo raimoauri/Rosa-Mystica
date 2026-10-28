@@ -92,6 +92,14 @@ import says how many lines matched that way. So the first invoice from a supplie
 give its lines codes in your own scheme with one button, or set them as you confirm staging — and every
 later invoice from them lands on your codes with no staging at all.
 
+## Things that take money but hold no stock
+A product can be marked **not stock-tracked** — a till button, a gift card, a service. It keeps its
+revenue and its VAT, so takings still tie out, but it stays out of the on-hand and stock-value
+headlines and out of the reorder list, and its missing cost never pretends to be a margin. Vektori's
+generic buttons (PR0005, PR0006) are recognised on sight and confirmed that way by default. Inventory
+also counts **units sold without a cost** — sales with no purchase lot behind them — so the part of
+the history that carries no margin is visible rather than assumed.
+
 ## Out-movement kinds
 Each out-channel carries a **kind** — sale, adjustment, write-off or gift. Every out line consumes
 stock in FIFO order, because a unit that left the shelf has left it either way; only a *sale* line

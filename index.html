@@ -689,6 +689,8 @@ function genBatchRef(country,date,provider){const cc=abbrevCountry(country);cons
 /* A staged code is typed from the code itself: 978/979 is the ISBN prefix, so a 13-digit
    code starting there is a book (13.5% VAT); anything else defaults to goods (25.5%).
    The old blanket "book" quietly put goods on the book rate once confirmed. */
+/* Vektori's generic till buttons (PR0005, PR0006) take money but hold no stock. */
+const TILLCODE=/^PR\d+$/i;
 function guessType(code){const c=String(code||"").replace(/[^0-9]/g,"");return (c.length===13&&/^97[89]/.test(c))?"book":"goods";}
 /* Merge freshly-staged codes into the staging queue (shared by file import and invoice posting). */
 function mergeStaging(cur,incoming,catSet){const staging=cur.slice();
@@ -802,7 +804,7 @@ function parseSales(rows,override,withGeneric){
   return {raw,format:"vektori",defDate,defStart,skipped,warnings};
 }
 
-const CAT_COLS=[["code",["productcode","code","sku","ean","isbn"]],["type",["type"]],["name",["name","title"]],["author",["author"]],["year",["year"]],["category",["category","section"]],["supplierRef",["providerref","supplierref","provref","supplierart"]],["supplier",["supplierprovider","supplier","provider","publisher"]],["cost",["costnet","cost"]],["price",["priceinclvat","price","retail"]],["sellable",["sellable"]],["online",["online"]],["reorderPoint",["reorderpoint","reorder"]],["notes",["notes","note"]]];
+const CAT_COLS=[["code",["productcode","code","sku","ean","isbn"]],["type",["type"]],["name",["name","title"]],["author",["author"]],["year",["year"]],["category",["category","section"]],["supplierRef",["providerref","supplierref","provref","supplierart"]],["supplier",["supplierprovider","supplier","provider","publisher"]],["cost",["costnet","cost"]],["price",["priceinclvat","price","retail"]],["sellable",["sellable"]],["stocked",["stocktracked","stocked"]],["online",["online"]],["reorderPoint",["reorderpoint","reorder"]],["notes",["notes","note"]]];
 function parseCatalogueRows(rows){
   if(!rows||!rows.length)return {items:[],warnings:["The file looks empty."],stats:{rows:0,skipped:0,dupInFile:0}};
   const H=(rows[0]||[]).map(normH);const col={};const used={};
@@ -1029,9 +1031,11 @@ function Catalogue({st,act,openProduct,q,setQ}){
 /* secure, atomic product editor — product code is the unique anchor */
 function ProductModal({st,act,editing,fromStaging,onClose,show}){
   const orig=editing||{};const origCode=editing?editing.code:null;
-  const blank={code:"",type:"goods",name:"",author:"",year:"",category:"",supplier:"",supplierRef:"",cost:"",price:"",sellable:true,online:false,reorderPoint:"",notes:""};
+  const blank={code:"",type:"goods",name:"",author:"",year:"",category:"",supplier:"",supplierRef:"",cost:"",price:"",sellable:true,stocked:true,online:false,reorderPoint:"",notes:""};
   const [f,setF]=useState(()=>Object.assign({},blank,editing||{},
     (fromStaging&&editing?{supplier:editing.provider||"",supplierRef:editing.providerRef||""}:{}),
+    /* a till button takes money but holds no stock — start it that way */
+    (TILLCODE.test(String((editing&&editing.code)||""))&&editing&&editing.stocked===undefined?{stocked:false,sellable:false}:{}),
     {cost:editing&&editing.cost!=null?String(editing.cost):"",price:editing&&editing.price!=null?String(editing.price):"",reorderPoint:editing&&editing.reorderPoint!=null?String(editing.reorderPoint):""}));
   const up=(k,v)=>setF(o=>({...o,[k]:v}));
   const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
@@ -1051,7 +1055,7 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
   function commit(){if(!valid)return;
     const clean={code:f.code.trim(),type:f.type,name:f.name.trim(),author:f.author.trim(),year:String(f.year).trim(),
       category:f.category.trim(),supplier:f.supplier.trim(),supplierRef:(f.supplierRef||"").trim(),cost:f.cost===""?null:parseNum(f.cost),price:f.price===""?null:parseNum(f.price),
-      sellable:!!f.sellable,online:!!f.online,reorderPoint:f.reorderPoint===""?null:parseNum(f.reorderPoint),notes:f.notes.trim()};
+      sellable:!!f.sellable,stocked:f.stocked!==false,online:!!f.online,reorderPoint:f.reorderPoint===""?null:parseNum(f.reorderPoint),notes:f.notes.trim()};
     act.commitProduct(clean,origCode,fromStaging);
     show(editing?"Product saved":"Product added");onClose();}
   const canType=TYPES;
@@ -1085,6 +1089,7 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
     </div>
     <div class="hintrow" style=${{gap:"18px"}}>
       <label class="switch"><input type="checkbox" checked=${!!f.sellable} onChange=${e=>up("sellable",e.target.checked)}/> Sellable</label>
+      <label class="switch" title="Untick for things that take money but hold no stock — a till button, a gift card, a service. They keep their revenue but stay out of stock figures and the reorder list."><input type="checkbox" checked=${f.stocked!==false} onChange=${e=>up("stocked",e.target.checked)}/> Stock-tracked</label>
       <label class="switch"><input type="checkbox" checked=${!!f.online} onChange=${e=>up("online",e.target.checked)}/> Online</label>
     </div>
     <${Field} label="Reorder point (blank = reorder only when out of stock)">${html`<input class="mono" type="text" inputmode="numeric" value=${f.reorderPoint} onInput=${e=>up("reorderPoint",e.target.value)}/>`}</${Field}>
@@ -1221,8 +1226,8 @@ function Settings({st,act,show}){
   function exportCore(){const txt=JSON.stringify(makeCore(st),null,2);const name="rosa-mystica_core_"+today()+".json";
     act.markExport();
     if(IN_FRAME||!downloadText(name,txt)){act.openExport("Core data — copy and keep safe",txt);}else show("Saved "+name);}
-  function exportCatalogueCSV(){const head=["code","type","name","author","year","category","supplier","supplierRef","cost","price","sellable","online","reorderPoint","notes"];
-    const rows=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost,p.price,p.sellable!==false,!!p.online,p.reorderPoint==null?"":p.reorderPoint,p.notes]);
+  function exportCatalogueCSV(){const head=["code","type","name","author","year","category","supplier","supplierRef","cost","price","sellable","stocked","online","reorderPoint","notes"];
+    const rows=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost,p.price,p.sellable!==false,p.stocked!==false,!!p.online,p.reorderPoint==null?"":p.reorderPoint,p.notes]);
     const csv=toCSV(head,rows);if(IN_FRAME||!downloadText("rosa-mystica_catalogue_"+today()+".csv",csv,"text/csv"))act.openExport("Catalogue — CSV",csv);else show("Saved CSV");}
   function exportLedgerCSV(){const head=["date","channel","dir","batchRef","code","qty","unitPrice","vatRate","lineTotal","transport","note"];
     const rows=st.ledger.map(r=>[r.date,r.channel,r.dir,r.batchRef,r.code,r.qty,r.unitPrice,r.vatRate==null?"":r.vatRate,(r.unitPrice==null?"":Math.round((+r.qty||0)*(+r.unitPrice||0)*100)/100),r.transport==null?"":r.transport,r.note]);
@@ -1240,8 +1245,8 @@ function Settings({st,act,show}){
   function invSheets(){const rows=computeInventory(st);const head=["Code","Name","Received","Sold","Not sold (adj.)","Not-sold cost","On hand","Sell-through %","Stock value","Realized profit","ROI %","Provider","Provider ref","Reorder point"];
     const body=rows.slice().sort((a,b)=>b.onHandValue-a.onHandValue).map(r=>[r.code,r.name,r.received,r.sold,r.shrink||0,r2(r.shrinkCost||0),r.onHand,r.sellThrough==null?"":r2(r.sellThrough*100),r2(r.onHandValue),r2(r.realProfit),r.roi==null?"":r2(r.roi*100),r.provider,r.providerRef,r.reorderPoint||0]);
     return [{name:"Inventory",rows:[head].concat(body)}];}
-  function catSheets(){const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost","Price","Sellable","Online","Reorder point","Notes"];
-    const body=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost==null?"":+p.cost,p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
+  function catSheets(){const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost","Price","Sellable","Stock-tracked","Online","Reorder point","Notes"];
+    const body=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost==null?"":+p.cost,p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.stocked!==false?"yes":"no",p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
     return [{name:"Catalogue",rows:[head].concat(body)}];}
   function ledSheets(){const head=["Date","Channel","Dir","Batch ref","Country","Provider","Provider ref","Code","Qty","Unit price","VAT %","Line total","Transport (batch)","Note"];
     const body=st.ledger.map(r=>[r.date,r.channel,r.dir,r.batchRef,r.country||"",r.provider||"",r.providerRef||"",r.code,+r.qty||0,r.unitPrice==null?"":+r.unitPrice,r.vatRate==null?"":+r.vatRate,(r.unitPrice==null?"":r2((+r.qty||0)*(+r.unitPrice||0))),r.transport==null?"":+r.transport,r.note]);
@@ -2016,7 +2021,7 @@ function computeInventory(st){
     const realProfit=matchedNetRev-cogs;const roi=cogs>0?realProfit/cogs:null;
     const lastIn=ins.length?ins[ins.length-1]:null;
     const avgCost=received>0?lots.reduce((a,l)=>a+l.qty*l.cost,0)/received:null;
-    rows.push({code:mvs[0].code,name:p?p.name:"",inCat:!!p,sellable:p?p.sellable!==false:true,
+    rows.push({code:mvs[0].code,name:p?p.name:"",inCat:!!p,sellable:p?p.sellable!==false:true,stocked:p?p.stocked!==false:true,
       received,sold,shrink,shrinkCost,onHand,unmatched,sellThrough:received>0?sold/received:null,onHandValue,cogs,revenue,revenueNet,realProfit,roi,avgCost,reorderPoint:(p&&p.reorderPoint!=null)?+p.reorderPoint:0,
       provider:(p&&p.supplier)||(lastIn?lastIn.provider:"")||"",providerRef:(p&&p.supplierRef)||(lastIn?lastIn.providerRef:"")||"",lastInDate:lastIn?lastIn.date:""});}
   return rows;
@@ -2049,8 +2054,10 @@ function Inventory({st,act,show}){
   const [view,setView]=useState("stock");const [q,setQ]=useState("");const [fstock,setFstock]=useState("");const [sort,setSort]=useState({k:"onHandValue",d:-1});
   const rows=useMemo(()=>computeInventory(st),[st]);
   const batches=useMemo(()=>computeBatches(st),[st]);
-  let onHand=0,stockVal=0,profit=0,cogs=0,inStock=0,recvT=0,soldT=0,shrinkU=0,shrinkC=0;
-  for(const r of rows){onHand+=r.onHand;stockVal+=r.onHandValue;profit+=r.realProfit;cogs+=r.cogs;shrinkU+=(r.shrink||0);shrinkC+=(r.shrinkCost||0);if(r.onHand>0)inStock++;if(r.received>0){recvT+=r.received;soldT+=r.sold;}}
+  let onHand=0,stockVal=0,profit=0,cogs=0,inStock=0,recvT=0,soldT=0,shrinkU=0,shrinkC=0,noCost=0,noCostN=0;
+  for(const r of rows){profit+=r.realProfit;cogs+=r.cogs;if(r.unmatched>0){noCost+=r.unmatched;noCostN++;}
+    if(!r.stocked)continue;
+    onHand+=r.onHand;stockVal+=r.onHandValue;shrinkU+=(r.shrink||0);shrinkC+=(r.shrinkCost||0);if(r.onHand>0)inStock++;if(r.received>0){recvT+=r.received;soldT+=r.sold;}}
   const roi=cogs>0?profit/cogs:null;const sellThrough=recvT>0?soldT/recvT:null;
   const ql=q.trim().toLowerCase();
   let list=rows.filter(r=>{if(fstock==="in"&&!(r.onHand>0))return false;if(fstock==="out"&&r.onHand>0)return false;
@@ -2060,7 +2067,7 @@ function Inventory({st,act,show}){
   const S=k=>setSort(s=>s.k===k?{k,d:-s.d}:{k,d:-1});
   const arrow=k=>sort.k===k?html`<span class="faint"> ${sort.d>0?"↑":"↓"}</span>`:null;
   const Th=(k,label,cls)=>html`<th class=${"sortable"+(cls?" "+cls:"")} onClick=${()=>S(k)}>${label}${arrow(k)}</th>`;
-  const reorder=rows.filter(r=>r.onHand<=(r.reorderPoint||0)&&r.sellable&&(r.sold>0||r.received>0)).sort((a,b)=>b.sold-a.sold);
+  const reorder=rows.filter(r=>r.stocked&&r.onHand<=(r.reorderPoint||0)&&r.sellable&&(r.sold>0||r.received>0)).sort((a,b)=>b.sold-a.sold);
   function reorderCSV(){const head=["code","name","provider","provider_ref","last_cost","sold","on_hand","reorder_point"];
     const rr=reorder.map(r=>[r.code,r.name,r.provider,r.providerRef,r.avgCost==null?"":r.avgCost.toFixed(2),r.sold,r.onHand,r.reorderPoint||0]);
     const csv=toCSV(head,rr);if(IN_FRAME||!downloadText("rosa-mystica_reorder_"+today()+".csv",csv,"text/csv"))act.openExport("Reorder list — CSV",csv);else show("Saved CSV");}
@@ -2074,6 +2081,7 @@ function Inventory({st,act,show}){
       <div class="kpi"><div class="k">Stock value (FIFO)</div><div class="v">${money(stockVal)}</div></div>
       <div class="kpi"><div class="k">Realized profit</div><div class="v">${money(profit)}</div><div class="f">ROI ${roi==null?"—":pct(roi)}</div></div>
       <div class="kpi"><div class="k">Sell-through</div><div class="v">${sellThrough==null?"—":pct(sellThrough)}</div><div class="f">${num(soldT)} sold / ${num(recvT)} recv</div></div>
+      ${noCost?html`<div class="kpi"><div class="k">Sold without a cost</div><div class="v">${num(noCost)}</div><div class="f">${num(noCostN)} code${noCostN===1?"":"s"} · no purchase lot to price them, so no margin</div></div>`:null}
       ${shrinkU?html`<div class="kpi"><div class="k">Left without a sale</div><div class="v">${num(shrinkU)}</div><div class="f">${money(shrinkC)} at cost · adjustments, write-offs, gifts</div></div>`:null}
     </div>
     <div class="toolbar">
@@ -2084,7 +2092,7 @@ function Inventory({st,act,show}){
     <div class="panel"><div class="tablewrap"><table><thead><tr>
       ${Th("code","Code")}${Th("name","Product")}${Th("received","Recv","num")}${Th("sold","Sold","num")}${shrinkU?Th("shrink","Not sold","num"):null}${Th("onHand","On hand","num")}${Th("sellThrough","Sell-thru","num")}${Th("onHandValue","Stock value","num")}${Th("roi","ROI","num")}</tr></thead>
       <tbody>${list.map(r=>html`<tr key=${normCode(r.code)}><td class="code">${r.code}</td>
-        <td>${r.inCat?html`<span class="name">${r.name}</span>`:html`<span class="faint">unlinked</span>`}${r.providerRef?html`<div class="meta">ref ${r.providerRef}</div>`:null}</td>
+        <td>${r.inCat?html`<span class="name">${r.name}</span>`:html`<span class="faint">unlinked</span>`}${!r.stocked?html`<div class="meta">not stock-tracked</div>`:(r.providerRef?html`<div class="meta">ref ${r.providerRef}</div>`:null)}</td>
         <td class="num">${num(r.received)}</td><td class="num">${num(r.sold)}</td>
         ${shrinkU?html`<td class="num faint" title="units out on adjustment / write-off / gift lines">${r.shrink?num(r.shrink):"—"}</td>`:null}
         <td class="num" style=${{fontWeight:"500",color:r.onHand<0?"var(--bad)":"inherit"}}>${num(r.onHand)}</td>
@@ -2225,12 +2233,12 @@ function App(){
     openWipe:()=>setModal({type:"wipe"}),
     wipe:()=>setSt(s=>{undoRef.current=s;return blankState();}),
     importCatalogue:items=>setSt(s=>{const now=new Date().toISOString();const cat=s.catalogue.slice();const idx={};cat.forEach((p,i)=>idx[normCode(p.code)]=i);
-      for(const it of items){const nc=normCode(it.code);const clean={code:it.code,type:it.type,name:it.name,author:it.author,year:it.year,category:it.category,supplier:it.supplier,supplierRef:it.supplierRef,cost:it.cost,price:it.price,sellable:it.sellable,online:it.online,reorderPoint:it.reorderPoint,notes:it.notes};
+      for(const it of items){const nc=normCode(it.code);const clean={code:it.code,type:it.type,name:it.name,author:it.author,year:it.year,category:it.category,supplier:it.supplier,supplierRef:it.supplierRef,cost:it.cost,price:it.price,sellable:it.sellable,stocked:(it.stocked===undefined?!TILLCODE.test(String(it.code||"")):it.stocked),online:it.online,reorderPoint:it.reorderPoint,notes:it.notes};
         if(idx[nc]!=null)cat[idx[nc]]=Object.assign({},cat[idx[nc]],clean,{updatedAt:now});else{idx[nc]=cat.length;cat.push(Object.assign({createdAt:now,updatedAt:now},clean));}}
       return {...s,catalogue:cat};}),
     confirmAllStaging:()=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();const cat=s.catalogue.slice();const have=new Set(cat.map(p=>normCode(p.code)));
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
-        cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:true,online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
+        cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:!TILLCODE.test(String(e.code||"")),stocked:!TILLCODE.test(String(e.code||"")),online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
       return {...s,catalogue:cat,staging:[]};}),
     addInvoices:list=>setSt(s=>{undoRef.current=s;return {...s,invoices:(s.invoices||[]).concat(list)};}),
     /* Renaming carries history: the code is the anchor, so every movement, staged entry and
