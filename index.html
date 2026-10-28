@@ -528,7 +528,10 @@ const html=htm.bind(React.createElement);
 
 /* ---------- utils ---------- */
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-const normCode=s=>String(s==null?"":s).replace(/[\s-]/g,"").toUpperCase();
+/* The same article is punctuated differently by different systems — MRP bills T.CR.P7.MJP,
+   Vektori sells T-CR-P7-MJP — so the key ignores spaces, hyphens, dots, underscores and plus
+   signs. ISBN-10 vs ISBN-13 and hyphenated vs bare EANs already collapsed this way. */
+const normCode=s=>String(s==null?"":s).replace(/[\s\-._+]/g,"").toUpperCase();
 /* Figures arrive from a Finnish Excel (1\u00a0450,00 — non-breaking space, comma decimal),
    from English exports (1,450.00) and from plain typing. Strip spaces and currency marks; when
    BOTH separators appear the rightmost is the decimal mark and the other is grouping; a separator
@@ -754,7 +757,7 @@ function parseLedgerRows(rows,st){
   const prep=prepareMovements(m.raw,st,m.warnings);prep.stats.skipped=m.skipped;return prep;
 }
 /* Sales import: Vektori Product Sales Report (monthly aggregate) or WooCommerce orders (per line). */
-function parseSales(rows,override){
+function parseSales(rows,override,withGeneric){
   if(!rows||!rows.length)return {raw:[],format:null,defDate:"",skipped:0,warnings:["The file looks empty."]};
   let hi=-1,fmt=null;
   for(let i=0;i<Math.min(rows.length,60);i++){const H=(rows[i]||[]).map(normH);
@@ -781,12 +784,21 @@ function parseSales(rows,override){
     if(m){defStart=m[3]+"-"+m[2]+"-"+m[1];defDate=m[6]+"-"+m[5]+"-"+m[4];break;}
     m=/(\d{4})-(\d{2})-(\d{2})[^0-9]{1,6}(\d{4})-(\d{2})-(\d{2})/.exec(line);
     if(m){defStart=m[1]+"-"+m[2]+"-"+m[3];defDate=m[4]+"-"+m[5]+"-"+m[6];break;}}}
-  const isNon=(name,code)=>{const n=name.toLowerCase(),c=code.toUpperCase();return (!name&&!code)||n.indexOf("total")===0||n.indexOf("yhteens")===0||/^PR\d+$/.test(c)||c==="LHJKRTI"||n.indexOf("kassasta")===0||n.indexOf("lahjakortti")===0;};
+  /* Vektori has generic till buttons — "Kirja (13,5%)", "Tavarat (25,5%)" — for anything rung
+     up without choosing a product. They are real takings but belong to no code, so they are left
+     out by default and can be brought in deliberately as their own unattributed lines. */
+  const isGeneric=(name,code)=>/^PR\d+$/.test(String(code).toUpperCase())&&!/^kassasta/.test(String(name).toLowerCase());
+  const isNon=(name,code)=>{const n=name.toLowerCase(),c=code.toUpperCase();
+    if(!name&&!code)return true;
+    if(n.indexOf("total")===0||n.indexOf("yhteens")===0)return true;
+    if(n.indexOf("kassasta")===0||n.indexOf("lahjakortti")===0||c==="LHJKRTI")return true;
+    if(isGeneric(name,code))return !withGeneric;
+    return false;};
   for(const r of data){const name=String(r[cN]==null?"":r[cN]).trim();const code=String(r[cC]==null?"":r[cC]).trim();
     if(isNon(name,code))continue;if(!code){skipped++;continue;}
     const sp=parseNum(r[cQ])||0,rp=cRQ>=0?(parseNum(r[cRQ])||0):0;const net=sp-rp;if(net<=0){skipped++;continue;}
     const sale=parseNum(r[cS])||0,ref=cR>=0?(parseNum(r[cR])||0):0;const unit=Math.round(((sale+ref)/net)*1e6)/1e6;
-    raw.push({date:defDate,channel:"Vektori",dir:"out",batchRef:"VEK-"+(defDate||"period"),code,qty:net,unitPrice:unit,note:name,_name:name,_type:guessType(code)});}
+    raw.push({date:defDate,channel:"Vektori",dir:"out",batchRef:"VEK-"+(defDate||"period"),code,qty:net,unitPrice:unit,note:name,_name:name,_type:(isGeneric(name,code)?(/13[,.]5/.test(name)?"book":"goods"):guessType(code))});}
   return {raw,format:"vektori",defDate,defStart,skipped,warnings};
 }
 
@@ -1773,9 +1785,9 @@ function LedgerImportModal({st,act,onClose,show}){
   </${Modal}>`;}
 
 function SalesImportModal({st,act,onClose,show}){
-  const [items,setItems]=useState([]);const [err,setErr]=useState("");const fileRef=useRef();
-  function add(name,rows){const r=parseSales(rows,"");
-    setItems(list=>list.concat([{id:uid(),name,parsed:r,ov:""}]));
+  const [items,setItems]=useState([]);const [err,setErr]=useState("");const [gen,setGen]=useState(false);const fileRef=useRef();
+  function add(name,rows){const r=parseSales(rows,"",gen);
+    setItems(list=>list.concat([{id:uid(),name,rows,parsed:r,ov:""}]));
     if(!r.raw.length)setErr("“"+name+"”: "+((r.warnings&&r.warnings[0])||"no sales rows found."));}
   /* Several reports at once: a weekly export means a stack of files, and they should go in
      together so duplicates are caught across the whole stack, not one file at a time. */
@@ -1785,11 +1797,16 @@ function SalesImportModal({st,act,onClose,show}){
       if(nm.endsWith(".csv")){rd.onload=()=>{try{add(f.name,csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse "+f.name);}};rd.readAsText(f);}
       else{rd.onload=()=>{try{add(f.name,xlsxToRows(rd.result));}catch(x){setErr("Couldn't read "+f.name);}};rd.readAsArrayBuffer(f);}}
     e.target.value="";}
+  useEffect(()=>{setItems(l=>l.map(it=>Object.assign({},it,{parsed:parseSales(it.rows||[],"",gen)})));},[gen]);
   const eff=items.map(it=>{const p=it.parsed;
     if(!p||!p.raw.length)return Object.assign({},it,{raw:[],date:"",start:""});
     const d=it.ov||p.defDate;
     const raw=(p.format==="vektori"&&d)?p.raw.map(m=>Object.assign({},m,{date:d,batchRef:"VEK-"+d})):p.raw;
     return Object.assign({},it,{raw,date:d,start:p.defStart||""});});
+  const genInfo=(()=>{let lines=0,units=0,gross=0;
+    for(const it of items){const r=parseSales(it.rows||[],"",true);
+      for(const m of r.raw){if(!/^PR\d+$/.test(String(m.code).toUpperCase()))continue;lines++;units+=m.qty;gross+=m.qty*m.unitPrice;}}
+    return {lines,units,gross:Math.round(gross*100)/100};})();
   const ordered=eff.slice().sort((a,b)=>String(a.date).localeCompare(String(b.date))||String(a.name).localeCompare(String(b.name)));
   const allRaw=[].concat.apply([],ordered.map(x=>x.raw));
   const skipped=items.reduce((a,it)=>a+((it.parsed&&it.parsed.skipped)||0),0);
@@ -1810,6 +1827,8 @@ function SalesImportModal({st,act,onClose,show}){
       <input ref=${fileRef} type="file" accept=".xlsx,.csv" multiple=${true} style=${{display:"none"}} onChange=${onFile}/>
       ${items.length?html`<button class="btn sm ghost" onClick=${()=>{setItems([]);setErr("");}}>Clear</button>`:null}
       ${items.length?html`<span class="note">${num(items.length)} file${items.length>1?"s":""}</span>`:null}</div>
+    ${items.length?html`<label class="switch" style=${{marginTop:"2px"}}><input type="checkbox" checked=${gen} onChange=${e=>setGen(e.target.checked)}/> Include the generic till buttons (“Kirja 13,5%”, “Tavarat 25,5%”) as unattributed sales${genInfo.lines?" — "+num(genInfo.units)+" units, "+money(genInfo.gross):""}</label>
+    ${gen?html`<div class="note">These carry no product, so they reduce no product's stock — they import under their own codes and will sit at negative stock. Use them to make takings tie out against the till; leave them off to keep the ledger to identified products only.</div>`:null}`:null}
     ${err?html`<div class="err">${err}</div>`:null}
     ${items.length?html`<div class="tablewrap" style=${{marginTop:"4px",maxHeight:"230px",overflow:"auto"}}>
       <table><thead><tr><th>File</th><th>Format</th><th>Period</th><th class="num">Lines</th><th>Dated</th><th></th></tr></thead>
