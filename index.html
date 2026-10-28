@@ -529,7 +529,20 @@ const html=htm.bind(React.createElement);
 /* ---------- utils ---------- */
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 const normCode=s=>String(s==null?"":s).replace(/[\s-]/g,"").toUpperCase();
-const parseNum=v=>{if(v==null)return null;const s=String(v).trim().replace(/\s/g,"").replace(",",".");if(s==="")return null;const n=parseFloat(s);return isNaN(n)?null:n;};
+/* Figures arrive from a Finnish Excel (1\u00a0450,00 — non-breaking space, comma decimal),
+   from English exports (1,450.00) and from plain typing. Strip spaces and currency marks; when
+   BOTH separators appear the rightmost is the decimal mark and the other is grouping; a separator
+   that repeats is grouping. A single separator keeps the meaning it has always had here — a
+   decimal mark — so nothing already keyed changes value. Parentheses mean negative. */
+const parseNum=v=>{if(v==null)return null;if(typeof v==="number")return isNaN(v)?null:v;
+  let s=String(v).trim().replace(/[\s\u00a0\u202f]/g,"").replace(/[€$£]/g,"");
+  if(s==="")return null;
+  let neg=false;if(/^\(.+\)$/.test(s)){neg=true;s=s.slice(1,-1);}
+  const lc=s.lastIndexOf(","),ld=s.lastIndexOf(".");
+  if(lc>=0&&ld>=0){if(lc>ld)s=s.replace(/\./g,"").replace(/,/g,".");else s=s.replace(/,/g,"");}
+  else if(lc>=0){s=(s.split(",").length>2)?s.replace(/,/g,""):s.replace(",",".");}
+  else if(ld>=0&&s.split(".").length>2)s=s.replace(/\./g,"");
+  const n=parseFloat(s);return isNaN(n)?null:(neg?-n:n);};
 const eur=new Intl.NumberFormat("fi-FI",{style:"currency",currency:"EUR"});
 const money=n=>(n==null||isNaN(n))?"—":eur.format(n);
 const num=n=>(n==null||isNaN(n))?"—":new Intl.NumberFormat("fi-FI").format(n);
@@ -657,7 +670,7 @@ function pad2(n){return String(n).padStart(2,"0");}
 function normDate(v){let s=String(v==null?"":v).trim();if(!s)return"";
   if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
   const m=/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/.exec(s);if(m)return m[3]+"-"+pad2(m[2])+"-"+pad2(m[1]);
-  if(/^\d+(\.\d+)?$/.test(s)){const n=Math.round(+s);if(n>20000&&n<90000){const d=new Date(Date.UTC(1899,11,30)+n*86400000);return d.toISOString().slice(0,10);}}
+  if(/^\d+(\.\d+)?$/.test(s)){const n=Math.floor(+s);if(n>20000&&n<90000){const d=new Date(Date.UTC(1899,11,30)+n*86400000);return d.toISOString().slice(0,10);}}/* floor, not round: a date cell carrying a time (46266.5625 = 1 Sep 13:30) must stay 1 Sep */
   return s;}
 const LEDGER_COLS=[["date",["date"]],["channel",["channel"]],["country",["country"]],["providerRef",["providerref","provref","supplierref","supplierart"]],["provider",["provider","supplier","manufacturer","publisher"]],["batchRef",["batchref","batch"]],["code",["productcode","code","sku","ean","isbn"]],["qty",["quantity","qty","pcs"]],["lineTotal",["totalinclvat","totalincvat","grosstotal","linetotal","total"]],["vatRate",["vatrate","vatpct","alvpct","vat","alv"]],["unitPrice",["unitprice","price","unit"]],["transport",["transport","freight","rahti","toimituskulu"]],["name",["name"]],["type",["type"]],["note",["note"]]];
 function inferDir(st,channel){const c=st.channels.find(x=>x.name.toLowerCase()===String(channel||"").toLowerCase());if(c)return c.dir;return /sale|sell|myyn|woo|vektori|out/i.test(channel||"")?"out":"in";}
