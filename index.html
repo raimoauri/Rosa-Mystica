@@ -722,7 +722,7 @@ function prepareMovements(raw,st,warnings0){
       e.seenCount++;e.qty+=(mv.dir==="in"?mv.qty:-mv.qty);if(mv.date&&(!e.firstDate||mv.date<e.firstDate))e.firstDate=mv.date;if(!e.name&&mv._name)e.name=mv._name;if(!e.provider&&mv.provider)e.provider=mv.provider;if(!e.providerRef&&mv.providerRef)e.providerRef=mv.providerRef;}
   }
   const staging=Object.values(stage);const newChannels=Object.entries(newCh).map(([name,dir])=>({name,dir}));
-  const warnings=(warnings0||[]).slice();if(dup)warnings.push(dup+" exact duplicate"+(dup>1?"s":"")+" skipped.");
+  const warnings=(warnings0||[]).slice();if(dup)warnings.push(dup+" exact duplicate"+(dup>1?"s were":" was")+" skipped — same date, channel, code, quantity and unit price as a line already in the ledger or earlier in this file. If two of them are genuinely separate movements, merge them into one line or give them different batch references.");
   const clash=[];
   for(const k in incoming){if(!held[k])continue;const p=k.split("|");
     clash.push({channel:p[0],batchRef:p[1],held:held[k],adding:incoming[k]});
@@ -1750,7 +1750,9 @@ function LedgerImportModal({st,act,onClose,show}){
     const ex1=["2026-09-01","Purchase","Portugal","Edições Example","PT-0001","9789999999999","ABC-123","100","450.00","13.5","30.00","Example book A","book","Transport = WHOLE-batch freight, net; repeat it on each line of the batch"];
     const ex2=["2026-09-01","Purchase","Portugal","Edições Example","PT-0001","9789999999991","ABC-124","50","250.00","13.5","30.00","Example book B","book","same batch, same transport value repeated — spread per unit across the batch"];
     const ex3=["2026-09-01","Purchase","Finland","Own print","OWN-1","KKG-001","","50","310.00","25.5","","Own-published title","book","own print: 25.5% service-fee VAT; no freight"];
-    downloadXlsx("Rosa-Mystica_Ledger-template.xlsx",[{name:"Ledger",rows:[head,ex1,ex2,ex3]}],show);}
+    const ex4=["2026-09-03","Vektori","","","","9789999999999","","2","27.00","","","","","SALES: one line per product per DATE — an out-channel makes it a sale"];
+    const ex5=["2026-09-11","Vektori","","","","9789999999999","","4","54.00","","","","","leave VAT % blank on sales: each product's type supplies the rate"];
+    downloadXlsx("Rosa-Mystica_Ledger-template.xlsx",[{name:"Ledger",rows:[head,ex1,ex2,ex3,ex4,ex5]}],show);}
   function run(){if(!res||!res.stats.add){setErr("Nothing to import.");return;}act.importLedger(res);show("Imported "+res.stats.add+" movements"+(res.stats.newCodes?" · "+res.stats.newCodes+" to staging":""));onClose();}
   const ok=res&&res.stats.add;
   return html`<${Modal} wide=${true} title="Import ledger (Excel / CSV)" onClose=${onClose}
@@ -1803,6 +1805,7 @@ function SalesImportModal({st,act,onClose,show}){
   return html`<${Modal} wide=${true} title="Import sales (Vektori / WooCommerce)" onClose=${onClose}
     footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Import${prep&&prep.stats.add?(" "+prep.stats.add):""}</button></${React.Fragment}>`}>
     <div class="note">Upload <b>Vektori</b> Product Sales Reports or a <b>WooCommerce</b> orders export (.xlsx or .csv) — the format is detected per file, and you can choose <b>several at once</b>. Each line becomes an <b>out</b> movement under its channel; unknown product codes go to staging. Duplicates are skipped across the whole set, so re-adding a period you already imported changes nothing.</div>
+    <div class="note">Consolidated the reports into <b>one file with a date on every line</b>? That goes through <b>Ledger → Import ledger</b> instead, which reads a date per row — keep one line per product per date, and set Channel to the sale channel.</div>
     <div class="hintrow"><button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Choose sales files…</button>
       <input ref=${fileRef} type="file" accept=".xlsx,.csv" multiple=${true} style=${{display:"none"}} onChange=${onFile}/>
       ${items.length?html`<button class="btn sm ghost" onClick=${()=>{setItems([]);setErr("");}}>Clear</button>`:null}
