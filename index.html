@@ -2501,11 +2501,13 @@ function computeBatches(st){
   for(const k in insBy){const p=byCode[k];const saleRate=saleRateFor(p,st);
     const ins=insBy[k].slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const outs=(outsBy[k]||[]).slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
-    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0),batchRef:m.batchRef||"(no batch)",date:m.date||"",provider:m.provider||"",country:m.country||""}));
+    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0),batchRef:m.batchRef||"(no batch)",date:m.date||"",provider:m.provider||"",country:m.country||"",code:m.code||"",providerRef:m.providerRef||""}));
     for(const l of lots){const b=l.batchRef;(agg[b]=agg[b]||{received:0,investedNet:0,sold:0,shrink:0,cogsNet:0,shrinkCost:0,netRev:0,lines:{}});
       agg[b].received+=l.qty;agg[b].investedNet+=l.qty*l.cost;
       /* the same roll-up again, per product, so a batch can be opened and read line by line */
-      const ln=agg[b].lines[k]||(agg[b].lines[k]={code:(p&&p.code)||l.code||k,name:p?p.name:"",inCat:!!p,
+      /* the code as it is written in the ledger — never the normalised key, which is a lookup
+         handle with its separators stripped and matches nothing the user can search for */
+      const ln=agg[b].lines[k]||(agg[b].lines[k]={code:(p&&p.code)||l.code||k,providerRef:l.providerRef||"",name:p?p.name:"",inCat:!!p,
         sellable:p?p.sellable!==false:true,stocked:p?p.stocked!==false:true,type:p?p.type:"",
         price:(p&&p.price!=null&&p.price!=="")?+p.price:null,saleRate,
         received:0,sold:0,shrink:0,cost:l.cost,investedNet:0,cogsNet:0,netRev:0});
