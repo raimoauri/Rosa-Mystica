@@ -2009,7 +2009,10 @@ function Analytics({st,act,show}){
 function vatRatesOf(st){const v=(st.settings&&st.settings.vatRates)||{};return {book:v.book==null?13.5:+v.book,goods:v.goods==null?25.5:+v.goods,other:v.other==null?0:+v.other};}
 function saleRateFor(p,st){const vr=vatRatesOf(st);const t=p&&p.type;if(t&&vr[t]!=null)return vr[t];return vr.goods;}
 function netCostUnit(m){const gross=+m.unitPrice||0;const r=m.vatRate==null?null:+m.vatRate;return (r&&r>0)?gross/(1+r/100):gross;}
-function netSaleUnit(o,saleRate){const gross=+o.unitPrice||0;const r=o.vatRate==null?null:+o.vatRate;const rate=(r&&r>0)?r:saleRate;return rate>0?gross/(1+rate/100):gross;}
+/* An explicit 0 on a sale line means the amount is already net — the same as it has always
+   meant on a purchase line. Only a blank falls back to the product type's rate. */
+function netSaleUnit(o,saleRate){const gross=+o.unitPrice||0;const r=(o.vatRate==null||o.vatRate==="")?null:+o.vatRate;
+  const rate=(r!=null&&!isNaN(r)&&r>=0)?r:saleRate;return rate>0?gross/(1+rate/100):gross;}
 /* Batch transport (freight-in) spread per unit by quantity → added to net landed cost.
    The batch total is taken once per batch (max across its in-lines, so repeating it on every
    row or putting it on one row both work), then divided by the batch's received quantity. */
