@@ -231,6 +231,31 @@ books takings, COGS and margin. A breakage or a stock-count correction therefore
 *not sold* (with their cost) in Inventory and Batches, instead of quietly depressing ROI and
 sell-through as a sale at zero.
 
+## Reading a batch
+A batch row in Inventory opens to show the invoice product by product: received, sold, on hand, the
+**unit cost landed** (its own net price plus that batch's freight share), the shelf **price**, the
+**margin** that price implies against *this* batch's cost, and what the units that sold actually
+returned. The same product bought twice at different prices therefore carries a different margin in
+each batch, which is the whole point of attributing by batch. Its header states the freight arithmetic
+— "freight 20,00 € spread over 40 units, 0,50 € each" — so the costs below it can be checked rather
+than taken on trust, and the lines add up to the batch row above them.
+
+Nothing in it is editable. It is a reading of the ledger, not a second place to change it.
+
+A product marked **not for sale** shows its cost and the stock it ties up, because it was still bought
+and still holds capital, but no price, margin, revenue or profit: a margin on something never meant to
+be sold is not a number worth printing, and it would drag the batch's ROI for no reason. That is kept
+distinct from a sellable product with **no price**, which says so — one is a decision, the other a gap.
+
+## Where a name lives
+Every view looks a product's name up in the catalogue, by code. So a name typed in staging reaches
+nothing until the item is confirmed — the batch view shows it as *unlinked* until then — and once it
+is confirmed, a later rename reaches every view at once, including movements posted months before.
+Nothing is rewritten, because the code is the anchor and the name is only ever looked up.
+
+The movement keeps its own record either way: the supplier's article number, and its note, which for a
+posted invoice is the description as billed. Renaming a product never touches it.
+
 ## Inventory (FIFO) & invoice progress
 An Inventory tab derives, from the one ledger, FIFO stock per code — received, sold, on-hand,
 sell-through, FIFO cost, realized profit and ROI (only units matched to a cost lot count), plus a
@@ -314,3 +339,6 @@ same totals plus daily detail.
 19. A **Unit cost (FIFO)** column in Inventory — the cost of the units actually on the shelf, which
     the stock value divides by — plus catalogue filtering by supplier, category and **what a record
     is missing**, and staging filtered so a supplier can be confirmed at a time. ✅
+20. **Batches open** to a read-only product-by-product panel — landed cost, price, the margin it
+    implies, and what sold — with not-for-sale lines carrying no margin; and staging edits kept on
+    the staged entry, so leaving the tab no longer discards them. ✅

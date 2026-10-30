@@ -136,6 +136,10 @@ td .meta{color:var(--faint);font-size:11.5px}
 .code{font-family:var(--mono);font-size:12px;color:var(--muted)}
 .cellinput{padding:5px 7px;font-size:12.5px;width:100%;min-width:80px}
 .cellinput.num{text-align:right}
+.sub{width:100%;border-collapse:collapse;font-size:12.5px}
+.sub th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:500;padding:5px 9px;border-bottom:1px solid var(--line)}
+.sub td{padding:6px 9px;border-bottom:1px solid var(--line)}
+.sub tbody tr:last-child td{border-bottom:none}
 .rowact{opacity:0;transition:opacity .12s}
 tr:hover .rowact{opacity:1}
 
@@ -1401,7 +1405,7 @@ function Staging({st,act,openProduct,show}){
   const house=useMemo(()=>houseMultiplier(st),[st.catalogue,st.settings]);
   useEffect(()=>{if(house&&!bulkMult)setBulkMult(String(Math.round(house.k*100)/100));},[house]);
   /* one row's working state: what is staged, plus whatever has been typed over it */
-  const rowOf=(e)=>{const k=normCode(e.code);const o=edit[k]||{};const iv=inv[k];
+  const rowOf=(e)=>{const k=normCode(e.code);const o=Object.assign({},e.ui||{},edit[k]||{});const iv=inv[k];
     const type=o.type!==undefined?o.type:(e.type||guessType(e.code));
     const cost=o.cost!==undefined?parseNum(o.cost):(iv&&iv.avgCost!=null?iv.avgCost:null);
     const rate=vatRatesOf(st)[type]!=null?vatRatesOf(st)[type]:vatRatesOf(st).goods;
@@ -1429,7 +1433,12 @@ function Staging({st,act,openProduct,show}){
     if(ftype&&r.type!==ftype)return false;
     if(ql&&![r.code,r.name,r.supplier,r.supplierRef].join(" ").toLowerCase().includes(ql))return false;
     return true;});
+  /* typing stays local so the grid keeps up; it is written to the staged entry on blur, and at
+     once for a control that has no typing to interrupt */
+  const editRef=useRef(edit);editRef.current=edit;
   const set=(k,f,v)=>setEdit(o=>Object.assign({},o,{[k]:Object.assign({},o[k],{[f]:v})}));
+  const flush=(k,code)=>{const o=editRef.current[k];if(o&&Object.keys(o).length)act.stageUI(code,o);};
+  const setNow=(k,code,f,v)=>{set(k,f,v);act.stageUI(code,Object.assign({},editRef.current[k],{[f]:v}));};
   /* selection always follows what is on screen: changing a filter clears it, so "confirm
      these" can never reach a row you cannot see */
   const selected=rows.filter(r=>sel[r.k]);
@@ -1442,12 +1451,12 @@ function Staging({st,act,openProduct,show}){
         if(m!=null&&m>0){cur.mult=String(m);cur.round=step;
           const type=bulkType||r.type;const rate=vatRatesOf(st)[type]!=null?vatRatesOf(st)[type]:vatRatesOf(st).goods;
           if(r.cost!=null&&r.cost>0)cur.price=String(roundTo(r.cost*m*(1+rate/100),step).toFixed(2));}
-        n[r.k]=cur;}
+        n[r.k]=cur;act.stageUI(r.code,cur);}
       return n;});}
   function flagAll(f,v){setEdit(o=>{const n=Object.assign({},o);
-    for(const r of selected)n[r.k]=Object.assign({},n[r.k],{[f]:v});return n;});}
+    for(const r of selected){n[r.k]=Object.assign({},n[r.k],{[f]:v});act.stageUI(r.code,n[r.k]);}return n;});}
   function takeSuggested(){setEdit(o=>{const n=Object.assign({},o);
-    for(const r of selected)if(r.sugg!=null)n[r.k]=Object.assign({},n[r.k],{price:String(r.sugg.toFixed(2))});
+    for(const r of selected)if(r.sugg!=null){n[r.k]=Object.assign({},n[r.k],{price:String(r.sugg.toFixed(2))});act.stageUI(r.code,n[r.k]);}
     return n;});}
   const ready=rows.filter(r=>!sel[r.k]||true);
   const missingPrice=rows.filter(r=>r.sellable&&(r.price==null||!(r.price>0))).length;
@@ -1496,17 +1505,17 @@ function Staging({st,act,openProduct,show}){
       </tr></thead><tbody>${rows.map(r=>html`<tr key=${r.k}>
         <td><input type="checkbox" checked=${!!sel[r.k]} onChange=${e=>setSel(o=>Object.assign({},o,{[r.k]:e.target.checked?1:0}))}/></td>
         <td class="code">${r.code}</td>
-        <td><input class="cellinput" style=${{minWidth:"190px"}} value=${r.name} placeholder="(no name)" onInput=${e=>set(r.k,"name",e.target.value)}/></td>
-        <td><select class="cellinput"  value=${r.type} onChange=${e=>set(r.k,"type",e.target.value)}>${TYPES.map(t=>html`<option key=${t[0]} value=${t[0]}>${t[1]}</option>`)}</select></td>
+        <td><input class="cellinput" style=${{minWidth:"190px"}} value=${r.name} placeholder="(no name)" onInput=${e=>set(r.k,"name",e.target.value)} onBlur=${()=>flush(r.k,r.code)}/></td>
+        <td><select class="cellinput"  value=${r.type} onChange=${e=>setNow(r.k,r.code,"type",e.target.value)}>${TYPES.map(t=>html`<option key=${t[0]} value=${t[0]}>${t[1]}</option>`)}</select></td>
         <td class="num">${num(r.qty)}</td>
         <td class="num mono">${r.cost==null?html`<span class="faint">—</span>`:money(r.cost)}</td>
-        <td class="num"><input class="cellinput num mono"  style=${{width:"50px"}} value=${r.mult==null?"":String(r.mult)} placeholder=${r.effMult!=null?r.effMult.toFixed(2):"—"} onInput=${e=>set(r.k,"mult",e.target.value)}/></td>
-        <td class="num mono" style=${{opacity:0.75}}>${r.sugg==null?html`<span class="faint">—</span>`:html`<button class="btn sm ghost" onClick=${()=>set(r.k,"price",r.sugg.toFixed(2))}>${money(r.sugg)}</button>`}</td>
-        <td class="num"><input class="cellinput num mono"  style=${{width:"72px"}} value=${r.price==null?"":String(r.price)} placeholder="—" onInput=${e=>set(r.k,"price",e.target.value)}/></td>
+        <td class="num"><input class="cellinput num mono"  style=${{width:"50px"}} value=${r.mult==null?"":String(r.mult)} placeholder=${r.effMult!=null?r.effMult.toFixed(2):"—"} onInput=${e=>set(r.k,"mult",e.target.value)} onBlur=${()=>flush(r.k,r.code)}/></td>
+        <td class="num mono" style=${{opacity:0.75}}>${r.sugg==null?html`<span class="faint">—</span>`:html`<button class="btn sm ghost" onClick=${()=>setNow(r.k,r.code,"price",r.sugg.toFixed(2))}>${money(r.sugg)}</button>`}</td>
+        <td class="num"><input class="cellinput num mono"  style=${{width:"72px"}} value=${r.price==null?"":String(r.price)} placeholder="—" onInput=${e=>set(r.k,"price",e.target.value)} onBlur=${()=>flush(r.k,r.code)}/></td>
         <td class="num mono" style=${{color:r.margin==null?"inherit":(r.margin<0?"var(--bad)":(r.margin<0.2?"var(--warn,inherit)":"var(--good)"))}}>${r.margin==null?"—":pct(r.margin)}</td>
-        <td><input type="checkbox" checked=${r.sellable} onChange=${e=>set(r.k,"sellable",e.target.checked)}/></td>
-        <td><input type="checkbox" checked=${r.online} onChange=${e=>set(r.k,"online",e.target.checked)}/></td>
-        <td><input type="checkbox" checked=${r.stocked} onChange=${e=>set(r.k,"stocked",e.target.checked)}/></td>
+        <td><input type="checkbox" checked=${r.sellable} onChange=${e=>setNow(r.k,r.code,"sellable",e.target.checked)}/></td>
+        <td><input type="checkbox" checked=${r.online} onChange=${e=>setNow(r.k,r.code,"online",e.target.checked)}/></td>
+        <td><input type="checkbox" checked=${r.stocked} onChange=${e=>setNow(r.k,r.code,"stocked",e.target.checked)}/></td>
         <td class="num"><button class="btn sm ghost rowact" onClick=${()=>act.discardStaging(r.code)}>Discard</button></td>
       </tr>`)}</tbody></table></div></div>
     </${React.Fragment}>`}
@@ -2493,23 +2502,42 @@ function computeBatches(st){
     const ins=insBy[k].slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const outs=(outsBy[k]||[]).slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0),batchRef:m.batchRef||"(no batch)",date:m.date||"",provider:m.provider||"",country:m.country||""}));
-    for(const l of lots){const b=l.batchRef;(agg[b]=agg[b]||{received:0,investedNet:0,sold:0,shrink:0,cogsNet:0,shrinkCost:0,netRev:0});
+    for(const l of lots){const b=l.batchRef;(agg[b]=agg[b]||{received:0,investedNet:0,sold:0,shrink:0,cogsNet:0,shrinkCost:0,netRev:0,lines:{}});
       agg[b].received+=l.qty;agg[b].investedNet+=l.qty*l.cost;
+      /* the same roll-up again, per product, so a batch can be opened and read line by line */
+      const ln=agg[b].lines[k]||(agg[b].lines[k]={code:(p&&p.code)||l.code||k,name:p?p.name:"",inCat:!!p,
+        sellable:p?p.sellable!==false:true,stocked:p?p.stocked!==false:true,type:p?p.type:"",
+        price:(p&&p.price!=null&&p.price!=="")?+p.price:null,saleRate,
+        received:0,sold:0,shrink:0,cost:l.cost,investedNet:0,cogsNet:0,netRev:0});
+      ln.received+=l.qty;ln.investedNet+=l.qty*l.cost;ln.cost=l.cost;
       const mm=(meta[b]=meta[b]||{date:l.date,provider:l.provider,country:l.country,codes:new Set()});mm.codes.add(k);
       if(l.date&&(!mm.date||l.date<mm.date))mm.date=l.date;if(!mm.provider&&l.provider)mm.provider=l.provider;if(!mm.country&&l.country)mm.country=l.country;}
     for(const o of outs){const isSale=isSaleKind(km[o.channel]);const priceNet=netSaleUnit(o,saleRate);let q=+o.qty||0;
       for(const l of lots){if(q<=0)break;if(l.left<=0)continue;const take=Math.min(l.left,q);l.left-=take;q-=take;const a=agg[l.batchRef];
-        if(isSale){a.sold+=take;a.cogsNet+=take*l.cost;a.netRev+=take*priceNet;}else{a.shrink+=take;a.shrinkCost+=take*l.cost;}}}
+        const ln=a.lines[k];
+        if(isSale){a.sold+=take;a.cogsNet+=take*l.cost;a.netRev+=take*priceNet;
+          if(ln){ln.sold+=take;ln.cogsNet+=take*l.cost;ln.netRev+=take*priceNet;}}
+        else{a.shrink+=take;a.shrinkCost+=take*l.cost;if(ln)ln.shrink+=take;}}}
   }
   const rows=Object.keys(agg).map(b=>{const a=agg[b];const mm=meta[b]||{};const profit=a.netRev-a.cogsNet;
     return {batchRef:b,date:mm.date||"",provider:mm.provider||"",country:mm.country||"",codes:mm.codes?mm.codes.size:0,
       received:a.received,sold:a.sold,shrink:a.shrink,shrinkCost:a.shrinkCost,onHand:a.received-a.sold-a.shrink,sellThrough:a.received>0?a.sold/a.received:null,transport:(ttotal[b]||0),
-      investedNet:a.investedNet,recoupedNet:a.netRev,cogsNet:a.cogsNet,profit,roi:a.investedNet>0?profit/a.investedNet:null};});
+      investedNet:a.investedNet,recoupedNet:a.netRev,cogsNet:a.cogsNet,profit,roi:a.investedNet>0?profit/a.investedNet:null,
+      lines:Object.values(a.lines).map(l=>{
+        /* two margins, and they answer different questions: what the units that sold actually
+           returned, and what the shelf price would return against what this batch cost. */
+        const realised=l.netRev>0?(l.netRev-l.cogsNet)/l.netRev:null;
+        const priceNet=(l.price!=null&&l.price>0)?(l.saleRate>0?l.price/(1+l.saleRate/100):l.price):null;
+        const expected=(priceNet!=null&&priceNet>0&&l.cost!=null)?(priceNet-l.cost)/priceNet:null;
+        return Object.assign({},l,{onHand:l.received-l.sold-l.shrink,priceNet,
+          margin:l.sellable?expected:null,realised:l.sellable?realised:null,
+          profit:l.netRev-l.cogsNet,valueNet:(l.received-l.sold-l.shrink)*l.cost});})
+        .sort((x,y)=>y.investedNet-x.investedNet)};});
   rows.sort((x,y)=>(y.date||"").localeCompare(x.date||""));
   return rows;
 }
 function Inventory({st,act,show}){
-  const [view,setView]=useState("stock");const [q,setQ]=useState("");const [fstock,setFstock]=useState("");const [sort,setSort]=useState({k:"onHandValue",d:-1});
+  const [view,setView]=useState("stock");const [q,setQ]=useState("");const [open,setOpen]=useState({});const [fstock,setFstock]=useState("");const [sort,setSort]=useState({k:"onHandValue",d:-1});
   const rows=useMemo(()=>computeInventory(st),[st]);
   const batches=useMemo(()=>computeBatches(st),[st]);
   let onHand=0,stockVal=0,profit=0,cogs=0,inStock=0,recvT=0,soldT=0,shrinkU=0,shrinkC=0,noCost=0,noCostN=0;
@@ -2567,9 +2595,34 @@ function Inventory({st,act,show}){
         <td>${r.provider||"—"}</td><td class="code">${r.providerRef||"—"}</td><td class="num mono">${r.avgCost==null?"—":money(r.avgCost)}</td><td class="num">${num(r.sold)}</td><td class="num" style=${{color:r.onHand<0?"var(--bad)":"inherit"}}>${num(r.onHand)}</td><td class="num">${num(r.reorderPoint||0)}</td></tr>`)}</tbody></table></div></div>`}
     </${React.Fragment}>`:html`<${React.Fragment}>
     ${batches.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"470px"}}>Purchases that share a batch reference form an invoice. Record or import in-movements and each invoice's progress — sold vs received, capital recouped, ROI — builds here.</div></div></div>`:html`<${React.Fragment}>
-    <div class="note" style=${{marginBottom:"14px",maxWidth:"660px"}}>Each row is one invoice / batch. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT.</div>
-    <div class="panel"><div class="tablewrap"><table><thead><tr><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num">Sold</th><th class="num" title="units out on adjustment / write-off / gift lines">Not sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
-      <tbody>${batches.map(b=>html`<tr key=${b.batchRef}><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}</td><td class="num faint">${b.shrink?num(b.shrink):"—"}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${b.transport?money(b.transport):"—"}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"—":pct(b.roi)}</td></tr>`)}</tbody></table></div></div>
+    <div class="note" style=${{marginBottom:"14px",maxWidth:"700px"}}>Each row is one invoice / batch. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT. <b>Open a batch</b> to read it product by product — what each one cost landed, what it is priced at, and the margin that implies. Nothing here is editable; it is a reading of the ledger.</div>
+    <div class="panel"><div class="tablewrap"><table><thead><tr><th style=${{width:"24px"}}></th><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num">Sold</th><th class="num" title="units out on adjustment / write-off / gift lines">Not sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
+      <tbody>${batches.map(b=>{const isOpen=!!open[b.batchRef];
+        const noSale=(b.lines||[]).filter(l=>!l.sellable);
+        return html`<${React.Fragment} key=${b.batchRef}>
+        <tr class="clickable" onClick=${()=>setOpen(o=>Object.assign({},o,{[b.batchRef]:!o[b.batchRef]}))}>
+        <td class="faint" style=${{textAlign:"center"}}>${isOpen?"\u25be":"\u25b8"}</td><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}</td><td class="num faint">${b.shrink?num(b.shrink):"—"}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${b.transport?money(b.transport):"—"}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"\u2014":pct(b.roi)}</td></tr>
+        ${isOpen?html`<tr><td colSpan="15" style=${{padding:"0 0 14px 0",background:"var(--bg2, transparent)"}}>
+          <div style=${{padding:"10px 14px 0 42px"}}>
+            <div class="note" style=${{marginBottom:"8px"}}>${num((b.lines||[]).length)} product${(b.lines||[]).length===1?"":"s"} in ${b.batchRef}${b.transport?" \u00b7 freight "+money(b.transport)+" spread over "+num(b.received)+" units, "+money(b.transport/Math.max(1,b.received))+" each":""}${noSale.length?" \u00b7 "+num(noSale.length)+" not for sale, so no price or margin is shown for "+(noSale.length===1?"it":"them"):""}</div>
+            <table class="sub"><thead><tr>
+              <th>Code</th><th>Product</th><th class="num">Recv</th><th class="num">Sold</th><th class="num">On hand</th>
+              <th class="num">Unit cost</th><th class="num">Price</th><th class="num">Margin</th>
+              <th class="num">Sold for</th><th class="num">Profit</th><th class="num">Stock left</th></tr></thead>
+              <tbody>${(b.lines||[]).map(l=>html`<tr key=${l.code}>
+                <td class="code">${l.code}</td>
+                <td>${l.inCat?html`<span class="name">${l.name||"(unnamed)"}</span>`:html`<span class="faint">unlinked</span>`}${!l.sellable?html`<div class="meta">not for sale</div>`:(!l.stocked?html`<div class="meta">not stock-tracked</div>`:null)}</td>
+                <td class="num">${num(l.received)}</td>
+                <td class="num">${l.sold?num(l.sold):html`<span class="faint">\u2014</span>`}${l.shrink?html`<div class="meta">${num(l.shrink)} not sold</div>`:null}</td>
+                <td class="num" style=${{color:l.onHand<0?"var(--bad)":"inherit"}}>${num(l.onHand)}</td>
+                <td class="num mono">${money(l.cost)}</td>
+                <td class="num mono">${!l.sellable?html`<span class="faint">\u2014</span>`:(l.price==null?html`<span class="faint">no price</span>`:money(l.price))}</td>
+                <td class="num mono" style=${{color:l.margin==null?"inherit":(l.margin<0?"var(--bad)":(l.margin<0.2?"inherit":"var(--good)"))}}>${l.margin==null?html`<span class="faint">\u2014</span>`:pct(l.margin)}</td>
+                <td class="num mono">${l.netRev>0?money(l.netRev):html`<span class="faint">\u2014</span>`}</td>
+                <td class="num mono" style=${{color:l.profit>0?"var(--good)":l.profit<0?"var(--bad)":"inherit"}}>${l.netRev>0?money(l.profit):html`<span class="faint">\u2014</span>`}</td>
+                <td class="num mono">${money(l.valueNet)}</td></tr>`)}</tbody></table>
+          </div></td></tr>`:null}
+        </${React.Fragment}>`;})}</tbody></table></div></div>
     </${React.Fragment}>`}
     </${React.Fragment}>`}
   </div>`;}
@@ -2721,6 +2774,11 @@ function App(){
         if(idx[nc]!=null)cat[idx[nc]]=Object.assign({},cat[idx[nc]],it,{updatedAt:now});
         else{idx[nc]=cat.length;cat.push(Object.assign({createdAt:now,updatedAt:now},DEF,{stocked:!TILLCODE.test(String(it.code||""))},it));}}
       return {...s,catalogue:cat};}),
+    /* What is typed on the staging grid is kept on the staged entry, so leaving the tab and coming
+       back does not throw away an afternoon's pricing. It is still not the catalogue: nothing is a
+       product until it is confirmed. */
+    stageUI:(code,patch)=>setSt(s=>({...s,staging:(s.staging||[]).map(x=>
+      normCode(x.code)===normCode(code)?Object.assign({},x,{ui:Object.assign({},x.ui,patch)}):x)})),
     /* confirm a chosen set, with the details decided on the staging grid; the rest stay staged */
     confirmStagingRows:rows=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();
       const cat=s.catalogue.slice();const have=new Set(cat.map(p=>normCode(p.code)));const done={};
