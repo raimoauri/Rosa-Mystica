@@ -182,6 +182,26 @@ import says how many lines matched that way. So the first invoice from a supplie
 give its lines codes in your own scheme with one button, or set them as you confirm staging — and every
 later invoice from them lands on your codes with no staging at all.
 
+## Staging: where a product gets its price
+A staged code is one the ledger already knows the cost of — the movements that staged it are in the
+ledger, freight share and all — but which the catalogue has never been told how to sell. Staging is
+that decision, made in a grid for as many items at once as you like: name, type, units received, the
+**cost read from the ledger**, a multiplier, a suggested price, your price, the resulting margin, and
+sellable / online / stock-tracked.
+
+Nothing is invented. The cost is the same landed figure FIFO uses, so the margin shown is the margin
+you will get. The suggested price sits in its own column and stays a suggestion until it is taken or
+typed over; price and multiplier are two-way, so entering either gives the other. The multiplier
+offered in bulk is the **median the rest of the catalogue already uses**, net-to-net, counted from the
+products that carry both a cost and a price — a starting point taken from your own shelves rather than
+a number chosen for you.
+
+A selection can be set in bulk: type, a multiplier with rounding (0,05 / 0,10 / 0,50 / 1,00 or ending
+in ,99), take all suggested prices, flip online or not-for-sale, discard. **Confirm writes only the
+selection** and leaves the rest staged, so a long list can be done a supplier at a time. Items marked
+sellable with no price are counted in a standing warning, because that is exactly the state that makes
+a WooCommerce Orders import drop their sales.
+
 ## Things that take money but hold no stock
 A product can be marked **not stock-tracked** — a till button, a gift card, a service. It keeps its
 revenue and its VAT, so takings still tie out, but it stays out of the on-hand and stock-value
@@ -209,7 +229,11 @@ from the unified ledger.
 ## VAT
 Purchases carry an explicit **per-line VAT rate**; the VAT-inclusive line total is keyed and net/VAT are
 counted back from it. A batch can also carry a **transport (freight-in) total**, spread per unit by
-quantity into the **net landed cost** — entered once per batch (repeated on each line or on one). Margins
+quantity into the **net landed cost** — entered once per batch (repeated on each line or on one).
+Posting an invoice writes its net freight plus duty onto every line of that batch, so the spread is
+**by quantity, not by value**: €180 of postage over 140 books puts €1,29 on each of them, on the €7
+title and the €75 one alike. That suits carriage, which tracks weight and count rather than price, but
+it is a choice and it is the one being made. Margins
 everywhere are **net-to-net**: landed purchase cost (net + freight share) vs sale price stripped by the
 rate for the product's type (configurable in Settings; a movement's own VAT % overrides). The Finance tab shows **output VAT** (sales, from settlement) beside **input VAT** (purchases,
 from the ledger) over any range, for a by-hand net-VAT / Fivaldi reconciliation.
@@ -269,3 +293,7 @@ same totals plus daily detail.
 17. A **stock count** entered as what is on the shelf and written as the difference; staging recounted
     when movements are deleted; a guard against re-importing an invoice under a corrected reference;
     and an unpriced catalogue product reported as that rather than as a missing one. ✅
+18. **Staging as a pricing grid** — cost read from the ledger, a multiplier learned from the
+    catalogue's own median, a suggested price that stays a suggestion, margins net-to-net, the
+    sellable / online / stocked flags, bulk setting over a selection, and confirm writing only
+    what is selected. ✅

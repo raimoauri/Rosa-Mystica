@@ -134,6 +134,8 @@ tbody tr.clickable:hover td{background:var(--surface-2)}
 td .name{font-weight:500}
 td .meta{color:var(--faint);font-size:11.5px}
 .code{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.cellinput{padding:5px 7px;font-size:12.5px;width:100%;min-width:80px}
+.cellinput.num{text-align:right}
 .rowact{opacity:0;transition:opacity .12s}
 tr:hover .rowact{opacity:1}
 
@@ -1348,17 +1350,123 @@ function MovementModal({st,act,editing,onClose,show}){
   </${Modal}>`;}
 
 /* ===================== Staging ===================== */
+/* ===================== Staging =====================
+   A staged code is a product the ledger already knows the cost of — the movements that staged it
+   are in the ledger, freight share and all — but which the catalogue has never been told how to
+   sell. So this is where that is decided, in a grid, for as many at once as you like: what it is,
+   what it cost, what to multiply by, what to charge. Nothing is invented. The cost is read from
+   the ledger, the suggested multiplier is the one the rest of the catalogue already uses, and the
+   price it works out stays a suggestion in its own column until it is taken. */
+function houseMultiplier(st){
+  const m=[];
+  for(const p of st.catalogue||[]){
+    const c=+p.cost,g=+p.price;if(!(c>0)||!(g>0))continue;
+    const rate=saleRateFor(p,st);const net=rate>0?g/(1+rate/100):g;
+    const k=net/c;if(k>0.2&&k<20)m.push(k);}
+  if(!m.length)return null;
+  m.sort((a,b)=>a-b);const mid=Math.floor(m.length/2);
+  return {k:(m.length%2?m[mid]:(m[mid-1]+m[mid])/2),n:m.length};}
+function roundTo(v,step){if(!step||!(v>0))return v;
+  if(step==="99")return Math.max(0.99,Math.round(v)-0.01);
+  const s=+step;return Math.round(v/s)*s;}
 function Staging({st,act,openProduct,show}){
   const stg=st.staging;
+  const [edit,setEdit]=useState({});const [sel,setSel]=useState({});
+  const [bulkMult,setBulkMult]=useState("");const [bulkRound,setBulkRound]=useState("0.1");
+  const [bulkType,setBulkType]=useState("");
+  const inv=useMemo(()=>{const m={};for(const r of computeInventory(st))m[normCode(r.code)]=r;return m;},[st.ledger,st.catalogue]);
+  const house=useMemo(()=>houseMultiplier(st),[st.catalogue,st.settings]);
+  useEffect(()=>{if(house&&!bulkMult)setBulkMult(String(Math.round(house.k*100)/100));},[house]);
+  /* one row's working state: what is staged, plus whatever has been typed over it */
+  const rowOf=(e)=>{const k=normCode(e.code);const o=edit[k]||{};const iv=inv[k];
+    const type=o.type!==undefined?o.type:(e.type||guessType(e.code));
+    const cost=o.cost!==undefined?parseNum(o.cost):(iv&&iv.avgCost!=null?iv.avgCost:null);
+    const rate=vatRatesOf(st)[type]!=null?vatRatesOf(st)[type]:vatRatesOf(st).goods;
+    const mult=o.mult!==undefined?parseNum(o.mult):null;
+    let price=o.price!==undefined?parseNum(o.price):null;
+    let sugg=null;
+    if(cost!=null&&cost>0&&mult!=null&&mult>0)sugg=roundTo(cost*mult*(1+rate/100),o.round||null);
+    const net=price!=null&&price>0?(rate>0?price/(1+rate/100):price):null;
+    const margin=(net!=null&&cost!=null&&net>0)?(net-cost)/net:null;
+    const effMult=(net!=null&&cost!=null&&cost>0)?net/cost:null;
+    return {k,code:e.code,name:o.name!==undefined?o.name:(e.name||""),type,cost,rate,mult,price,sugg,margin,effMult,
+      qty:e.qty||0,supplier:e.provider||"",supplierRef:e.providerRef||"",
+      sellable:o.sellable!==undefined?o.sellable:!TILLCODE.test(String(e.code||"")),
+      online:o.online!==undefined?o.online:false,
+      stocked:o.stocked!==undefined?o.stocked:!TILLCODE.test(String(e.code||""))};};
+  const rows=stg.map(rowOf);
+  const set=(k,f,v)=>setEdit(o=>Object.assign({},o,{[k]:Object.assign({},o[k],{[f]:v})}));
+  const selected=rows.filter(r=>sel[r.k]);
+  const allOn=rows.length>0&&selected.length===rows.length;
+  function applyBulk(){
+    const m=parseNum(bulkMult);const step=bulkRound==="none"?null:bulkRound;
+    setEdit(o=>{const n=Object.assign({},o);
+      for(const r of selected){const cur=Object.assign({},n[r.k]);
+        if(bulkType)cur.type=bulkType;
+        if(m!=null&&m>0){cur.mult=String(m);cur.round=step;
+          const type=bulkType||r.type;const rate=vatRatesOf(st)[type]!=null?vatRatesOf(st)[type]:vatRatesOf(st).goods;
+          if(r.cost!=null&&r.cost>0)cur.price=String(roundTo(r.cost*m*(1+rate/100),step).toFixed(2));}
+        n[r.k]=cur;}
+      return n;});}
+  function flagAll(f,v){setEdit(o=>{const n=Object.assign({},o);
+    for(const r of selected)n[r.k]=Object.assign({},n[r.k],{[f]:v});return n;});}
+  function takeSuggested(){setEdit(o=>{const n=Object.assign({},o);
+    for(const r of selected)if(r.sugg!=null)n[r.k]=Object.assign({},n[r.k],{price:String(r.sugg.toFixed(2))});
+    return n;});}
+  const ready=rows.filter(r=>!sel[r.k]||true);
+  const missingPrice=rows.filter(r=>r.sellable&&(r.price==null||!(r.price>0))).length;
+  function confirm(list){
+    if(!list.length)return;
+    act.confirmStagingRows(list.map(r=>({code:r.code,name:r.name,type:r.type,cost:r.cost,price:r.price,
+      sellable:r.sellable,online:r.online,stocked:r.stocked,supplier:r.supplier,supplierRef:r.supplierRef})));
+    setSel({});show("Confirmed "+list.length+" into the catalogue",true);}
+  const TH=(t,c)=>html`<th class=${c||""}>${t}</th>`;
   return html`<div class="content">
-    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Unconfirmed items</h2>${stg.length?html`<button class="btn" onClick=${()=>{const n=stg.length;act.confirmAllStaging();show("Confirmed "+n+" into the catalogue",true);}}>Confirm all · ${stg.length}</button>`:null}</div>
-    <div class="note" style=${{marginBottom:"14px",maxWidth:"620px"}}>Codes seen in a ledger import that aren't in the catalogue land here. Review each, complete its details, and confirm it into the catalogue — the code stays the anchor. Discard the ones you don't want.</div>
+    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Unconfirmed items</h2>
+      ${stg.length?html`<div class="hintrow">
+        <button class="btn" onClick=${()=>confirm(selected.length?selected:rows)}>Confirm ${selected.length?"selected · "+selected.length:"all · "+rows.length}</button>
+      </div>`:null}</div>
+    <div class="note" style=${{marginBottom:"14px",maxWidth:"760px"}}>Codes the ledger has seen but the catalogue has not. Their <b>cost is read from the movements that staged them</b> — the purchase price net of VAT, plus that batch's share of freight — so what is left to decide is what each one is and what to charge for it. Set a multiplier and the price it works out to appears as a <b>suggestion</b>; take it, or type your own. Nothing is written until you confirm.</div>
     ${stg.length===0?html`<div class="panel"><div class="empty"><${Icon} name="staging"/><div class="big">Staging is clear</div><div class="note">New codes from a ledger import will appear here for review.</div></div></div>`:
-    html`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th class="num">Seen</th><th class="num">Qty</th><th>First date</th><th></th></tr></thead>
-      <tbody>${stg.map(s=>html`<tr key=${normCode(s.code)} class="clickable" onClick=${()=>openProduct(s,true)}>
-        <td class="code">${s.code}</td><td><span class="name">${s.name||html`<span class="faint">(no name)</span>`}</span></td>
-        <td><span class="badge type">${typeLabel(s.type||"goods")}</span></td><td class="num">${num(s.seenCount||1)}</td><td class="num">${num(s.qty||0)}</td><td class="mono muted">${s.firstDate?fmtD(s.firstDate):"—"}</td>
-        <td class="num"><button class="btn sm" onClick=${e=>{e.stopPropagation();openProduct(s,true);}}>Confirm…</button> <button class="btn sm ghost rowact" onClick=${e=>{e.stopPropagation();act.discardStaging(s.code);show("Discarded "+s.code,true);}}>Discard</button></td></tr>`)}</tbody></table></div></div>`}
+    html`<${React.Fragment}>
+      <div class="toolbar" style=${{marginBottom:"12px",flexWrap:"wrap"}}>
+        <label class="switch"><input type="checkbox" checked=${allOn} onChange=${e=>{const v=e.target.checked;const n={};if(v)for(const r of rows)n[r.k]=1;setSel(n);}}/> ${selected.length?num(selected.length)+" selected":"Select all"}</label>
+        <span class="note" style=${{opacity:selected.length?1:0.45}}>Set on selected:</span>
+        <select class="filter" disabled=${!selected.length} value=${bulkType} onChange=${e=>setBulkType(e.target.value)} style=${{width:"auto"}}>
+          <option value="">Type…</option>${TYPES.map(t=>html`<option key=${t[0]} value=${t[0]}>${t[1]}</option>`)}</select>
+        <label class="note">×</label>
+        <input class="filter mono" disabled=${!selected.length} style=${{width:"74px"}} value=${bulkMult} onInput=${e=>setBulkMult(e.target.value)} placeholder="2.00"/>
+        <select class="filter" disabled=${!selected.length} value=${bulkRound} onChange=${e=>setBulkRound(e.target.value)} style=${{width:"auto"}}>
+          <option value="none">no rounding</option><option value="0.05">to 0,05</option><option value="0.1">to 0,10</option>
+          <option value="0.5">to 0,50</option><option value="1">to 1,00</option><option value="99">ending ,99</option></select>
+        <button class="btn sm" disabled=${!selected.length} onClick=${applyBulk}>Apply</button>
+        <button class="btn sm ghost" disabled=${!selected.length} onClick=${takeSuggested}>Take suggested price</button>
+        <span style=${{flex:1}}></span>
+        <button class="btn sm ghost" disabled=${!selected.length} onClick=${()=>flagAll("online",true)}>Online ✓</button>
+        <button class="btn sm ghost" disabled=${!selected.length} onClick=${()=>flagAll("sellable",false)}>Not for sale</button>
+        <button class="btn sm danger" disabled=${!selected.length} onClick=${()=>{const n=selected.length;for(const r of selected)act.discardStaging(r.code);setSel({});show("Discarded "+n,true);}}>Discard</button>
+      </div>
+      ${house?html`<div class="note" style=${{marginBottom:"10px"}}>Your catalogue's usual multiplier is <b>×${(Math.round(house.k*100)/100).toFixed(2)}</b> net-to-net, taken from the ${num(house.n)} products that already carry both a cost and a price. It is only a starting point.</div>`:null}
+      ${missingPrice?html`<div class="note" style=${{marginBottom:"10px",color:"var(--bad)"}}>${num(missingPrice)} item${missingPrice>1?"s are":" is"} marked for sale with no price. A sellable product with no price cannot be priced by a WooCommerce Orders import, and its sales would be left out.</div>`:null}
+      <div class="panel"><div class="tablewrap"><table><thead><tr>
+        ${TH("")}${TH("Code")}${TH("Name","wide")}${TH("Type")}${TH("Qty","num")}${TH("Cost","num")}${TH("×","num")}${TH("Sugg.","num")}${TH("Price","num")}${TH("Margin","num")}${TH("Sell")}${TH("Online")}${TH("Stock")}${TH("")}
+      </tr></thead><tbody>${rows.map(r=>html`<tr key=${r.k}>
+        <td><input type="checkbox" checked=${!!sel[r.k]} onChange=${e=>setSel(o=>Object.assign({},o,{[r.k]:e.target.checked?1:0}))}/></td>
+        <td class="code">${r.code}</td>
+        <td><input class="cellinput" style=${{minWidth:"190px"}} value=${r.name} placeholder="(no name)" onInput=${e=>set(r.k,"name",e.target.value)}/></td>
+        <td><select class="cellinput"  value=${r.type} onChange=${e=>set(r.k,"type",e.target.value)}>${TYPES.map(t=>html`<option key=${t[0]} value=${t[0]}>${t[1]}</option>`)}</select></td>
+        <td class="num">${num(r.qty)}</td>
+        <td class="num mono">${r.cost==null?html`<span class="faint">—</span>`:money(r.cost)}</td>
+        <td class="num"><input class="cellinput num mono"  style=${{width:"50px"}} value=${r.mult==null?"":String(r.mult)} placeholder=${r.effMult!=null?r.effMult.toFixed(2):"—"} onInput=${e=>set(r.k,"mult",e.target.value)}/></td>
+        <td class="num mono" style=${{opacity:0.75}}>${r.sugg==null?html`<span class="faint">—</span>`:html`<button class="btn sm ghost" onClick=${()=>set(r.k,"price",r.sugg.toFixed(2))}>${money(r.sugg)}</button>`}</td>
+        <td class="num"><input class="cellinput num mono"  style=${{width:"72px"}} value=${r.price==null?"":String(r.price)} placeholder="—" onInput=${e=>set(r.k,"price",e.target.value)}/></td>
+        <td class="num mono" style=${{color:r.margin==null?"inherit":(r.margin<0?"var(--bad)":(r.margin<0.2?"var(--warn,inherit)":"var(--good)"))}}>${r.margin==null?"—":pct(r.margin)}</td>
+        <td><input type="checkbox" checked=${r.sellable} onChange=${e=>set(r.k,"sellable",e.target.checked)}/></td>
+        <td><input type="checkbox" checked=${r.online} onChange=${e=>set(r.k,"online",e.target.checked)}/></td>
+        <td><input type="checkbox" checked=${r.stocked} onChange=${e=>set(r.k,"stocked",e.target.checked)}/></td>
+        <td class="num"><button class="btn sm ghost rowact" onClick=${()=>act.discardStaging(r.code)}>Discard</button></td>
+      </tr>`)}</tbody></table></div></div>
+    </${React.Fragment}>`}
   </div>`;}
 
 /* ===================== Settings ===================== */
@@ -2565,6 +2673,17 @@ function App(){
         if(idx[nc]!=null)cat[idx[nc]]=Object.assign({},cat[idx[nc]],it,{updatedAt:now});
         else{idx[nc]=cat.length;cat.push(Object.assign({createdAt:now,updatedAt:now},DEF,{stocked:!TILLCODE.test(String(it.code||""))},it));}}
       return {...s,catalogue:cat};}),
+    /* confirm a chosen set, with the details decided on the staging grid; the rest stay staged */
+    confirmStagingRows:rows=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();
+      const cat=s.catalogue.slice();const have=new Set(cat.map(p=>normCode(p.code)));const done={};
+      for(const r of rows){const nc=normCode(r.code);if(!nc||have.has(nc))continue;
+        cat.push({code:r.code,type:r.type||"goods",name:r.name||"",author:"",year:"",category:"",
+          supplier:r.supplier||"",supplierRef:r.supplierRef||"",
+          cost:(r.cost==null?null:+r.cost),price:(r.price==null?null:+r.price),
+          sellable:r.sellable!==false,stocked:r.stocked!==false,online:!!r.online,
+          reorderPoint:null,notes:"",createdAt:now,updatedAt:now});
+        have.add(nc);done[nc]=1;}
+      return {...s,catalogue:cat,staging:s.staging.filter(x=>!done[normCode(x.code)])};}),
     confirmAllStaging:()=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();const cat=s.catalogue.slice();const have=new Set(cat.map(p=>normCode(p.code)));
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
         cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:!TILLCODE.test(String(e.code||"")),stocked:!TILLCODE.test(String(e.code||"")),online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
