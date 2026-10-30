@@ -1132,14 +1132,28 @@ function Overview({st,go}){
 /* ===================== Catalogue ===================== */
 function Catalogue({st,act,openProduct,q,setQ}){
   const [ftype,setFtype]=useState("");const [fsell,setFsell]=useState("");const [fonline,setFonline]=useState("");
+  const [fsup,setFsup]=useState("");const [fcat,setFcat]=useState("");const [fmiss,setFmiss]=useState("");
   const [sort,setSort]=useState({k:"name",d:1});
+  /* the values actually present, so the lists only ever offer what exists */
+  const suppliers=useMemo(()=>[...new Set((st.catalogue||[]).map(p=>(p.supplier||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[st.catalogue]);
+  const cats=useMemo(()=>[...new Set((st.catalogue||[]).map(p=>(p.category||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[st.catalogue]);
+  /* what a record is missing, so the gaps can be worked through instead of hunted for */
+  const MISSING=[["price","no price"],["cost","no cost"],["name","no name"],["author","no author"],
+                 ["category","no category"],["supplier","no supplier"],["reorderPoint","no reorder point"]];
+  const lacks=(p,k)=>{const v=p[k];
+    if(k==="price"||k==="cost"||k==="reorderPoint")return v==null||v===""||!(+v>0);
+    return String(v==null?"":v).trim()==="";};
+  const missCount=useMemo(()=>{const m={};for(const [k] of MISSING)m[k]=(st.catalogue||[]).filter(p=>lacks(p,k)).length;return m;},[st.catalogue]);
   const stock=useMemo(()=>stockByCode(st),[st]);const lastOrd=useMemo(()=>lastOrderedByCode(st),[st]);
   const ql=q.trim().toLowerCase();
   let rows=st.catalogue.filter(p=>{
     if(ftype&&p.type!==ftype)return false;
     if(fsell==="yes"&&p.sellable===false)return false;if(fsell==="no"&&p.sellable!==false)return false;
     if(fonline==="yes"&&!p.online)return false;if(fonline==="no"&&p.online)return false;
-    if(ql&&![p.code,p.name,p.author,p.category,p.supplier].join(" ").toLowerCase().includes(ql))return false;
+    if(fsup&&(p.supplier||"").trim()!==fsup)return false;
+    if(fcat&&(p.category||"").trim()!==fcat)return false;
+    if(fmiss&&!lacks(p,fmiss))return false;
+    if(ql&&![p.code,p.name,p.author,p.category,p.supplier,p.supplierRef].join(" ").toLowerCase().includes(ql))return false;
     return true;});
   const val=(p,k)=>{if(k==="stock")return stock[normCode(p.code)]||0;if(k==="last")return lastOrd[normCode(p.code)]||"";if(k==="cost"||k==="price")return +p[k]||0;return String(p[k]==null?"":p[k]).toLowerCase();};
   rows=[...rows].sort((a,b)=>{const x=val(a,sort.k),y=val(b,sort.k);return (x<y?-1:x>y?1:0)*sort.d;});
@@ -1154,19 +1168,27 @@ function Catalogue({st,act,openProduct,q,setQ}){
       <select class="filter" value=${ftype} onChange=${e=>setFtype(e.target.value)}><option value="">All types</option>${TYPES.map(([v,l])=>html`<option key=${v} value=${v}>${l}</option>`)}</select>
       <select class="filter" value=${fsell} onChange=${e=>setFsell(e.target.value)}><option value="">Sellable: all</option><option value="yes">Sellable</option><option value="no">Not sellable</option></select>
       <select class="filter" value=${fonline} onChange=${e=>setFonline(e.target.value)}><option value="">Online: all</option><option value="yes">Online</option><option value="no">Offline</option></select>
+      ${suppliers.length?html`<select class="filter" value=${fsup} onChange=${e=>setFsup(e.target.value)} style=${{maxWidth:"190px"}}><option value="">All suppliers</option>${suppliers.map(v=>html`<option key=${v} value=${v}>${v}</option>`)}</select>`:null}
+      ${cats.length?html`<select class="filter" value=${fcat} onChange=${e=>setFcat(e.target.value)} style=${{maxWidth:"170px"}}><option value="">All categories</option>${cats.map(v=>html`<option key=${v} value=${v}>${v}</option>`)}</select>`:null}
+      <select class="filter" value=${fmiss} onChange=${e=>setFmiss(e.target.value)} style=${{maxWidth:"180px"}}>
+        <option value="">Complete or not</option>${MISSING.map(([k,l])=>html`<option key=${k} value=${k} disabled=${!missCount[k]}>${"Missing: "+l+(missCount[k]?" \u00b7 "+missCount[k]:"")}</option>`)}</select>
+      ${(fsup||fcat||fmiss||ftype||fsell||fonline)?html`<button class="btn sm ghost" onClick=${()=>{setFsup("");setFcat("");setFmiss("");setFtype("");setFsell("");setFonline("");}}>Clear</button>`:null}
       <span class="sp" style=${{flex:1}}></span><span class="note">${rows.length} of ${st.catalogue.length}</span>
     </div>
     <div class="panel"><div class="tablewrap"><table><thead><tr>
-      ${Th("code","Code")}${Th("name","Name")}${Th("type","Type")}${Th("category","Category")}
+      ${Th("code","Code")}${Th("name","Name")}${Th("author","Author")}${Th("type","Type")}${Th("category","Category")}${Th("supplier","Supplier")}
       ${Th("cost","Cost","num")}${Th("price","Price","num")}${Th("stock","On hand","num")}${Th("last","Last ordered")}<th>Flags</th></tr></thead>
       <tbody>${rows.map(p=>{const k=normCode(p.code);return html`<tr key=${k} class="clickable" onClick=${()=>openProduct(p)}>
         <td class="code">${p.code}</td>
-        <td><span class="name">${p.name||"(unnamed)"}</span>${p.author?html`<div class="meta">${p.author}${p.year?" · "+p.year:""}</div>`:null}</td>
-        <td><span class="badge type">${typeLabel(p.type)}</span></td><td class="muted">${p.category||"—"}</td>
+        <td><span class="name">${p.name||html`<span class="faint">(unnamed)</span>`}</span></td>
+        <td class="muted">${p.author||html`<span class="faint">\u2014</span>`}${p.year?html`<div class="meta">${p.year}</div>`:null}</td>
+        <td><span class="badge type">${typeLabel(p.type)}</span></td>
+        <td class="muted">${p.category||html`<span class="faint">\u2014</span>`}</td>
+        <td class="muted">${p.supplier||html`<span class="faint">\u2014</span>`}${p.supplierRef?html`<div class="meta code">${p.supplierRef}</div>`:null}</td>
         <td class="num mono">${p.cost==null||p.cost===""?"—":money(+p.cost)}</td><td class="num mono">${p.price==null||p.price===""?"—":money(+p.price)}</td>
         <td class="num">${num(stock[k]||0)}</td><td class="mono muted">${lastOrd[k]?fmtD(lastOrd[k]):"—"}</td>
         <td><span class="pill"><span class=${"dot "+(p.sellable!==false?"on":"no")} title=${p.sellable!==false?"Sellable":"Not sellable"}></span>${p.online?html`<span class="badge" style=${{padding:"1px 6px"}}>online</span>`:null}</span></td></tr>`;})}
-      ${rows.length===0?html`<tr><td colSpan="9"><div class="empty"><${Icon} name="catalogue"/><div class="big">${st.catalogue.length===0?"The catalogue is empty":"Nothing matches"}</div><div class="note">${st.catalogue.length===0?"Add a product, or confirm items from staging after a ledger import.":"Adjust the filters or search."}</div>${st.catalogue.length===0?html`<button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button>`:null}</div></td></tr>`:null}
+      ${rows.length===0?html`<tr><td colSpan="11"><div class="empty"><${Icon} name="catalogue"/><div class="big">${st.catalogue.length===0?"The catalogue is empty":"Nothing matches"}</div><div class="note">${st.catalogue.length===0?"Add a product, or confirm items from staging after a ledger import.":"Adjust the filters or search."}</div>${st.catalogue.length===0?html`<button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button>`:null}</div></td></tr>`:null}
       </tbody></table></div></div>
   </div>`;}
 
@@ -1374,6 +1396,7 @@ function Staging({st,act,openProduct,show}){
   const [edit,setEdit]=useState({});const [sel,setSel]=useState({});
   const [bulkMult,setBulkMult]=useState("");const [bulkRound,setBulkRound]=useState("0.1");
   const [bulkType,setBulkType]=useState("");
+  const [fq,setFq]=useState("");const [fprov,setFprov]=useState("");const [ftype,setFtype]=useState("");
   const inv=useMemo(()=>{const m={};for(const r of computeInventory(st))m[normCode(r.code)]=r;return m;},[st.ledger,st.catalogue]);
   const house=useMemo(()=>houseMultiplier(st),[st.catalogue,st.settings]);
   useEffect(()=>{if(house&&!bulkMult)setBulkMult(String(Math.round(house.k*100)/100));},[house]);
@@ -1394,8 +1417,21 @@ function Staging({st,act,openProduct,show}){
       sellable:o.sellable!==undefined?o.sellable:!TILLCODE.test(String(e.code||"")),
       online:o.online!==undefined?o.online:false,
       stocked:o.stocked!==undefined?o.stocked:!TILLCODE.test(String(e.code||""))};};
-  const rows=stg.map(rowOf);
+  const provs=useMemo(()=>[...new Set(stg.map(e=>(e.provider||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[stg]);
+  /* once a supplier has been confirmed away, its filter would leave the screen blank; drop it */
+  useEffect(()=>{if(fprov&&provs.indexOf(fprov)<0)setFprov("");},[provs,fprov]);
+  /* the whole list, then the slice on screen — selection and confirming follow what is shown, so a
+     long staging list can be worked one supplier at a time rather than all at once */
+  const allRows=stg.map(rowOf);
+  const ql=fq.trim().toLowerCase();
+  const rows=allRows.filter(r=>{
+    if(fprov&&(r.supplier||"").trim()!==fprov)return false;
+    if(ftype&&r.type!==ftype)return false;
+    if(ql&&![r.code,r.name,r.supplier,r.supplierRef].join(" ").toLowerCase().includes(ql))return false;
+    return true;});
   const set=(k,f,v)=>setEdit(o=>Object.assign({},o,{[k]:Object.assign({},o[k],{[f]:v})}));
+  /* selection always follows what is on screen: changing a filter clears it, so "confirm
+     these" can never reach a row you cannot see */
   const selected=rows.filter(r=>sel[r.k]);
   const allOn=rows.length>0&&selected.length===rows.length;
   function applyBulk(){
@@ -1424,11 +1460,18 @@ function Staging({st,act,openProduct,show}){
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Unconfirmed items</h2>
       ${stg.length?html`<div class="hintrow">
-        <button class="btn" onClick=${()=>confirm(selected.length?selected:rows)}>Confirm ${selected.length?"selected · "+selected.length:"all · "+rows.length}</button>
+        <button class="btn" onClick=${()=>confirm(selected.length?selected:rows)}>Confirm ${selected.length?"selected \u00b7 "+selected.length:(rows.length<allRows.length?"these \u00b7 "+rows.length:"all \u00b7 "+rows.length)}</button>
       </div>`:null}</div>
     <div class="note" style=${{marginBottom:"14px",maxWidth:"760px"}}>Codes the ledger has seen but the catalogue has not. Their <b>cost is read from the movements that staged them</b> — the purchase price net of VAT, plus that batch's share of freight — so what is left to decide is what each one is and what to charge for it. Set a multiplier and the price it works out to appears as a <b>suggestion</b>; take it, or type your own. Nothing is written until you confirm.</div>
     ${stg.length===0?html`<div class="panel"><div class="empty"><${Icon} name="staging"/><div class="big">Staging is clear</div><div class="note">New codes from a ledger import will appear here for review.</div></div></div>`:
     html`<${React.Fragment}>
+      <div class="toolbar" style=${{marginBottom:"8px",flexWrap:"wrap"}}>
+        <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, name, supplier\u2026" value=${fq} onInput=${e=>{setFq(e.target.value);setSel({});}}/></div>
+        ${provs.length>1?html`<select class="filter" value=${fprov} onChange=${e=>{setFprov(e.target.value);setSel({});}} style=${{maxWidth:"210px"}}><option value="">All suppliers</option>${provs.map(v=>html`<option key=${v} value=${v}>${v}</option>`)}</select>`:null}
+        <select class="filter" value=${ftype} onChange=${e=>{setFtype(e.target.value);setSel({});}} style=${{width:"auto"}}><option value="">All types</option>${TYPES.map(t=>html`<option key=${t[0]} value=${t[0]}>${t[1]}</option>`)}</select>
+        ${(fq||fprov||ftype)?html`<button class="btn sm ghost" onClick=${()=>{setFq("");setFprov("");setFtype("");}}>Clear</button>`:null}
+        <span style=${{flex:1}}></span><span class="note">${num(rows.length)} of ${num(allRows.length)}</span>
+      </div>
       <div class="toolbar" style=${{marginBottom:"12px",flexWrap:"wrap"}}>
         <label class="switch"><input type="checkbox" checked=${allOn} onChange=${e=>{const v=e.target.checked;const n={};if(v)for(const r of rows)n[r.k]=1;setSel(n);}}/> ${selected.length?num(selected.length)+" selected":"Select all"}</label>
         <span class="note" style=${{opacity:selected.length?1:0.45}}>Set on selected:</span>
@@ -1496,8 +1539,8 @@ function Settings({st,act,show}){
     const ch=[["Channel","Units","Revenue"]].concat(Object.entries(chan).sort((a,b)=>b[1].rev-a[1].rev).map(([c,v])=>[c,v.units,r2(v.rev)]));
     const mo=[["Month","Units","Revenue"]].concat(Object.keys(month).sort().map(m=>[m,month[m].units,r2(month[m].rev)]));
     return [{name:"By product",rows:pr},{name:"By channel",rows:ch},{name:"By month",rows:mo}];}
-  function invSheets(){const rows=computeInventory(st);const head=["Code","Name","Received","Sold","Not sold (adj.)","Not-sold cost","On hand","Sell-through %","Stock value","Realized profit","ROI %","Provider","Provider ref","Reorder point"];
-    const body=rows.slice().sort((a,b)=>b.onHandValue-a.onHandValue).map(r=>[r.code,r.name,r.received,r.sold,r.shrink||0,r2(r.shrinkCost||0),r.onHand,r.sellThrough==null?"":r2(r.sellThrough*100),r2(r.onHandValue),r2(r.realProfit),r.roi==null?"":r2(r.roi*100),r.provider,r.providerRef,r.reorderPoint||0]);
+  function invSheets(){const rows=computeInventory(st);const head=["Code","Name","Received","Sold","Not sold (adj.)","Not-sold cost","On hand","Sell-through %","Unit cost (FIFO)","Stock value","Realized profit","ROI %","Provider","Provider ref","Reorder point"];
+    const body=rows.slice().sort((a,b)=>b.onHandValue-a.onHandValue).map(r=>[r.code,r.name,r.received,r.sold,r.shrink||0,r2(r.shrinkCost||0),r.onHand,r.sellThrough==null?"":r2(r.sellThrough*100),r.unitCost==null?"":r2(r.unitCost),r2(r.onHandValue),r2(r.realProfit),r.roi==null?"":r2(r.roi*100),r.provider,r.providerRef,r.reorderPoint||0]);
     return [{name:"Inventory",rows:[head].concat(body)}];}
   function catSheets(){const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost","Price","Sellable","Stock-tracked","Online","Reorder point","Notes"];
     const body=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost==null?"":+p.cost,p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.stocked!==false?"yes":"no",p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
@@ -2431,10 +2474,13 @@ function computeInventory(st){
       if(q>0&&isSale)unmatched+=q;}
     const onHand=received-sold-shrink;const onHandValue=lots.reduce((a,l)=>a+l.left*l.cost,0);
     const realProfit=matchedNetRev-cogs;const roi=cogs>0?realProfit/cogs:null;
+    /* the FIFO cost of the units still on the shelf — Stock value divided by what is left, which
+       is not the average of everything ever received once an older lot has been sold through */
+    const unitCost=onHand>0?onHandValue/onHand:null;
     const lastIn=ins.length?ins[ins.length-1]:null;
     const avgCost=received>0?lots.reduce((a,l)=>a+l.qty*l.cost,0)/received:null;
     rows.push({code:mvs[0].code,name:p?p.name:"",inCat:!!p,sellable:p?p.sellable!==false:true,stocked:p?p.stocked!==false:true,
-      received,sold,shrink,shrinkCost,onHand,unmatched,sellThrough:received>0?sold/received:null,onHandValue,cogs,revenue,revenueNet,realProfit,roi,avgCost,reorderPoint:(p&&p.reorderPoint!=null)?+p.reorderPoint:0,
+      received,sold,shrink,shrinkCost,onHand,unmatched,sellThrough:received>0?sold/received:null,onHandValue,unitCost,cogs,revenue,revenueNet,realProfit,roi,avgCost,reorderPoint:(p&&p.reorderPoint!=null)?+p.reorderPoint:0,
       provider:(p&&p.supplier)||(lastIn?lastIn.provider:"")||"",providerRef:(p&&p.supplierRef)||(lastIn?lastIn.providerRef:"")||"",lastInDate:lastIn?lastIn.date:""});}
   return rows;
 }
@@ -2503,13 +2549,15 @@ function Inventory({st,act,show}){
       <span style=${{flex:1}}></span><span class="note">${list.length} codes</span>
     </div>
     <div class="panel"><div class="tablewrap"><table><thead><tr>
-      ${Th("code","Code")}${Th("name","Product")}${Th("received","Recv","num")}${Th("sold","Sold","num")}${shrinkU?Th("shrink","Not sold","num"):null}${Th("onHand","On hand","num")}${Th("sellThrough","Sell-thru","num")}${Th("onHandValue","Stock value","num")}${Th("roi","ROI","num")}</tr></thead>
+      ${Th("code","Code")}${Th("name","Product")}${Th("received","Recv","num")}${Th("sold","Sold","num")}${shrinkU?Th("shrink","Not sold","num"):null}${Th("onHand","On hand","num")}${Th("sellThrough","Sell-thru","num")}${Th("unitCost","Unit cost","num")}${Th("onHandValue","Stock value","num")}${Th("roi","ROI","num")}</tr></thead>
       <tbody>${list.map(r=>html`<tr key=${normCode(r.code)}><td class="code">${r.code}</td>
         <td>${r.inCat?html`<span class="name">${r.name}</span>`:html`<span class="faint">unlinked</span>`}${!r.stocked?html`<div class="meta">not stock-tracked</div>`:(r.providerRef?html`<div class="meta">ref ${r.providerRef}</div>`:null)}</td>
         <td class="num">${num(r.received)}</td><td class="num">${num(r.sold)}</td>
         ${shrinkU?html`<td class="num faint" title="units out on adjustment / write-off / gift lines">${r.shrink?num(r.shrink):"—"}</td>`:null}
         <td class="num" style=${{fontWeight:"500",color:r.onHand<0?"var(--bad)":"inherit"}}>${num(r.onHand)}</td>
-        <td class="num">${r.sellThrough==null?"—":pct(r.sellThrough)}</td><td class="num mono">${money(r.onHandValue)}</td>
+        <td class="num">${r.sellThrough==null?"\u2014":pct(r.sellThrough)}</td>
+        <td class="num mono" title="what the units on hand actually cost, oldest lot first \u2014 landed, net of VAT, freight share included">${r.unitCost==null?html`<span class="faint">\u2014</span>`:money(r.unitCost)}</td>
+        <td class="num mono">${money(r.onHandValue)}</td>
         <td class="num">${r.roi==null?"—":pct(r.roi)}</td></tr>`)}</tbody></table></div></div>
     </${React.Fragment}>`:view==="reorder"?html`<${React.Fragment}>
     <div class="rowbetween" style=${{marginBottom:"14px"}}><div class="note" style=${{maxWidth:"560px"}}>Sellable codes that are out of stock and have moved before. Provider and their reference are carried for re-ordering; your product code stays the anchor.</div>${reorder.length?html`<button class="btn" onClick=${reorderCSV}><${Icon} name="download"/>Reorder CSV</button>`:null}</div>

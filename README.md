@@ -48,6 +48,16 @@ with the code intact), a **sales/analytics** layer fed by WooCommerce / Vektori 
 Each sale channel carries a **mode** — *in-person* or *online* — so analytics can split takings by
 mode (Vektori = in-person counter, WooCommerce = online) independently of how many channels feed each.
 
+## Finding what needs work
+The catalogue filters by type, sellable, online, **supplier** and **category**, and by what a record is
+**missing** — no price, no cost, no name, no author, no category, no supplier, no reorder point — each
+with its count, and greyed out when there is no such gap. That turns "the catalogue needs tidying" into
+a list of 23 products with no price. Code, name, author, type, category, supplier, cost, price, stock
+and last-ordered all sort; author and supplier are columns, so the obvious groupings are a click.
+
+There is no publisher field: **supplier is who you bought from**, which for a distributor is not who
+published the book.
+
 ## Secure editing
 The product code is the unique key. Product edits are validated as a whole before anything is
 written (code required + unique, name required, numbers valid); nothing commits until valid, and
@@ -198,7 +208,11 @@ a number chosen for you.
 
 A selection can be set in bulk: type, a multiplier with rounding (0,05 / 0,10 / 0,50 / 1,00 or ending
 in ,99), take all suggested prices, flip online or not-for-sale, discard. **Confirm writes only the
-selection** and leaves the rest staged, so a long list can be done a supplier at a time. Items marked
+selection** and leaves the rest staged. Staging filters by supplier, type and search, and selection
+follows what is on screen — changing a filter clears it, so nothing hidden can be confirmed by
+accident, and once a supplier has been confirmed away its filter drops itself rather than leaving a
+blank table. A hundred new codes are then a few passes: one supplier's medals at one multiplier,
+another's books at another. Items marked
 sellable with no price are counted in a standing warning, because that is exactly the state that makes
 a WooCommerce Orders import drop their sales.
 
@@ -297,3 +311,6 @@ same totals plus daily detail.
     catalogue's own median, a suggested price that stays a suggestion, margins net-to-net, the
     sellable / online / stocked flags, bulk setting over a selection, and confirm writing only
     what is selected. ✅
+19. A **Unit cost (FIFO)** column in Inventory — the cost of the units actually on the shelf, which
+    the stock value divides by — plus catalogue filtering by supplier, category and **what a record
+    is missing**, and staging filtered so a supplier can be confirmed at a time. ✅
