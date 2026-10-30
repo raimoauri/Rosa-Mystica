@@ -693,6 +693,21 @@ function genBatchRef(country,date,provider){const cc=abbrevCountry(country);cons
 const TILLCODE=/^PR\d+$/i;
 function guessType(code){const c=String(code||"").replace(/[^0-9]/g,"");return (c.length===13&&/^97[89]/.test(c))?"book":"goods";}
 /* Merge freshly-staged codes into the staging queue (shared by file import and invoice posting). */
+/* A staged entry exists only because an import saw that code, and its Seen and Qty are simply
+   what the ledger holds for it. So when movements are deleted the entries are recounted from what
+   is left, and one with no movements behind it any more goes too — otherwise a cleared import
+   leaves a worklist of codes that no longer exist, quoting quantities that are no longer there. */
+function restage(ledger,staging){
+  if(!staging||!staging.length)return staging||[];
+  const by={};
+  for(const r of ledger){const k=normCode(r.code);if(!k)continue;
+    const e=by[k]||(by[k]={n:0,qty:0,first:""});
+    e.n++;e.qty+=(r.dir==="in"?(+r.qty||0):-(+r.qty||0));
+    if(r.date&&(!e.first||r.date<e.first))e.first=r.date;}
+  const out=[];
+  for(const x of staging){const d=by[normCode(x.code)];if(!d)continue;
+    out.push(Object.assign({},x,{seenCount:d.n,qty:d.qty,firstDate:d.first||x.firstDate||""}));}
+  return out;}
 function mergeStaging(cur,incoming,catSet){const staging=cur.slice();
   for(const e of incoming){const nc=normCode(e.code);if(catSet.has(nc))continue;const ix=staging.findIndex(x=>normCode(x.code)===nc);
     if(ix>=0){const o=staging[ix];staging[ix]=Object.assign({},o,{seenCount:(o.seenCount||0)+e.seenCount,qty:(o.qty||0)+e.qty,
@@ -732,6 +747,43 @@ function prepareMovements(raw,st,warnings0){
   for(const k in incoming){if(!held[k])continue;const p=k.split("|");
     clash.push({channel:p[0],batchRef:p[1],held:held[k],adding:incoming[k]});
     warnings.push("Batch "+(p[1]||"(none)")+" on "+(p[0]||"—")+" already holds "+held[k]+" line"+(held[k]>1?"s":"")+"; this file adds "+incoming[k]+" more that are not exact duplicates. If this is a corrected re-import, delete the batch in the Ledger first — otherwise it will be counted twice.");}
+  /* The same invoice re-imported under a corrected reference is invisible to the duplicate check,
+     which keys on the batch ref: every line looks new and the stock silently doubles. So incoming
+     batches are also compared to the ones already held by what they contain rather than what they
+     are called — same codes, same quantities, different name on the batch. */
+  {const fp=(rows,byRef)=>{const m={};for(const r of rows){
+     const id=byRef?normCode(r.providerRef):normCode(r.code);if(!id)continue;
+     const k=id+"\u00d7"+(+r.qty||0);m[k]=(m[k]||0)+1;}return m;};
+   /* two ways to recognise the same invoice: our codes, or the supplier's own article numbers.
+      The second matters most, because an invoice whose codes were wrong the first time round
+      looks like nothing at all by code while its article numbers still line up exactly. */
+   const idSet=(rows,byRef)=>{const m={};for(const r of rows){const id=byRef?normCode(r.providerRef):normCode(r.code);if(id)m[id]=1;}return m;};
+   const dateOf=rows=>{let d="";for(const r of rows)if(r.date&&(!d||r.date<d))d=r.date;return d;};
+   const overlap=(x,y)=>{let n=0;for(const k in x)if(y[k])n++;
+     const small=Math.min(Object.keys(x).length,Object.keys(y).length);
+     return small>=3?{shared:n,small,frac:n/small}:{shared:0,small:0,frac:0};};
+   const heldB={},incB={};
+   for(const r of st.ledger){const k=r.batchRef||"";if(k)(heldB[k]=heldB[k]||[]).push(r);}
+   for(const m of movements){const k=m.batchRef||"";if(k)(incB[k]=incB[k]||[]).push(m);}
+   for(const nk in incB){
+     if(heldB[nk])continue;                              /* same ref is already reported above */
+     const aC=fp(incB[nk],false),aR=fp(incB[nk],true);
+     if(Object.keys(aC).length<3&&Object.keys(aR).length<3)continue;
+     const aD=dateOf(incB[nk]),aS=idSet(incB[nk],true);
+     for(const ok in heldB){
+       /* The date is what separates a corrected re-import from a reorder. The same invoice keeps
+          its date whatever it is filed under; a shop reordering the same articles — even in the
+          same quantities — does it on another day. So batches dated differently are left alone. */
+       if(!aD||aD!==dateOf(heldB[ok]))continue;
+       const byCodeO=overlap(aC,fp(heldB[ok],false)),byRefO=overlap(aR,fp(heldB[ok],true));
+       /* and a third signal for when the quantities were wrong too: just the articles, same day */
+       const bySetO=overlap(aS,idSet(heldB[ok],true));
+       let best=byCodeO,how="code and quantity";
+       if(byRefO.frac>best.frac){best=byRefO;how="the supplier's article numbers and quantity";}
+       if(bySetO.frac>best.frac){best=bySetO;how="the supplier's article numbers";}
+       if(best.frac>=0.6)warnings.push("Batch "+nk+" looks like batch "+ok+" under a different reference \u2014 "+
+         best.shared+" of "+best.small+" lines match on "+how+", and both are dated "+aD+". The duplicate check keys on the reference, so these "+
+         "would be added on top of "+ok+" rather than recognised as the same invoice. Delete "+ok+" in the Ledger first if they are.");}}}
   if(matchedRef)warnings.push(matchedRef+" line"+(matchedRef>1?"s":"")+" matched to existing products by the provider's own reference.");
   return {movements,staging,newChannels,warnings,clash,stats:{add:movements.length,dup,newCodes:staging.length,skipped:0,matchedRef}};
 }
@@ -789,7 +841,7 @@ function parseWooOrders(rows,hi,st,scale){
   let cNS=-1,cST=-1;
   for(let i=0;i<H.length;i++){if(cNS<0&&H[i].indexOf("netsales")===0)cNS=i;if(cST<0&&(H[i]==="tila"||H[i]==="status"))cST=i;}
   const byName=catalogueByName(st);const vr=vatRatesOf(st||{});
-  const raw=[];let skipped=0;const unmatched={},offs=[];let orders=0,matchedOrders=0,priced=0;
+  const raw=[];let skipped=0;const unmatched={},unpriced={},offs=[];let orders=0,matchedOrders=0,priced=0;
   for(const r of data){
     const items=splitWooProducts(r[cP]);if(!items.length){skipped++;continue;}
     orders++;
@@ -799,7 +851,10 @@ function parseWooOrders(rows,hi,st,scale){
     const lines=[];let predNet=0,ok=true;
     for(const it of items){
       const p=byName[nameKey(it.name)];
-      if(!p||p.price==null||p.price===""){unmatched[it.name]=(unmatched[it.name]||0)+it.qty;ok=false;continue;}
+      /* no product at all and a product with no price are different problems with different
+         remedies, so they are counted apart rather than both reported as "not found" */
+      if(!p){unmatched[it.name]=(unmatched[it.name]||0)+it.qty;ok=false;continue;}
+      if(p.price==null||p.price===""){unpriced[p.code]=(unpriced[p.code]||0)+it.qty;ok=false;continue;}
       const gross=+p.price||0;const rate=(vr[p.type]!=null?vr[p.type]:vr.goods);
       predNet+=it.qty*gross/(1+rate/100);
       lines.push({code:p.code,name:p.name,qty:it.qty,gross,rate});}
@@ -818,6 +873,11 @@ function parseWooOrders(rows,hi,st,scale){
   const byStatus={};for(const m of raw)if(m._status)byStatus[m._status]=(byStatus[m._status]||0)+1;
   const odd=Object.keys(byStatus).filter(k=>k!=="completed");
   if(odd.length)warnings.push("Not every order is completed: "+odd.map(k=>num(byStatus[k])+" line"+(byStatus[k]>1?"s":"")+" from \u201c"+k+"\u201d orders").join(", ")+".");
+  const up=Object.keys(unpriced);
+  if(up.length)warnings.push(up.length+" product"+(up.length>1?"s are":" is")+" in the catalogue but "+(up.length>1?"carry":"carries")+" no price ("+
+    up.slice(0,4).join(", ")+(up.length>4?", \u2026":"")+") \u2014 "+Object.values(unpriced).reduce((a,b)=>a+b,0)+
+    " units left out. An Orders report has no line prices, so it can only price from the catalogue: set a price on "+
+    (up.length>1?"them":"it")+" and import again. Confirming staging does not set one.");
   const un=Object.keys(unmatched);
   if(un.length)warnings.push(un.length+" product name"+(un.length>1?"s were":" was")+" not found in the catalogue ("+
     un.slice(0,4).map(n=>"“"+n+"”").join(", ")+(un.length>4?", …":"")+") — "+
@@ -825,7 +885,7 @@ function parseWooOrders(rows,hi,st,scale){
   if(offs.length)warnings.push(offs.length+" order"+(offs.length>1?"s did":" did")+" not match the Net Sales in the file — a discount or a changed price. "+
     (scale?"Their lines were scaled to the reported figure.":"Catalogue prices were used as they are.")+" ("+offs.slice(0,3).map(o=>o.ref+": "+money(o.predicted)+" vs "+money(o.reported)).join("; ")+(offs.length>3?"; …":"")+")");
   return {raw,format:"woo-orders",defDate:"",defStart:"",skipped,warnings,
-    meta:{orders,matchedOrders,priced,unmatched:un.length,offs:offs.length}};}
+    meta:{orders,matchedOrders,priced,unmatched:un.length,unpriced:up.length,offs:offs.length}};}
 
 function parseSales(rows,override,withGeneric,st,scaleToReported){
   if(!rows||!rows.length)return {raw:[],format:null,defDate:"",skipped:0,warnings:["The file looks empty."]};
@@ -1808,6 +1868,103 @@ function InvoiceImportModal({st,act,onClose,show}){
 /* Bulk re-code: download the catalogue as a sheet with an empty New code column, fill in the ones
    you want changed, upload it back. Blank rows are left alone. Every change is shown — including
    how many ledger movements and draft lines will follow the code — before anything is written. */
+/* ===================== Stock count =====================
+   A count is a difference, not a replacement. The ledger stays the record of what happened, and
+   the count appends exactly the movements needed to make the derived figure agree with the shelf —
+   short lines as adjustments (stock leaves, nothing is booked as a sale), found lines as receipts.
+   Two rules carry the weight. A blank is "not counted", never "counted zero", so counting one shelf
+   cannot write off the rest of the shop. And a found unit is never given a silent cost of zero: it
+   takes the FIFO average it already has, or the catalogue cost, and if neither exists the count
+   says so rather than inventing stock value out of nothing. */
+function countBasis(st){
+  const inv=computeInventory(st);const by={};
+  for(const r of inv)by[normCode(r.code)]={onHand:r.onHand,avg:r.avgCost};
+  const rows=[];const seen={};
+  for(const p of st.catalogue){
+    if(p.stocked===false)continue;                 /* till buttons and the like hold no stock */
+    const k=normCode(p.code);const d=by[k]||{onHand:0,avg:null};
+    const cc=(p.cost!=null&&p.cost!=="")?+p.cost:null;
+    rows.push({code:p.code,name:p.name||"",onHand:d.onHand||0,
+      cost:(d.avg!=null?d.avg:cc),costFrom:(d.avg!=null?"its own lots":(cc!=null?"the catalogue cost":""))});
+    seen[k]=1;}
+  for(const r of inv)if(!seen[normCode(r.code)])   /* moved but never catalogued */
+    rows.push({code:r.code,name:r.name||"",onHand:r.onHand||0,cost:r.avgCost,
+      costFrom:r.avgCost!=null?"its own lots":""});
+  return rows.sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))||String(a.code).localeCompare(String(b.code)));}
+
+function StockCountModal({st,act,onClose,show}){
+  const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");
+  const [date,setDate]=useState(today());const fileRef=useRef();
+  const basis=useMemo(()=>countBasis(st),[st.catalogue,st.ledger]);
+  function dl(){const head=["Product code","Name","On hand (app)","Counted"];
+    downloadXlsx("Rosa-Mystica_Stock-count-sheet.xlsx",
+      [{name:"Count",rows:[head].concat(basis.map(r=>[r.code,r.name,r.onHand,""]))}],show);}
+  function ingest(rows){
+    if(!rows||!rows.length){setErr("The file looks empty.");setRes(null);return;}
+    const H=(rows[0]||[]).map(normH);
+    const ci=H.findIndex(h=>h==="productcode"||h==="code");
+    const qi=H.findIndex(h=>h==="counted"||h==="count"||h==="countedqty"||h==="actual");
+    if(ci<0||qi<0){setErr("Need a 'Product code' column and a 'Counted' column — download the sheet.");setRes(null);return;}
+    const byBasis={};for(const r of basis)byBasis[normCode(r.code)]=r;
+    const lines=[],problems=[];let blank=0,agree=0;
+    for(let i=1;i<rows.length;i++){const r=rows[i]||[];
+      const code=String(r[ci]==null?"":r[ci]).trim();if(!code)continue;
+      const raw=r[qi];
+      /* a blank cell is a product that was not counted — it is left entirely alone */
+      if(raw==null||String(raw).trim()===""){blank++;continue;}
+      const counted=parseNum(raw);
+      if(counted==null){problems.push("Row "+(i+1)+": \u201c"+String(raw)+"\u201d is not a number.");continue;}
+      if(counted<0){problems.push("Row "+(i+1)+": a counted quantity cannot be negative.");continue;}
+      const b=byBasis[normCode(code)];
+      if(!b){problems.push("Row "+(i+1)+": \u201c"+code+"\u201d is not in the catalogue or the ledger.");continue;}
+      const delta=Math.round((counted-b.onHand)*1e6)/1e6;
+      if(!delta){agree++;continue;}
+      lines.push({code:b.code,name:b.name,onHand:b.onHand,counted,delta,cost:b.cost,costFrom:b.costFrom});}
+    const short=lines.filter(l=>l.delta<0),found=lines.filter(l=>l.delta>0);
+    const noCost=found.filter(l=>l.cost==null);
+    const valUp=found.reduce((a,l)=>a+(l.cost||0)*l.delta,0);
+    setRes({lines,problems,blank,agree,short,found,noCost,valUp});
+    setErr(lines.length?"":(problems.length?"Nothing can be applied until the problems below are fixed.":
+      "Every counted line already agrees with the app \u2014 there is nothing to write."));}
+  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setRes(null);setFn(f.name);
+    const nm=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
+    if(nm.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
+    else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
+    e.target.value="";}
+  const ok=res&&res.lines.length&&!res.problems.length&&date;
+  function run(){if(!ok)return;act.applyStockCount(res.lines,date);
+    show("Stock count applied \u00b7 "+res.lines.length+" adjustment"+(res.lines.length>1?"s":""),true);onClose();}
+  return html`<${Modal} wide=${true} title="Stock count" onClose=${onClose}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Write ${ok?res.lines.length:""} adjustment${ok&&res.lines.length===1?"":"s"}</button></${React.Fragment}>`}>
+    <div class="note">Count the shelf, and the app writes the difference. Download the sheet, fill <b>Counted</b> for the products you actually counted, and upload it back. A product you leave <b>blank is not counted</b> and is left completely alone — so you can count one shelf, or one supplier, without touching the rest. Nothing is overwritten: short lines become adjustments, which take stock off without counting as sales, and found lines become receipts.</div>
+    <div class="hintrow" style=${{marginTop:"12px"}}>
+      <button class="btn sm" onClick=${dl}><${Icon} name="download"/>Download sheet \u00b7 ${num(basis.length)} products</button>
+      <button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Upload filled sheet\u2026</button>
+      <input ref=${fileRef} type="file" accept=".csv,.xlsx" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}
+      <span style=${{flex:1}}></span>
+      <label class="note">Count date</label><input type="date" class="filter" style=${{width:"auto"}} value=${date} onInput=${e=>setDate(e.target.value)}/>
+    </div>
+    ${err?html`<div class="err" style=${{marginTop:"10px"}}>${err}</div>`:null}
+    ${res?html`<${React.Fragment}>
+      <div class="kpis" style=${{marginTop:"14px"}}>
+        <div class="kpi"><div class="k">Agreed</div><div class="v">${num(res.agree)}</div><div class="f">already right \u00b7 nothing written</div></div>
+        <div class="kpi"><div class="k">Short</div><div class="v">${num(res.short.length)}</div><div class="f">${num(res.short.reduce((a,l)=>a-l.delta,0))} units off the shelf</div></div>
+        <div class="kpi"><div class="k">Found</div><div class="v">${num(res.found.length)}</div><div class="f">${num(res.found.reduce((a,l)=>a+l.delta,0))} units in, ${money(res.valUp)} at cost</div></div>
+        <div class="kpi"><div class="k">Not counted</div><div class="v">${num(res.blank)}</div><div class="f">left exactly as they are</div></div>
+      </div>
+      ${res.noCost.length?html`<div class="err" style=${{marginTop:"12px"}}>${num(res.noCost.length)} found line${res.noCost.length>1?"s have":" has"} no known cost \u2014 no purchase lot and no catalogue cost, so ${res.noCost.length>1?"they":"it"} would enter stock at zero and later sell at an apparent 100% margin. Set a cost on ${res.noCost.length>1?"those products":"that product"} first, or accept that ${res.noCost.length>1?"they":"it"} carries none: ${res.noCost.slice(0,4).map(l=>l.code).join(", ")}${res.noCost.length>4?", \u2026":""}</div>`:null}
+      ${res.problems.length?html`<div class="err" style=${{marginTop:"10px"}}>${res.problems.slice(0,6).map(x=>html`<div>${x}</div>`)}${res.problems.length>6?html`<div>\u2026 and ${res.problems.length-6} more</div>`:null}</div>`:null}
+      ${res.lines.length?html`<div class="tablewrap" style=${{marginTop:"12px",maxHeight:"300px",overflow:"auto"}}>
+        <table><thead><tr><th>Code</th><th>Product</th><th class="num">App</th><th class="num">Counted</th><th class="num">Writes</th><th>Cost used</th></tr></thead>
+        <tbody>${res.lines.map(l=>html`<tr key=${l.code}>
+          <td class="code">${l.code}</td><td>${l.name||html`<span class="faint">unlinked</span>`}</td>
+          <td class="num">${num(l.onHand)}</td><td class="num">${num(l.counted)}</td>
+          <td class="num mono" style=${{color:l.delta<0?"var(--bad)":"var(--good)"}}>${l.delta>0?"+":""}${num(l.delta)}</td>
+          <td class="note">${l.delta<0?"from its lots (FIFO)":(l.cost!=null?money(l.cost)+" from "+l.costFrom:html`<span class="err">none known</span>`)}</td></tr>`)}</tbody></table></div>`:null}
+      ${res.lines.length?html`<div class="note" style=${{marginTop:"10px"}}>These go in under batch <span class="code">COUNT-${date}</span>, so the whole count can be filtered or removed in one go. One Undo follows.</div>`:null}
+    </${React.Fragment}>`:null}
+  </${Modal}>`;}
+
 function RecodeModal({st,act,onClose,show}){
   const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const [merge,setMerge]=useState(false);const [rows,setRows]=useState(null);const fileRef=useRef();
   function dl(){const head=["Product code","Name","Author","Type","Supplier","Supplier ref","On hand","New code"];
@@ -2220,7 +2377,8 @@ function Inventory({st,act,show}){
     const csv=toCSV(head,rr);if(IN_FRAME||!downloadText("rosa-mystica_reorder_"+today()+".csv",csv,"text/csv"))act.openExport("Reorder list — CSV",csv);else show("Saved CSV");}
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Inventory</h2>
-      <div class="seg"><button aria-pressed=${view==="stock"} onClick=${()=>setView("stock")}>Stock</button><button aria-pressed=${view==="reorder"} onClick=${()=>setView("reorder")}>Reorder${reorder.length?" · "+reorder.length:""}</button><button aria-pressed=${view==="batches"} onClick=${()=>setView("batches")}>Batches${batches.length?" · "+batches.length:""}</button></div></div>
+      <div class="hintrow"><button class="btn" onClick=${()=>act.openStockCount()}>Stock count…</button>
+      <div class="seg"><button aria-pressed=${view==="stock"} onClick=${()=>setView("stock")}>Stock</button><button aria-pressed=${view==="reorder"} onClick=${()=>setView("reorder")}>Reorder${reorder.length?" · "+reorder.length:""}</button><button aria-pressed=${view==="batches"} onClick=${()=>setView("batches")}>Batches${batches.length?" · "+batches.length:""}</button></div></div></div>
     ${rows.length===0?html`<div class="panel"><div class="empty"><${Icon} name="inventory"/><div class="big">Nothing to track yet</div><div class="note" style=${{maxWidth:"440px"}}>Record purchases (in) and sales (out) in the ledger — FIFO stock, sell-through and ROI build from the one ledger.</div></div></div>`:
     view==="stock"?html`<${React.Fragment}>
     <div class=${"kpis"+(shrinkU?" five":"")} style=${{marginBottom:"20px"}}>
@@ -2365,11 +2523,13 @@ function App(){
     saveMovement:rec=>setSt(s=>{const now=new Date().toISOString();
       if(rec.id&&s.ledger.some(r=>r.id===rec.id))return {...s,ledger:s.ledger.map(r=>r.id===rec.id?{...r,...rec}:r)};
       return {...s,ledger:[...s.ledger,{...rec,id:rec.id||uid(),createdAt:now}]};}),
-    deleteMovement:id=>setSt(s=>{undoRef.current=s;return {...s,ledger:s.ledger.filter(r=>r.id!==id)};}),
+    deleteMovement:id=>setSt(s=>{undoRef.current=s;const led=s.ledger.filter(r=>r.id!==id);
+      return {...s,ledger:led,staging:restage(led,s.staging)};}),
     /* WooCommerce gives every order its own batch reference, so clearing a month of web sales one
        batch at a time would be a hundred confirmations. This removes whatever the filter selected. */
     deleteMovements:ids=>setSt(s=>{undoRef.current=s;const k={};for(const i of ids)k[i]=1;
-      return {...s,ledger:s.ledger.filter(r=>!k[r.id])};}),
+      const led=s.ledger.filter(r=>!k[r.id]);
+      return {...s,ledger:led,staging:restage(led,s.staging)};}),
     discardStaging:code=>setSt(s=>{undoRef.current=s;return {...s,staging:s.staging.filter(x=>normCode(x.code)!==normCode(code))};}),
     addChannel:(name,dir,mode,kind)=>setSt(s=>s.channels.some(c=>c.name===name)?s:{...s,channels:[...s.channels,{id:uid(),name,dir,mode:(mode!==undefined?(mode||null):(dir==="out"?inferMode(name):null)),kind:(kind!==undefined?(kind||null):(dir==="out"?"sale":null))}]}),
     setChannelKind:(id,kind)=>setSt(s=>({...s,channels:s.channels.map(c=>c.id===id?{...c,kind:(kind||null)}:c)})),
@@ -2380,6 +2540,21 @@ function App(){
     openExport:(title,text)=>setModal({type:"export",title,text}),
     openEncrypt:()=>setModal({type:"encsave"}),
     openDecrypt:obj=>setModal({type:"encopen",payload:obj}),
+    openStockCount:()=>setModal({type:"stockcount"}),
+    /* The count never replaces anything: it appends the difference. Short lines go out on an
+       adjustment-kind channel, so stock leaves without being booked as a sale; found lines come
+       in carrying whatever cost basis the product already had. */
+    applyStockCount:(lines,date)=>setSt(s=>{undoRef.current=s;
+      const ref="COUNT-"+date;const now=new Date().toISOString();let ch=s.channels.slice();const add=[];
+      const ensure=(name,dir,kind)=>{if(!ch.some(c=>c.name===name))ch=[...ch,{id:uid(),name,dir,mode:null,kind}];};
+      if(lines.some(l=>l.delta>0))ensure("Stock count (found)","in",null);
+      if(lines.some(l=>l.delta<0))ensure("Stock count (short)","out","adjustment");
+      for(const l of lines){if(!l.delta)continue;const up=l.delta>0;
+        add.push({id:uid(),date,channel:up?"Stock count (found)":"Stock count (short)",dir:up?"in":"out",
+          batchRef:ref,code:l.code,qty:Math.abs(l.delta),
+          unitPrice:(up&&l.cost!=null)?l.cost:null,vatRate:null,
+          note:"stock count \u00b7 app "+l.onHand+", counted "+l.counted,createdAt:now});}
+      return {...s,channels:ch,ledger:[...s.ledger,...add]};}),
     openWipe:()=>setModal({type:"wipe"}),
     /* a wipe clears stock data; the settlement history and the setup survive unless asked for */
     wipe:all=>setSt(s=>{undoRef.current=s;const b=blankState();
@@ -2518,6 +2693,7 @@ function App(){
     ${modal&&modal.type==="invimport"?html`<${InvoiceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="catimport"?html`<${CatalogueImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="financeimport"?html`<${FinanceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
+    ${modal&&modal.type==="stockcount"?html`<${StockCountModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="wipe"?html`<${WipeModal} st=${st} act=${act} show=${show} onClose=${()=>setModal(null)}/>`:null}
     ${toast?html`<div class="toast"><span>${toast}</span>${undoable&&undoRef.current?html`<button class="ubtn" onClick=${doUndo}>Undo</button>`:null}</div>`:null}
   </div>`;}

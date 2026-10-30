@@ -31,6 +31,11 @@ and no stock left the shelf — so its lines are left out, with the count and th
 box to include them anyway. *Refunded* and *on hold* are deliberately not on that list, since those
 goods may well have gone out; they are reported and left to you.
 
+A product that *is* in the catalogue but carries **no price** is a different problem from one that is
+not there at all, and is reported as itself: an Orders report has no line prices, so it can only price
+from the catalogue. Confirming staging does not set a price, which is the usual way a product ends up
+in that state — and being told to rename a product that was never missing sends you after the wrong fix.
+
 Sales reports import **several files at once** — a weekly Vektori export is a stack of them — each
 keeping its own period, with a warning when a period crosses a month boundary (a Vektori report carries
 no per-line date, so the whole file is dated to the end of its period). Duplicates are caught across the
@@ -99,6 +104,35 @@ A treatment the country cannot imply is the one thing such a file can't carry: a
 Finnish printer is indistinguishable from a domestic purchase by its header alone, so it arrives as
 *Domestic* and is switched by hand.
 
+## Stock count
+A count is a difference, not a replacement. Download the sheet, fill **Counted** for the products you
+actually counted, upload it back, and the app writes exactly the movements needed to make the derived
+figure agree with the shelf: short lines as **adjustments** (stock leaves, nothing is booked as a sale),
+found lines as receipts. A line that already agrees writes nothing at all.
+
+Two rules carry the weight. A blank is **not counted**, never *counted zero* — so counting one shelf
+cannot write off the rest of the shop, and a count can be done in pieces. And a found unit is never
+given a silent cost of zero: it takes the FIFO average that product already has, failing that the
+catalogue cost, and if it has neither the preview says so and names the codes rather than inventing
+stock value — a zero-cost lot would later sell at an apparent 100% margin. Non-stocked products are
+left off the sheet, a bad cell is refused rather than guessed, and the whole count goes in under one
+`COUNT-<date>` reference so it can be filtered or removed in one go.
+
+Stock on hand is never writable directly, by any import. It is derived from the ledger, so the only way
+to change it is a movement — which is why a count is entered as what you see, and the app works out the
+difference.
+
+## Re-importing a corrected invoice
+Duplicate detection keys on the batch reference, which cannot see the commonest correction of all: the
+same invoice imported again under a reference that has since been fixed — a supplier's order number
+replaced by the real invoice number. Every line looks new and the stock quietly doubles.
+
+So an incoming batch is also compared to the ones already held by **what it contains**: your codes, the
+supplier's article numbers, or — when the first import had the quantities wrong too — just the set of
+articles. The date gates all three, because that is what separates a correction from a reorder: the
+same invoice keeps its date whatever it is filed under, while reordering the same articles, even in the
+same quantities, happens on another day. A match names both references and says which to delete first.
+
 ## Deleting, and what a wipe is
 Two stores sit side by side and are cleared independently. The **ledger** holds movements, and
 Analytics and Inventory are views derived from it — they store nothing of their own, so a figure
@@ -111,6 +145,11 @@ it is about to remove and how many batches it spans. That matters because WooCom
 order its own batch reference: a month of web sales is a hundred batches, and clearing it one at a
 time would be a hundred confirmations. The catalogue, the invoices and the settlement data are not
 touched, so money already imported never needs importing again. One Undo follows.
+
+Staging follows the ledger rather than outliving it. A staged entry exists only because an import saw
+that code, and its *Seen* and *Qty* are a readout of the movements behind it — so when movements are
+deleted the entries are recounted from what is left, and one with nothing behind it any more goes with
+them instead of lingering as a worklist of codes that no longer exist.
 
 *Erase everything* is the blunt instrument, and it now says what it destroys. By default it clears
 the catalogue, ledger, invoices and staging — the stock data — and **keeps** the settlement days, the
@@ -227,3 +266,6 @@ same totals plus daily detail.
     batch at a time, an *Erase everything* that names the settlement data and setup it would take
     (and keeps them unless told otherwise), and sales import leaving out the orders that never
     shipped instead of importing them and asking you to undo it. ✅
+17. A **stock count** entered as what is on the shelf and written as the difference; staging recounted
+    when movements are deleted; a guard against re-importing an invoice under a corrected reference;
+    and an unpriced catalogue product reported as that rather than as a missing one. ✅
