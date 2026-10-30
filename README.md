@@ -62,9 +62,13 @@ and duty; the lines carry the supplier's article number, your code, the quantity
 quantity **actually received**. Lines can be pasted straight from the supplier's own list — tabs,
 semicolons or aligned columns — and you say what each column is before they are added.
 
-Nothing is written until the draft **agrees with the total printed on the invoice**, to the cent:
-*Post to ledger* stays disabled while the difference is anything but zero. A missing, doubled or
-mistyped line shows up as a gap, which is how a 30-line invoice gets checked without reading it twice.
+Nothing is written until the draft **agrees with the total printed on the invoice**: *Post to ledger*
+stays disabled while the two disagree. A missing, doubled or mistyped line shows up as a gap, which is
+how a 30-line invoice gets checked without reading it twice. The comparison allows for rounding, because
+a real invoice rounds every line to the cent and then adds them up — a 30-line invoice can honestly
+differ from its own printed total by a cent. The allowance is half a cent per line plus two, so a
+one-line invoice must match exactly while a long one is forgiven arithmetic it did itself; the panel
+says *exact* when the difference is truly zero, so a cent is visible rather than hidden.
 Posting creates ordinary in-movements under one batch reference (the invoice number), through the same
 preparation a file import goes through, so duplicate detection, staging and the re-import guard behave
 identically. A posted invoice can be **unposted**, which removes its movements and returns it to draft.
@@ -81,7 +85,14 @@ deliberately never capitalised.
 Invoices can also be **imported as drafts**: a file of lines in the ledger template's shape becomes
 one draft per invoice reference, grouped on the batch ref, with freight lifted from the Transport
 column and the treatment inferred from the country. The printed total is left blank on purpose, so the
-gate is still satisfied against the paper invoice rather than against the file that produced it.
+gate is still satisfied against the paper invoice rather than against the file that produced it. The
+Note column carries over to the draft — unless it stood in for a missing product name — so a file can
+tell you what the paper says (its total, an unusual tax treatment, a figure still to be checked)
+without that note pretending to be a reconciliation.
+
+A treatment the country cannot imply is the one thing such a file can't carry: an **own print** from a
+Finnish printer is indistinguishable from a domestic purchase by its header alone, so it arrives as
+*Domestic* and is switched by hand.
 
 ## Bulk editing
 A catalogue import only touches the columns the file actually contains. Export the catalogue, change
@@ -186,3 +197,6 @@ same totals plus daily detail.
     paste-in lines with column mapping, supplier-article-number matching, and next-free-code allocation. ✅
 13. **Archived invoices as drafts** and **bulk re-coding** with a template, blank-skipping and a preview. ✅
 14. Multi-file sales import with per-file periods and a month-straddle warning. ✅
+15. A reconciliation gate that allows for the invoice's own per-line rounding (half a cent per line
+    plus two, and still reported as *exact* only at zero), and an imported draft that keeps its
+    Note — so a file of archived invoices can say what each paper total is without asserting it. ✅

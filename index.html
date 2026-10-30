@@ -1464,10 +1464,16 @@ function invoiceTotals(inv){
      deductible VAT has no business in stock value. */
   const fv=parseNum(inv.freightVat);const freightNet=(fv&&fv>0)?freight/(1+fv/100):freight;
   const computed=lines+freight+duty;const keyed=parseNum(inv.invoiceTotal);
+  /* Every printed line total is itself rounded to the cent, so a long invoice can differ from its
+     own printed total by a few cents without anything being wrong — PunaMusta's five lines sum to
+     a cent over. The gate allows half a cent per line and no more: a real missing or doubled line
+     is always further out than that. */
+  const tol=0.005*((inv.lines||[]).length+2);
+  const diff=keyed==null?null:r2(computed-keyed);
   return {lines:r2(lines),units,recv,missing,freight,freightNet:r2(freightNet),duty,importVat,
-    spread:r2(freightNet+duty),computed:r2(computed),keyed,
-    diff:keyed==null?null:r2(computed-keyed),landed:r2(computed),
-    ok:keyed!=null&&Math.abs(computed-keyed)<0.005};}
+    spread:r2(freightNet+duty),computed:r2(computed),keyed,tol:Math.round(tol*100)/100,
+    diff,landed:r2(computed),exact:keyed!=null&&Math.abs(computed-keyed)<0.005,
+    ok:keyed!=null&&Math.abs(computed-keyed)<=tol};}
 /* Catalogue indexed by the supplier's own article number. The first invoice from a provider
    teaches this map (you set the code when confirming staging); every later invoice from them
    resolves straight onto your codes with no staging at all. */
@@ -1674,13 +1680,13 @@ function Invoices({st,act,show,openProduct}){
           <div class="kpi"><div class="k">Lines</div><div class="v">${money(t.lines)}</div><div class="f">${num(t.units)} units billed${t.recv!==t.units?" · "+num(t.recv)+" received":""}</div></div>
           <div class="kpi"><div class="k">Freight + duty</div><div class="v">${money(t.freight+t.duty)}</div><div class="f">${t.freight!==t.freightNet?money(t.spread)+" net · ":""}${t.recv?money(t.spread/Math.max(1,t.recv))+" per unit":"spread per unit"}</div></div>
           <div class="kpi"><div class="k">Computed total</div><div class="v">${money(t.computed)}</div><div class="f">lines + freight + duty</div></div>
-          <div class="kpi"><div class="k">Difference</div><div class="v" style=${{color:t.keyed==null?"inherit":(t.ok?"var(--good)":"var(--bad)")}}>${t.keyed==null?"—":money(t.diff)}</div><div class="f">${t.keyed==null?"key the invoice total":(t.ok?"agrees to the cent":"does not agree")}</div></div>
+          <div class="kpi"><div class="k">Difference</div><div class="v" style=${{color:t.keyed==null?"inherit":(t.ok?"var(--good)":"var(--bad)")}}>${t.keyed==null?"—":money(t.diff)}</div><div class="f">${t.keyed==null?"key the invoice total":(t.exact?"agrees to the cent":(t.ok?"within rounding ("+money(t.tol)+" allowed on "+num(inv.lines.length)+" lines)":"does not agree"))}</div></div>
         </div>
         <div class="hintrow">
           <label class="note">Total printed on the invoice</label>
           <input class="mono" type="text" disabled=${posted} style=${{width:"140px"}} placeholder="480.18" value=${inv.invoiceTotal||""} onInput=${e=>upd({invoiceTotal:e.target.value})}/>
           ${t.missing?html`<span class="err">${num(t.missing)} line${t.missing>1?"s have":" has"} no total</span>`:null}
-          ${t.keyed!=null&&!t.ok?html`<span class="err">Off by ${money(Math.abs(t.diff))} — a line is missing, doubled or mistyped</span>`:null}
+          ${t.keyed!=null&&!t.ok?html`<span class="err">Off by ${money(Math.abs(t.diff))}, more than the ${money(t.tol)} that line rounding can explain — a line is missing, doubled or mistyped</span>`:null}
           ${postable?html`<span class="note" style=${{color:"var(--good)"}}>✓ ready to post${t.recv!==t.units?" · "+num(t.recv)+" of "+num(t.units)+" units":""}</span>`:null}
         </div>
         ${!posted?html`<div class="note" style=${{marginTop:"10px"}}>Posting creates ${num(inv.lines.length)} in-movements under batch <span class="code">${refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)||"(auto)"}</span>. Codes not in the catalogue go to staging, as with any import.</div>`:null}
@@ -1714,6 +1720,8 @@ function rowsToInvoices(rows,st){
       invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:""};order.push(key);}
     const g=groups[key];
     if(r.transport!=null&&+r.transport>0&&!g.freight)g.freight=String(r.transport);
+    /* a Note carries over to the draft — but not when it stood in for a missing product name */
+    if(!g.note&&r.note&&r._name)g.note=String(r.note);
     if(!g.provider&&r.provider)g.provider=r.provider;
     if(!g.country&&r.country)g.country=r.country;
     if(r.date&&r.date<g.date)g.date=r.date;
