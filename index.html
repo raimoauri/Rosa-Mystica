@@ -763,6 +763,11 @@ function parseLedgerRows(rows,st){
    "2× Name, 1× Other Name". There is no SKU and no per-line price, so each line is matched to the
    catalogue by name and priced from it — then the order is checked against the Net Sales the file
    itself carries, which is what makes the derivation trustworthy rather than a guess. */
+/* An order that was cancelled, failed or never got past checkout is not a sale: it took no money
+   and no stock left the shelf. "Refunded" and "on hold" are deliberately not on this list — the
+   goods may well have gone out — so those are reported and left to you. */
+const NEVER_SOLD=/^(cancelled|canceled|failed|pending|trash|draft|checkout-draft|peruttu|epaonnistunut)$/;
+function neverSold(s){return NEVER_SOLD.test(String(s==null?"":s).trim().toLowerCase());}
 function splitWooProducts(cell){const out=[];
   const s=String(cell==null?"":cell).replace(/&amp;/g,"&").replace(/&#8211;/g,"–").replace(/&nbsp;/g," ");
   for(const part of s.split(/,\s*(?=\d+\s*×)/)){
@@ -812,7 +817,7 @@ function parseWooOrders(rows,hi,st,scale){
   const warnings=[];
   const byStatus={};for(const m of raw)if(m._status)byStatus[m._status]=(byStatus[m._status]||0)+1;
   const odd=Object.keys(byStatus).filter(k=>k!=="completed");
-  if(odd.length)warnings.push("Not every order is completed: "+odd.map(k=>num(byStatus[k])+" line"+(byStatus[k]>1?"s":"")+" from “"+k+"” orders").join(", ")+". They are imported like the rest — remove them in the Ledger if they should not count yet.");
+  if(odd.length)warnings.push("Not every order is completed: "+odd.map(k=>num(byStatus[k])+" line"+(byStatus[k]>1?"s":"")+" from \u201c"+k+"\u201d orders").join(", ")+".");
   const un=Object.keys(unmatched);
   if(un.length)warnings.push(un.length+" product name"+(un.length>1?"s were":" was")+" not found in the catalogue ("+
     un.slice(0,4).map(n=>"“"+n+"”").join(", ")+(un.length>4?", …":"")+") — "+
@@ -1206,6 +1211,11 @@ function Ledger({st,act,openMovement,openProduct}){
     <td class="num"><button class="btn sm ghost rowact" onClick=${e=>{e.stopPropagation();act.deleteMovement(r.id);show&&show("Movement deleted",true);}}>Delete</button></td></tr>`;}
   const show=act.toast;
   const grouped=useMemo(()=>{const g={};for(const r of win){const k=r.batchRef||"(no batch)";(g[k]=g[k]||[]).push(r);}return Object.entries(g);},[win]);
+  /* what the filter is currently showing, said in words, so a bulk delete can name it */
+  const filterWords=[fbatch?"in batch "+fbatch:"",fch?"on "+fch:"",qd.trim()?"matching \u201c"+qd.trim()+"\u201d":"",
+    (fFrom||fTo)?("dated "+[fFrom?"from "+fmtD(fFrom):"",fTo?"up to "+fmtD(fTo):""].filter(Boolean).join(" ")):""].filter(Boolean);
+  const narrowed=filterWords.length>0&&rows.length>0&&rows.length<st.ledger.length;
+  const delBatches=useMemo(()=>[...new Set(rows.map(r=>r.batchRef||"(no batch)"))],[rows]);
   const more=rows.length>win.length?html`<div class="rowbetween" style=${{padding:"10px 14px",borderTop:"1px solid var(--line)"}}>
     <span class="note">Showing ${num(win.length)} of ${num(rows.length)} rows</span>
     <div class="hintrow"><button class="btn sm" onClick=${()=>setLim(l=>l+500)}>Show 500 more</button><button class="btn sm ghost" onClick=${()=>setLim(rows.length)}>Show all</button></div></div>`:null;
@@ -1220,12 +1230,13 @@ function Ledger({st,act,openMovement,openProduct}){
       <input type="date" class="filter" style=${{width:"auto"}} value=${fTo} onInput=${e=>setFTo(e.target.value)} title="To date"/>
       ${fFrom||fTo?html`<button class="btn sm ghost" onClick=${()=>{setFFrom("");setFTo("");}}>Clear dates</button>`:null}
       <label class="switch" style=${{marginLeft:"4px"}}><input type="checkbox" checked=${group} onChange=${e=>setGroup(e.target.checked)}/> Group by batch</label>
-      ${fbatch?html`<button class="btn sm danger" onClick=${()=>setDelBatch(true)}>Delete batch…</button>`:null}
+      ${narrowed?html`<button class="btn sm danger" onClick=${()=>setDelBatch(true)}>Delete these ${num(rows.length)} lines…</button>`:null}
       <span style=${{flex:1}}></span><span class="note">${num(rows.length)} rows · net ${num(total)} units</span>
     </div>
-    ${delBatch?html`<${ConfirmModal} title=${"Delete every line of "+fbatch+"?"} confirmLabel=${"Delete "+st.ledger.filter(r=>(r.batchRef||"")===fbatch).length+" lines"}
-      body=${html`<span>This removes all <b>${st.ledger.filter(r=>(r.batchRef||"")===fbatch).length}</b> movements carrying the batch reference <span class="code">${fbatch}</span> — the way to undo a mis-import in one go. Stock, margins and the Batches view all recompute from what is left, and the toast offers one Undo.</span>`}
-      onConfirm=${()=>{const n=st.ledger.filter(r=>(r.batchRef||"")===fbatch).length;act.deleteBatch(fbatch);setFbatch("");setDelBatch(false);show&&show("Deleted "+n+" lines of "+fbatch,true);}}
+    ${delBatch?html`<${ConfirmModal} title=${"Delete "+num(rows.length)+" movement"+(rows.length===1?"":"s")+"?"}
+      confirmLabel=${"Delete "+num(rows.length)+" line"+(rows.length===1?"":"s")}
+      body=${html`<span>This removes the <b>${num(rows.length)}</b> movement${rows.length===1?"":"s"} the filter is showing — the ones ${filterWords.join(", ")}${delBatches.length>1?html`, across ${num(delBatches.length)} batches`:null}. ${num(st.ledger.length-rows.length)} movement${st.ledger.length-rows.length===1?"":"s"} stay. Nothing else is touched: the catalogue, your invoices and the settlement data in Finance are all left alone. Stock, margins and the Batches view recompute from what is left, and the toast offers one Undo.</span>`}
+      onConfirm=${()=>{const n=rows.length;act.deleteMovements(rows.map(r=>r.id));setFbatch("");setDelBatch(false);show&&show("Deleted "+n+" movement"+(n===1?"":"s"),true);}}
       onClose=${()=>setDelBatch(false)}/>`:null}
     ${rows.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">${st.ledger.length===0?"No movements yet":"Nothing matches"}</div><div class="note">${st.ledger.length===0?"Record a purchase, or import a ledger file.":"Adjust the filters."}</div>${st.ledger.length===0?html`<button class="btn primary" onClick=${()=>openMovement(null)}><${Icon} name="plus"/>New movement</button>`:null}</div></div>`:
     group?html`<div style=${{display:"flex",flexDirection:"column",gap:"14px"}}>${grouped.map(([bk,list])=>html`<div class="panel" key=${bk}>
@@ -1424,6 +1435,27 @@ function ExportModal({title,text,onClose}){const ref=useRef();
   function copy(){try{navigator.clipboard.writeText(text);}catch(e){ref.current&&ref.current.select();}}
   return html`<${Modal} wide=${true} title=${title} onClose=${onClose} footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${copy}>Copy</button><button class="btn primary" onClick=${onClose}>Done</button></${React.Fragment}>`}>
     <textarea ref=${ref} class="io" readOnly value=${text}></textarea></${Modal}>`;}
+/* Erasing used to hand back a blank state, which quietly took the settlement data, the online
+   postage, the channels and the VAT settings with it — none of which the confirmation mentioned.
+   It now clears what it says it clears, and a full reset is a separate, stated choice. */
+function WipeModal({st,act,show,onClose}){
+  const [all,setAll]=useState(false);
+  const fin=(st.finance||[]).length,post=(st.postage||[]).length,ch=(st.channels||[]).length;
+  return html`<${Modal} title="Erase everything?" onClose=${onClose}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button>
+      <button class="btn danger" onClick=${()=>{act.wipe(all);show(all?"Everything erased, settings included":"Catalogue, ledger, invoices and staging erased",true);onClose();}}>${all?"Erase all data":"Erase stock data"}</button></${React.Fragment}>`}>
+    <div>This clears the catalogue, ledger, invoices and staging in this browser — ${num(st.catalogue.length)} products,
+      ${num(st.ledger.length)} movements and ${num((st.invoices||[]).length)} invoices. <b>Export a core file first.</b>
+      One Undo is offered afterwards, but only until the next change.</div>
+    <label class="hintrow" style=${{marginTop:"12px",cursor:"pointer"}}>
+      <input type="checkbox" checked=${all} onChange=${e=>setAll(e.target.checked)}/>
+      <span>Also clear the settlement data and the setup — ${num(fin)} settlement day${fin===1?"":"s"},
+        ${num(post)} postage entr${post===1?"y":"ies"}, ${num(ch)} channel${ch===1?"":"s"}, and the VAT rates and code prefix.</span>
+    </label>
+    <div class="note" style=${{marginTop:"8px"}}>${all
+      ? "A full reset. The money you have already imported into Finance goes too, so you would have to import those reports again."
+      : "Finance keeps its settlement days, and your channels, VAT rates and code prefix stay as they are — only stock data goes."}</div>
+  </${Modal}>`;}
 function ConfirmModal({title,body,confirmLabel,onConfirm,onClose}){
   return html`<${Modal} title=${title} onClose=${onClose} footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn danger" onClick=${()=>{onConfirm();onClose();}}>${confirmLabel||"Confirm"}</button></${React.Fragment}>`}><div>${body}</div></${Modal}>`;}
 
@@ -1891,7 +1923,7 @@ function LedgerImportModal({st,act,onClose,show}){
   </${Modal}>`;}
 
 function SalesImportModal({st,act,onClose,show}){
-  const [items,setItems]=useState([]);const [err,setErr]=useState("");const [gen,setGen]=useState(false);const [scale,setScale]=useState(true);const fileRef=useRef();
+  const [items,setItems]=useState([]);const [err,setErr]=useState("");const [gen,setGen]=useState(false);const [scale,setScale]=useState(true);const [keepUnsold,setKeepUnsold]=useState(false);const fileRef=useRef();
   function add(name,rows){const r=parseSales(rows,"",gen,st,scale);
     setItems(list=>list.concat([{id:uid(),name,rows,parsed:r,ov:""}]));
     if(!r.raw.length)setErr("“"+name+"”: "+((r.warnings&&r.warnings[0])||"no sales rows found."));}
@@ -1914,7 +1946,12 @@ function SalesImportModal({st,act,onClose,show}){
       for(const m of r.raw){if(!/^PR\d+$/.test(String(m.code).toUpperCase()))continue;lines++;units+=m.qty;gross+=m.qty*m.unitPrice;}}
     return {lines,units,gross:Math.round(gross*100)/100};})();
   const ordered=eff.slice().sort((a,b)=>String(a.date).localeCompare(String(b.date))||String(a.name).localeCompare(String(b.name)));
-  const allRaw=[].concat.apply([],ordered.map(x=>x.raw));
+  const rawAll=[].concat.apply([],ordered.map(x=>x.raw));
+  /* Lines from orders that never shipped are left out unless you say otherwise: an importer that
+     flags them and then imports them anyway only moves the work to the Ledger. */
+  const unsold=rawAll.filter(m=>neverSold(m._status));
+  const unsoldBy={};for(const m of unsold){const k=String(m._status).toLowerCase();unsoldBy[k]=(unsoldBy[k]||0)+1;}
+  const allRaw=keepUnsold?rawAll:rawAll.filter(m=>!neverSold(m._status));
   const skipped=items.reduce((a,it)=>a+((it.parsed&&it.parsed.skipped)||0),0);
   /* only a Vektori report needs a date for the whole file; the others carry one per line */
   const undated=ordered.filter(x=>x.raw.length&&x.parsed&&x.parsed.format==="vektori"&&!x.date);
@@ -1944,7 +1981,13 @@ function SalesImportModal({st,act,onClose,show}){
       <label class="switch"><input type="checkbox" checked=${scale} onChange=${e=>setScale(e.target.checked)}/> Match each order to the Net Sales the file reports${wooMeta.orders?" — "+num(wooMeta.matched)+" of "+num(wooMeta.orders)+" already agree on catalogue prices alone":""}</label>
       <div class="note">An Orders report carries no SKU and no line prices, so each line is matched to the catalogue <b>by name</b> and priced from it. Where an order's total then disagrees with its reported Net Sales — a discount, or a price since changed — ${scale?"its lines are scaled to the reported figure":"the catalogue price is used as it stands and the difference is listed below"}.</div>
     </${React.Fragment}>`:null}
-    ${gen?html`<div class="note">These carry no product, so they reduce no product's stock — they import under their own codes and will sit at negative stock. Use them to make takings tie out against the till; leave them off to keep the ledger to identified products only.</div>`:null}`:null}
+    ${gen?html`<div class="note">These carry no product, so they reduce no product's stock — they import under their own codes and will sit at negative stock. Use them to make takings tie out against the till; leave them off to keep the ledger to identified products only.</div>`:null}
+    ${unsold.length?html`<${React.Fragment}>
+      <label class="switch"><input type="checkbox" checked=${keepUnsold} onChange=${e=>setKeepUnsold(e.target.checked)}/> Include the ${num(unsold.length)} line${unsold.length>1?"s":""} from orders that never shipped — ${Object.keys(unsoldBy).sort().map(k=>num(unsoldBy[k])+" “"+k+"”").join(", ")}</label>
+      <div class="note">${keepUnsold
+        ? "They will be imported as ordinary sales: they will take stock off the shelf and count as takings."
+        : "Left out, as a cancelled or failed order took no money and no stock. Tick the box if these should go in anyway."}</div>
+    </${React.Fragment}>`:null}`:null}
     ${err?html`<div class="err">${err}</div>`:null}
     ${items.length?html`<div class="tablewrap" style=${{marginTop:"4px",maxHeight:"230px",overflow:"auto"}}>
       <table><thead><tr><th>File</th><th>Format</th><th>Period</th><th class="num">Lines</th><th>Dated</th><th></th></tr></thead>
@@ -2323,7 +2366,10 @@ function App(){
       if(rec.id&&s.ledger.some(r=>r.id===rec.id))return {...s,ledger:s.ledger.map(r=>r.id===rec.id?{...r,...rec}:r)};
       return {...s,ledger:[...s.ledger,{...rec,id:rec.id||uid(),createdAt:now}]};}),
     deleteMovement:id=>setSt(s=>{undoRef.current=s;return {...s,ledger:s.ledger.filter(r=>r.id!==id)};}),
-    deleteBatch:ref=>setSt(s=>{undoRef.current=s;return {...s,ledger:s.ledger.filter(r=>(r.batchRef||"")!==ref)};}),
+    /* WooCommerce gives every order its own batch reference, so clearing a month of web sales one
+       batch at a time would be a hundred confirmations. This removes whatever the filter selected. */
+    deleteMovements:ids=>setSt(s=>{undoRef.current=s;const k={};for(const i of ids)k[i]=1;
+      return {...s,ledger:s.ledger.filter(r=>!k[r.id])};}),
     discardStaging:code=>setSt(s=>{undoRef.current=s;return {...s,staging:s.staging.filter(x=>normCode(x.code)!==normCode(code))};}),
     addChannel:(name,dir,mode,kind)=>setSt(s=>s.channels.some(c=>c.name===name)?s:{...s,channels:[...s.channels,{id:uid(),name,dir,mode:(mode!==undefined?(mode||null):(dir==="out"?inferMode(name):null)),kind:(kind!==undefined?(kind||null):(dir==="out"?"sale":null))}]}),
     setChannelKind:(id,kind)=>setSt(s=>({...s,channels:s.channels.map(c=>c.id===id?{...c,kind:(kind||null)}:c)})),
@@ -2335,7 +2381,9 @@ function App(){
     openEncrypt:()=>setModal({type:"encsave"}),
     openDecrypt:obj=>setModal({type:"encopen",payload:obj}),
     openWipe:()=>setModal({type:"wipe"}),
-    wipe:()=>setSt(s=>{undoRef.current=s;return blankState();}),
+    /* a wipe clears stock data; the settlement history and the setup survive unless asked for */
+    wipe:all=>setSt(s=>{undoRef.current=s;const b=blankState();
+      return all?b:{...b,finance:s.finance||[],postage:s.postage||[],channels:s.channels,settings:s.settings};}),
     importCatalogue:items=>setSt(s=>{const now=new Date().toISOString();const cat=s.catalogue.slice();const idx={};cat.forEach((p,i)=>idx[normCode(p.code)]=i);
       const DEF={type:"goods",name:"",author:"",year:"",category:"",supplier:"",supplierRef:"",cost:null,price:null,sellable:true,online:false,reorderPoint:null,notes:""};
       for(const it of items){const nc=normCode(it.code);
@@ -2470,7 +2518,7 @@ function App(){
     ${modal&&modal.type==="invimport"?html`<${InvoiceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="catimport"?html`<${CatalogueImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="financeimport"?html`<${FinanceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
-    ${modal&&modal.type==="wipe"?html`<${ConfirmModal} title="Erase everything?" confirmLabel="Erase all data" body=${html`<span>This clears the catalogue, ledger, invoices and staging in this browser — ${num(st.catalogue.length)} products, ${num(st.ledger.length)} movements and ${num((st.invoices||[]).length)} invoices. <b>Export a core file first.</b> One Undo is offered afterwards, but only until the next change.</span>`} onConfirm=${()=>{act.wipe();show("Everything erased",true);}} onClose=${()=>setModal(null)}/>`:null}
+    ${modal&&modal.type==="wipe"?html`<${WipeModal} st=${st} act=${act} show=${show} onClose=${()=>setModal(null)}/>`:null}
     ${toast?html`<div class="toast"><span>${toast}</span>${undoable&&undoRef.current?html`<button class="ubtn" onClick=${doUndo}>Undo</button>`:null}</div>`:null}
   </div>`;}
 

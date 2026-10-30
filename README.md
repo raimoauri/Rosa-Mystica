@@ -26,6 +26,11 @@ against the Net Sales the file itself reports, and where they disagree — a dis
 the lines are scaled to the reported figure, or left at catalogue price, as you choose. Unmatched
 titles and disagreeing orders are listed before anything is imported.
 
+An order that was **cancelled, failed or never got past checkout** is not a sale — it took no money
+and no stock left the shelf — so its lines are left out, with the count and the statuses stated and a
+box to include them anyway. *Refunded* and *on hold* are deliberately not on that list, since those
+goods may well have gone out; they are reported and left to you.
+
 Sales reports import **several files at once** — a weekly Vektori export is a stack of them — each
 keeping its own period, with a warning when a period crosses a month boundary (a Vektori report carries
 no per-line date, so the whole file is dated to the end of its period). Duplicates are caught across the
@@ -93,6 +98,24 @@ without that note pretending to be a reconciliation.
 A treatment the country cannot imply is the one thing such a file can't carry: an **own print** from a
 Finnish printer is indistinguishable from a domestic purchase by its header alone, so it arrives as
 *Domestic* and is switched by hand.
+
+## Deleting, and what a wipe is
+Two stores sit side by side and are cleared independently. The **ledger** holds movements, and
+Analytics and Inventory are views derived from it — they store nothing of their own, so a figure
+there can never disagree with the movements behind it. **Finance** holds the settlement days
+imported from Vektori and WooCommerce, and never touches the ledger or stock.
+
+So most "start again" is a deletion, not a wipe. The Ledger's filters — channel, batch, date window,
+search — define a selection, and that selection can be deleted in one confirmation, which names what
+it is about to remove and how many batches it spans. That matters because WooCommerce gives every
+order its own batch reference: a month of web sales is a hundred batches, and clearing it one at a
+time would be a hundred confirmations. The catalogue, the invoices and the settlement data are not
+touched, so money already imported never needs importing again. One Undo follows.
+
+*Erase everything* is the blunt instrument, and it now says what it destroys. By default it clears
+the catalogue, ledger, invoices and staging — the stock data — and **keeps** the settlement days, the
+online postage, the channels and the VAT settings. A checkbox makes it a true reset, with the
+settlement days counted in the warning so losing them is a choice rather than a surprise.
 
 ## Bulk editing
 A catalogue import only touches the columns the file actually contains. Export the catalogue, change
@@ -200,3 +223,7 @@ same totals plus daily detail.
 15. A reconciliation gate that allows for the invoice's own per-line rounding (half a cent per line
     plus two, and still reported as *exact* only at zero), and an imported draft that keeps its
     Note — so a file of archived invoices can say what each paper total is without asserting it. ✅
+16. Choices the app had been making silently: deleting **what the filter shows** rather than one
+    batch at a time, an *Erase everything* that names the settlement data and setup it would take
+    (and keeps them unless told otherwise), and sales import leaving out the orders that never
+    shipped instead of importing them and asking you to undo it. ✅
