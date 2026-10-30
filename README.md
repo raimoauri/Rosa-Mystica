@@ -17,6 +17,15 @@ Two sources of truth, anchored on the **product code**:
   your code to their invoice line), and a note. On import a blank batch reference auto-generates as
   `COUNTRY-YYYYMMDD-PROVIDER` so one invoice's lines share it.
 
+Three sales shapes are read. A **Vektori Product Sales Report** (per product, per period), a
+**WooCommerce line-item export** (one row per product, with SKU), and a **WooCommerce Analytics →
+Orders** report — which carries no SKU and no line prices, its products sitting in one cell as
+"2× Title, 1× Other". That last one is recognised by its shape rather than its column names, split
+into lines, matched to the catalogue **by name** and priced from it; each order is then checked
+against the Net Sales the file itself reports, and where they disagree — a discount, a changed price —
+the lines are scaled to the reported figure, or left at catalogue price, as you choose. Unmatched
+titles and disagreeing orders are listed before anything is imported.
+
 Sales reports import **several files at once** — a weekly Vektori export is a stack of them — each
 keeping its own period, with a warning when a period crosses a month boundary (a Vektori report carries
 no per-line date, so the whole file is dated to the end of its period). Duplicates are caught across the
