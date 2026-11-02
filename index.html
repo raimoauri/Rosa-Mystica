@@ -563,12 +563,12 @@ const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 
 /* ---------- persistence ---------- */
 const SCHEMA=4;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
-function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],
+function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],count:{lines:{}},
   channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
   settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG"}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
-  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];
+  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];s.count=s.count||{lines:{}};if(!s.count.lines)s.count.lines={};
   if(!s.channels||!s.channels.length)s.channels=[{id:uid(),name:"Purchase",dir:"in",mode:null}];
   s.channels=s.channels.map(c=>{const o=("mode" in c)?c:Object.assign({},c,{mode:(c.dir==="out"?inferMode(c.name):null)});
     return ("kind" in o)?o:Object.assign({},o,{kind:(o.dir==="out"?"sale":null)});});
@@ -599,7 +599,7 @@ function storageInfo(){let bytes=0;try{bytes=(localStorage.getItem(LSKEY)||"").l
 
 /* core file (portable, optionally encrypted) */
 const APP="Rosa Mystica";
-function makeCore(s){return {app:APP,kind:"core",schema:SCHEMA,savedAt:new Date().toISOString(),data:{catalogue:s.catalogue,ledger:s.ledger,staging:s.staging,finance:s.finance,postage:s.postage,invoices:s.invoices,channels:s.channels,settings:s.settings}};}
+function makeCore(s){return {app:APP,kind:"core",schema:SCHEMA,savedAt:new Date().toISOString(),data:{catalogue:s.catalogue,ledger:s.ledger,staging:s.staging,count:s.count,finance:s.finance,postage:s.postage,invoices:s.invoices,channels:s.channels,settings:s.settings}};}
 function readCore(o){return (o&&o.kind==="core"&&o.data)?o.data:o;}
 function isCoreLike(raw){const d=readCore(raw);return !!(d&&(Array.isArray(d.catalogue)||Array.isArray(d.ledger)));}
 const HAS_CRYPTO=(typeof crypto!=="undefined")&&!!(crypto.subtle)&&(typeof TextEncoder!=="undefined");
@@ -2053,112 +2053,128 @@ function countBasis(st){
       cost:r.avgCost,costFrom:r.avgCost!=null?"its own lots":""});
   return rows.sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))||String(a.code).localeCompare(String(b.code)));}
 
-function StockCountModal({st,act,onClose,show}){
-  const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");
-  const [date,setDate]=useState(today());const fileRef=useRef();
-  /* A shortfall is not always shrinkage. Stock sold at a fair or over the counter without going
-     through the till is a sale: it should take its cost with it and book what it earned. The count
-     sets a default and any line can differ. */
-  const [shortAs,setShortAs]=useState("adjustment");const [as,setAs]=useState({});
-  const saleChans=useMemo(()=>(st.channels||[]).filter(c=>c.dir==="out"&&isSaleKind(c.kind)).map(c=>c.name),[st.channels]);
-  const [chan,setChan]=useState("");
-  /* a channel of its own by default: folding these into the till channel would put money the till
-     never saw into the in-person takings, and the Finance reconciliation would never square again */
-  useEffect(()=>{if(!chan)setChan("External sale");},[]);
+function CountPanel({st,act,show}){
+  const [q,setQ]=useState("");const [fprov,setFprov]=useState("");const [ftype,setFtype]=useState("");
+  const [only,setOnly]=useState("stock");const [err,setErr]=useState("");const [fn,setFn]=useState("");
+  const fileRef=useRef();
+  const C=st.count||{lines:{}};const CL=C.lines||{};
+  const date=C.date||today();const shortAs=C.shortAs||"adjustment";const chan=C.chan||"External sale";
+  const meta=p=>act.setCountMeta(p);
   const basis=useMemo(()=>countBasis(st),[st.catalogue,st.ledger]);
-  function dl(){const head=["Product code","Name","On hand (app)","Counted"];
+  const provs=useMemo(()=>[...new Set((st.catalogue||[]).map(p=>(p.supplier||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[st.catalogue]);
+  const supOf=useMemo(()=>{const m={};for(const p of st.catalogue||[])m[normCode(p.code)]=(p.supplier||"").trim();return m;},[st.catalogue]);
+  /* one row per product: what the ledger says, what was typed, and what the difference will write */
+  const rows=useMemo(()=>basis.map(b=>{const k=normCode(b.code);const e=CL[k]||{};
+    const raw=e.counted;const has=raw!=null&&String(raw).trim()!=="";
+    const counted=has?parseNum(raw):null;
+    const delta=(counted==null)?null:Math.round((counted-b.onHand)*1e6)/1e6;
+    const as=delta!=null&&delta<0?(e.as||shortAs):(delta!=null&&delta>0?"found":null);
+    return Object.assign({},b,{k,raw:has?String(raw):"",counted,delta,as,bad:has&&(counted==null||counted<0)});
+  }),[basis,CL,shortAs]);
+  const ql=q.trim().toLowerCase();
+  const shown=rows.filter(r=>{
+    if(fprov&&supOf[r.k]!==fprov)return false;
+    if(ftype&&r.type!==ftype)return false;
+    if(only==="counted"&&r.raw==="")return false;
+    if(only==="diff"&&!r.delta)return false;
+    if(only==="stock"&&!(r.onHand>0)&&r.raw==="")return false;
+    if(ql&&![r.code,r.name].join(" ").toLowerCase().includes(ql))return false;
+    return true;});
+  const touched=rows.filter(r=>r.raw!=="");
+  const bad=touched.filter(r=>r.bad);
+  const moves=touched.filter(r=>r.delta);
+  const agree=touched.length-moves.length-bad.length;
+  const shortL=moves.filter(r=>r.delta<0),foundL=moves.filter(r=>r.delta>0);
+  const asSale=shortL.filter(r=>r.as==="sale");
+  const unpriced=asSale.filter(r=>r.price==null||!(r.price>0));
+  const noCost=foundL.filter(r=>r.cost==null);
+  const saleNet=asSale.reduce((a,r)=>{const rate=vatRatesOf(st)[r.type]!=null?vatRatesOf(st)[r.type]:vatRatesOf(st).goods;
+    return a+(-r.delta)*(r.price==null?0:(rate>0?r.price/(1+rate/100):r.price));},0);
+  const ok=moves.length>0&&!bad.length&&!unpriced.length&&date&&(!asSale.length||String(chan).trim());
+  function dl(){const head=["Product code","Name","Listed (app)","Counted"];
     downloadXlsx("Rosa-Mystica_Stock-count-sheet.xlsx",
-      [{name:"Count",rows:[head].concat(basis.map(r=>[r.code,r.name,r.onHand,""]))}],show);}
-  function ingest(rows){
-    if(!rows||!rows.length){setErr("The file looks empty.");setRes(null);return;}
-    const H=(rows[0]||[]).map(normH);
+      [{name:"Count",rows:[head].concat(rows.map(r=>[r.code,r.name,r.onHand,r.raw]))}],show);}
+  /* a filled sheet does not commit: it fills the same count you can see, and you review it here */
+  function ingest(rws){
+    if(!rws||!rws.length){setErr("The file looks empty.");return;}
+    const H=(rws[0]||[]).map(normH);
     const ci=H.findIndex(h=>h==="productcode"||h==="code");
     const qi=H.findIndex(h=>h==="counted"||h==="count"||h==="countedqty"||h==="actual");
-    if(ci<0||qi<0){setErr("Need a 'Product code' column and a 'Counted' column — download the sheet.");setRes(null);return;}
-    const byBasis={};for(const r of basis)byBasis[normCode(r.code)]=r;
-    const lines=[],problems=[];let blank=0,agree=0;
-    for(let i=1;i<rows.length;i++){const r=rows[i]||[];
-      const code=String(r[ci]==null?"":r[ci]).trim();if(!code)continue;
-      const raw=r[qi];
-      /* a blank cell is a product that was not counted — it is left entirely alone */
-      if(raw==null||String(raw).trim()===""){blank++;continue;}
-      const counted=parseNum(raw);
-      if(counted==null){problems.push("Row "+(i+1)+": \u201c"+String(raw)+"\u201d is not a number.");continue;}
-      if(counted<0){problems.push("Row "+(i+1)+": a counted quantity cannot be negative.");continue;}
-      const b=byBasis[normCode(code)];
-      if(!b){problems.push("Row "+(i+1)+": \u201c"+code+"\u201d is not in the catalogue or the ledger.");continue;}
-      const delta=Math.round((counted-b.onHand)*1e6)/1e6;
-      if(!delta){agree++;continue;}
-      lines.push({code:b.code,name:b.name,onHand:b.onHand,counted,delta,cost:b.cost,costFrom:b.costFrom,
-        price:b.price,type:b.type,sellable:b.sellable});}
-    const short=lines.filter(l=>l.delta<0),found=lines.filter(l=>l.delta>0);
-    const noCost=found.filter(l=>l.cost==null);
-    const valUp=found.reduce((a,l)=>a+(l.cost||0)*l.delta,0);
-    setRes({lines,problems,blank,agree,short,found,noCost,valUp});
-    setErr(lines.length?"":(problems.length?"Nothing can be applied until the problems below are fixed.":
-      "Every counted line already agrees with the app \u2014 there is nothing to write."));}
-  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setRes(null);setFn(f.name);
+    if(ci<0||qi<0){setErr("Need a 'Product code' column and a 'Counted' column — download the sheet.");return;}
+    const known={};for(const b of basis)known[normCode(b.code)]=1;
+    let n=0,miss=0;
+    for(let i=1;i<rws.length;i++){const r=rws[i]||[];const code=String(r[ci]==null?"":r[ci]).trim();
+      if(!code)continue;const raw=r[qi];
+      if(raw==null||String(raw).trim()==="")continue;
+      if(!known[normCode(code)]){miss++;continue;}
+      act.setCountLine(code,{counted:String(raw).trim()});n++;}
+    setErr(miss?(num(miss)+" row"+(miss>1?"s were":" was")+" skipped — not in the catalogue or the ledger."):"");
+    show("Read "+n+" counted line"+(n===1?"":"s")+" from the sheet",true);}
+  function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setFn(f.name);
     const nm=(f.name||"").toLowerCase();const rd=new FileReader();rd.onerror=()=>setErr("Couldn't read the file.");
     if(nm.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
     else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
     e.target.value="";}
-  const asOf=l=>(l.delta>0?"found":(as[normCode(l.code)]||shortAs));
-  const marked=res?res.lines.map(l=>Object.assign({},l,{as:asOf(l)})):[];
-  const asSale=marked.filter(l=>l.as==="sale");
-  const unpriced=asSale.filter(l=>l.price==null||!(l.price>0));
-  const saleNet=asSale.reduce((a,l)=>{if(l.price==null)return a;
-    const rate=vatRatesOf(st)[l.type]!=null?vatRatesOf(st)[l.type]:vatRatesOf(st).goods;
-    return a+(-l.delta)*(rate>0?l.price/(1+rate/100):l.price);},0);
-  const ok=res&&res.lines.length&&!res.problems.length&&date&&!unpriced.length&&(!asSale.length||chan.trim());
-  function run(){if(!ok)return;act.applyStockCount(marked,date,chan.trim());
-    show("Stock count applied \u00b7 "+res.lines.length+" adjustment"+(res.lines.length>1?"s":""),true);onClose();}
-  return html`<${Modal} wide=${true} title="Stock count" onClose=${onClose}
-    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Write ${ok?res.lines.length:""} adjustment${ok&&res.lines.length===1?"":"s"}</button></${React.Fragment}>`}>
-    <div class="note">Count the shelf, and the app writes the difference. Download the sheet, fill <b>Counted</b> for the products you actually counted, and upload it back. A product you leave <b>blank is not counted</b> and is left completely alone — so you can count one shelf, or one supplier, without touching the rest. Nothing is overwritten: short lines become adjustments, which take stock off without counting as sales, and found lines become receipts.</div>
-    <div class="hintrow" style=${{marginTop:"12px"}}>
-      <button class="btn sm" onClick=${dl}><${Icon} name="download"/>Download sheet \u00b7 ${num(basis.length)} products</button>
-      <button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Upload filled sheet\u2026</button>
-      <input ref=${fileRef} type="file" accept=".csv,.xlsx" style=${{display:"none"}} onChange=${onFile}/>${fn?html`<span class="note">${fn}</span>`:null}
-      <span style=${{flex:1}}></span>
-      <label class="note">Count date</label><input type="date" class="filter" style=${{width:"auto"}} value=${date} onInput=${e=>setDate(e.target.value)}/>
+  function commit(){if(!ok)return;
+    act.applyStockCount(moves.map(r=>({code:r.code,name:r.name,onHand:r.onHand,counted:r.counted,delta:r.delta,
+      cost:r.cost,costFrom:r.costFrom,price:r.price,type:r.type,as:r.as})),date,String(chan).trim());
+    act.clearCount();
+    show("Stock count applied · "+moves.length+" movement"+(moves.length===1?"":"s"),true);}
+  return html`<${React.Fragment}>
+    <div class="note" style=${{marginBottom:"12px",maxWidth:"760px"}}>What the ledger says is in <b>Listed</b>; type what is on the shelf into <b>Counted</b>. The app writes only the difference — out where the shelf has fewer, in where it has more — in one commit, taking cost and price from the catalogue. A product you leave <b>blank is not counted</b> and is untouched, so this can be done a shelf at a time; what you type is kept until you commit or clear it.</div>
+    <div class="toolbar" style=${{marginBottom:"8px",flexWrap:"wrap"}}>
+      <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code or name…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
+      ${provs.length>1?html`<select class="filter" style=${{maxWidth:"190px"}} value=${fprov} onChange=${e=>setFprov(e.target.value)}><option value="">All suppliers</option>${provs.map(v=>html`<option key=${v} value=${v}>${v}</option>`)}</select>`:null}
+      <select class="filter" style=${{width:"auto"}} value=${ftype} onChange=${e=>setFtype(e.target.value)}><option value="">All types</option>${TYPES.map(t=>html`<option key=${t[0]} value=${t[0]}>${t[1]}</option>`)}</select>
+      <select class="filter" style=${{width:"auto"}} value=${only} onChange=${e=>setOnly(e.target.value)}>
+        <option value="stock">In stock, plus anything counted</option><option value="">Every product</option>
+        <option value="counted">Only what I have counted</option><option value="diff">Only the differences</option></select>
+      <span style=${{flex:1}}></span><span class="note">${num(shown.length)} shown · ${num(touched.length)} counted</span>
     </div>
-    <div class="hintrow" style=${{marginTop:"10px"}}>
+    <div class="toolbar" style=${{marginBottom:"12px",flexWrap:"wrap"}}>
+      <label class="note">Count date</label><input type="date" class="filter" style=${{width:"auto"}} value=${date} onInput=${e=>meta({date:e.target.value})}/>
       <label class="note">A shortfall means</label>
-      <select class="filter" style=${{width:"auto"}} value=${shortAs} onChange=${e=>{setShortAs(e.target.value);setAs({});}}>
-        <option value="adjustment">it is simply gone \u2014 an adjustment</option>
-        <option value="sale">it was sold \u2014 book the takings</option></select>
+      <select class="filter" style=${{width:"auto"}} value=${shortAs} onChange=${e=>meta({shortAs:e.target.value})}>
+        <option value="adjustment">it is gone — an adjustment</option><option value="sale">it was sold — book the takings</option></select>
       ${shortAs==="sale"||asSale.length?html`<${React.Fragment}><label class="note">on</label>
-        <input class="filter" style=${{width:"170px"}} list="countchans" value=${chan} onInput=${e=>setChan(e.target.value)} placeholder="External sale"/>
-        <datalist id="countchans">${saleChans.map(c=>html`<option key=${c} value=${c}></option>`)}</datalist></${React.Fragment}>`:null}
+        <input class="filter" style=${{width:"160px"}} value=${chan} onInput=${e=>meta({chan:e.target.value})} placeholder="External sale"/></${React.Fragment}>`:null}
+      <span style=${{flex:1}}></span>
+      <button class="btn sm" onClick=${dl}><${Icon} name="download"/>Sheet</button>
+      <button class="btn sm" onClick=${()=>fileRef.current&&fileRef.current.click()}><${Icon} name="upload"/>Read a filled sheet…</button>
+      <input ref=${fileRef} type="file" accept=".csv,.xlsx" style=${{display:"none"}} onChange=${onFile}/>
+      ${touched.length?html`<button class="btn sm ghost" onClick=${()=>{act.clearCount();show("Count cleared",true);}}>Clear count</button>`:null}
+      <button class="btn primary" disabled=${!ok} onClick=${commit}>Commit ${moves.length||""}</button>
     </div>
-    <div class="note" style=${{marginTop:"6px"}}>${shortAs==="sale"
-      ? "Each short line goes out as a sale at its catalogue price, so it takes its cost with it and books what it earned \u2014 for stock sold away from the till. Dated the count date; set that above if the sales happened earlier."
-      : "Each short line goes out as an adjustment: the stock leaves, but nothing is counted as takings. Breakage, miscounts, anything that did not earn."}</div>
-    ${err?html`<div class="err" style=${{marginTop:"10px"}}>${err}</div>`:null}
-    ${res?html`<${React.Fragment}>
-      <div class="kpis" style=${{marginTop:"14px"}}>
-        <div class="kpi"><div class="k">Agreed</div><div class="v">${num(res.agree)}</div><div class="f">already right \u00b7 nothing written</div></div>
-        <div class="kpi"><div class="k">Short</div><div class="v">${num(res.short.length)}</div><div class="f">${num(res.short.reduce((a,l)=>a-l.delta,0))} units off the shelf</div></div>
-        <div class="kpi"><div class="k">Found</div><div class="v">${num(res.found.length)}</div><div class="f">${num(res.found.reduce((a,l)=>a+l.delta,0))} units in, ${money(res.valUp)} at cost</div></div>
-        <div class="kpi"><div class="k">Not counted</div><div class="v">${num(res.blank)}</div><div class="f">left exactly as they are</div></div>
-      </div>
-      ${res.noCost.length?html`<div class="err" style=${{marginTop:"12px"}}>${num(res.noCost.length)} found line${res.noCost.length>1?"s have":" has"} no known cost \u2014 no purchase lot and no catalogue cost, so ${res.noCost.length>1?"they":"it"} would enter stock at zero and later sell at an apparent 100% margin. Set a cost on ${res.noCost.length>1?"those products":"that product"} first, or accept that ${res.noCost.length>1?"they":"it"} carries none: ${res.noCost.slice(0,4).map(l=>l.code).join(", ")}${res.noCost.length>4?", \u2026":""}</div>`:null}
-      ${unpriced.length?html`<div class="err" style=${{marginTop:"12px"}}>${num(unpriced.length)} line${unpriced.length>1?"s are":" is"} marked as sold but ${unpriced.length>1?"carry":"carries"} no price, so there is nothing to book as takings: ${unpriced.slice(0,4).map(l=>l.code).join(", ")}${unpriced.length>4?", \u2026":""}. Give ${unpriced.length>1?"them":"it"} a price, or treat ${unpriced.length>1?"them":"it"} as an adjustment.</div>`:null}
-      ${asSale.length?html`<div class="note" style=${{marginTop:"10px"}}>${num(asSale.length)} line${asSale.length>1?"s":""} will be written as sales on <b>${chan||"\u2014"}</b>, booking ${money(saleNet)} of takings net of VAT, with their cost coming off the shelf in FIFO order. The other short lines stay adjustments.</div>`:null}
-      ${res.problems.length?html`<div class="err" style=${{marginTop:"10px"}}>${res.problems.slice(0,6).map(x=>html`<div>${x}</div>`)}${res.problems.length>6?html`<div>\u2026 and ${res.problems.length-6} more</div>`:null}</div>`:null}
-      ${res.lines.length?html`<div class="tablewrap" style=${{marginTop:"12px",maxHeight:"300px",overflow:"auto"}}>
-        <table><thead><tr><th>Code</th><th>Product</th><th class="num">App</th><th class="num">Counted</th><th class="num">Writes</th><th>Treated as</th><th>Cost used</th></tr></thead>
-        <tbody>${marked.map(l=>html`<tr key=${l.code}>
-          <td class="code">${l.code}</td><td>${l.name||html`<span class="faint">unlinked</span>`}</td>
-          <td class="num">${num(l.onHand)}</td><td class="num">${num(l.counted)}</td>
-          <td class="num mono" style=${{color:l.delta<0?"var(--bad)":"var(--good)"}}>${l.delta>0?"+":""}${num(l.delta)}</td>
-          <td>${l.delta>0?html`<span class="note">found</span>`:html`<select class="cellinput" style=${{width:"auto"}} value=${l.as} onChange=${e=>setAs(o=>Object.assign({},o,{[normCode(l.code)]:e.target.value}))}>
-            <option value="adjustment">adjustment</option><option value="sale">sold</option></select>`}
-            ${l.as==="sale"&&(l.price==null||!(l.price>0))?html`<div class="meta" style=${{color:"var(--bad)"}}>no price</div>`:(l.as==="sale"?html`<div class="meta">at ${money(l.price)}</div>`:null)}</td>
-          <td class="note">${l.delta<0?"from its lots (FIFO)":(l.cost!=null?money(l.cost)+" from "+l.costFrom:html`<span class="err">none known</span>`)}</td></tr>`)}</tbody></table></div>`:null}
-      ${res.lines.length?html`<div class="note" style=${{marginTop:"10px"}}>These go in under batch <span class="code">COUNT-${date}</span>, so the whole count can be filtered or removed in one go. One Undo follows.</div>`:null}
-    </${React.Fragment}>`:null}
-  </${Modal}>`;}
+    ${err?html`<div class="err" style=${{marginBottom:"10px"}}>${err}</div>`:null}
+    ${fn?html`<div class="note" style=${{marginBottom:"10px"}}>${fn}</div>`:null}
+    ${touched.length?html`<div class="kpis" style=${{marginBottom:"14px"}}>
+      <div class="kpi"><div class="k">Counted</div><div class="v">${num(touched.length)}</div><div class="f">${num(agree)} already agree · nothing written for those</div></div>
+      <div class="kpi"><div class="k">Short</div><div class="v">${num(shortL.length)}</div><div class="f">${num(shortL.reduce((a,r)=>a-r.delta,0))} units leave the shelf</div></div>
+      <div class="kpi"><div class="k">Over</div><div class="v">${num(foundL.length)}</div><div class="f">${num(foundL.reduce((a,r)=>a+r.delta,0))} units come in${noCost.length?" · "+num(noCost.length)+" with no known cost":""}</div></div>
+      <div class="kpi"><div class="k">To write</div><div class="v">${num(moves.length)}</div><div class="f">under COUNT-${date}</div></div>
+    </div>`:null}
+    ${bad.length?html`<div class="err" style=${{marginBottom:"10px"}}>${num(bad.length)} counted value${bad.length>1?"s are":" is"} not a number, or is negative: ${bad.slice(0,5).map(r=>r.code).join(", ")}.</div>`:null}
+    ${unpriced.length?html`<div class="err" style=${{marginBottom:"10px"}}>${num(unpriced.length)} short line${unpriced.length>1?"s are":" is"} set to be sold but ${unpriced.length>1?"carry":"carries"} no price, so there is nothing to book: ${unpriced.slice(0,4).map(r=>r.code).join(", ")}. Price ${unpriced.length>1?"them":"it"}, or treat ${unpriced.length>1?"them":"it"} as an adjustment.</div>`:null}
+    ${noCost.length?html`<div class="err" style=${{marginBottom:"10px"}}>${num(noCost.length)} line${noCost.length>1?"s have":" has"} more on the shelf than the app knows of and no known cost — no purchase lot, no catalogue cost — so ${noCost.length>1?"they":"it"} would enter stock at zero and later sell at an apparent 100% margin: ${noCost.slice(0,4).map(r=>r.code).join(", ")}.</div>`:null}
+    ${asSale.length&&!unpriced.length?html`<div class="note" style=${{marginBottom:"10px"}}>${num(asSale.length)} short line${asSale.length>1?"s":""} will be written as sales on <b>${chan}</b>, booking ${money(saleNet)} net of VAT, with their cost coming off in FIFO order.</div>`:null}
+    <div class="panel"><div class="tablewrap"><table><thead><tr>
+      <th>Code</th><th>Product</th><th class="num">Listed</th><th class="num">Counted</th><th class="num">Difference</th><th>Writes</th><th class="num">Unit cost</th></tr></thead>
+      <tbody>${shown.map(r=>html`<tr key=${r.k}>
+        <td class="code">${r.code}</td>
+        <td>${r.name||html`<span class="faint">(unnamed)</span>`}${!r.sellable?html`<div class="meta">not for sale</div>`:null}</td>
+        <td class="num" style=${{fontWeight:"500"}}>${num(r.onHand)}</td>
+        <td class="num"><input class="cellinput num mono" style=${{width:"76px"}} value=${r.raw} placeholder="—"
+          onInput=${e=>act.setCountLine(r.code,{counted:e.target.value})}/></td>
+        <td class="num mono" style=${{color:r.delta==null?"inherit":(r.delta<0?"var(--bad)":(r.delta>0?"var(--good)":"inherit"))}}>
+          ${r.delta==null?html`<span class="faint">—</span>`:(r.delta===0?"✓":(r.delta>0?"+":"")+num(r.delta))}</td>
+        <td>${r.delta==null||r.delta===0?html`<span class="faint">nothing</span>`
+          :(r.delta>0?html`<span class="note">in · found</span>`
+          :html`<select class="cellinput" style=${{width:"auto"}} value=${r.as} onChange=${e=>act.setCountLine(r.code,{as:e.target.value})}>
+              <option value="adjustment">out · adjustment</option><option value="sale">out · sold</option></select>`)}</td>
+        <td class="num mono">${r.cost==null?html`<span class="faint">—</span>`:money(r.cost)}</td></tr>`)}
+      ${shown.length===0?html`<tr><td colSpan="7"><div class="empty"><${Icon} name="inventory"/><div class="big">Nothing matches</div><div class="note">Adjust the filters.</div></div></td></tr>`:null}
+      </tbody></table></div></div>
+  </${React.Fragment}>`;}
 
 function RecodeModal({st,act,onClose,show}){
   const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");const [merge,setMerge]=useState(false);const [rows,setRows]=useState(null);const fileRef=useRef();
@@ -2596,8 +2612,8 @@ function Inventory({st,act,show}){
     const csv=toCSV(head,rr);if(IN_FRAME||!downloadText("rosa-mystica_reorder_"+today()+".csv",csv,"text/csv"))act.openExport("Reorder list — CSV",csv);else show("Saved CSV");}
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Inventory</h2>
-      <div class="hintrow"><button class="btn" onClick=${()=>act.openStockCount()}>Stock count…</button>
-      <div class="seg"><button aria-pressed=${view==="stock"} onClick=${()=>setView("stock")}>Stock</button><button aria-pressed=${view==="reorder"} onClick=${()=>setView("reorder")}>Reorder${reorder.length?" · "+reorder.length:""}</button><button aria-pressed=${view==="batches"} onClick=${()=>setView("batches")}>Batches${batches.length?" · "+batches.length:""}</button></div></div></div>
+      <div class="hintrow">
+      <div class="seg"><button aria-pressed=${view==="stock"} onClick=${()=>setView("stock")}>Stock</button><button aria-pressed=${view==="reorder"} onClick=${()=>setView("reorder")}>Reorder${reorder.length?" · "+reorder.length:""}</button><button aria-pressed=${view==="batches"} onClick=${()=>setView("batches")}>Batches${batches.length?" · "+batches.length:""}</button><button aria-pressed=${view==="count"} onClick=${()=>setView("count")}>Count${Object.keys((st.count&&st.count.lines)||{}).length?" · "+num(Object.keys(st.count.lines).length):""}</button></div></div></div>
     ${rows.length===0?html`<div class="panel"><div class="empty"><${Icon} name="inventory"/><div class="big">Nothing to track yet</div><div class="note" style=${{maxWidth:"440px"}}>Record purchases (in) and sales (out) in the ledger — FIFO stock, sell-through and ROI build from the one ledger.</div></div></div>`:
     view==="stock"?html`<${React.Fragment}>
     <div class=${"kpis"+(shrinkU?" five":"")} style=${{marginBottom:"20px"}}>
@@ -2630,7 +2646,7 @@ function Inventory({st,act,show}){
     html`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Code</th><th>Product</th><th>Provider</th><th>Provider ref</th><th class="num">Last cost</th><th class="num">Sold</th><th class="num">On hand</th><th class="num">Reorder pt</th></tr></thead>
       <tbody>${reorder.map(r=>html`<tr key=${normCode(r.code)}><td class="code">${r.code}</td><td>${r.inCat?html`<span class="name">${r.name}</span>`:html`<span class="faint">unlinked</span>`}</td>
         <td>${r.provider||"—"}</td><td class="code">${r.providerRef||"—"}</td><td class="num mono">${r.avgCost==null?"—":money(r.avgCost)}</td><td class="num">${num(r.sold)}</td><td class="num" style=${{color:r.onHand<0?"var(--bad)":"inherit"}}>${num(r.onHand)}</td><td class="num">${num(r.reorderPoint||0)}</td></tr>`)}</tbody></table></div></div>`}
-    </${React.Fragment}>`:html`<${React.Fragment}>
+    </${React.Fragment}>`:view==="count"?html`<${CountPanel} st=${st} act=${act} show=${show}/>`:html`<${React.Fragment}>
     ${batches.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"470px"}}>Purchases that share a batch reference form an invoice. Record or import in-movements and each invoice's progress — sold vs received, capital recouped, ROI — builds here.</div></div></div>`:html`<${React.Fragment}>
     <div class="note" style=${{marginBottom:"14px",maxWidth:"700px"}}>Each row is one invoice / batch. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT. <b>Open a batch</b> to read it product by product — what each one cost landed, what it is priced at, and the margin that implies. Nothing here is editable; it is a reading of the ledger.</div>
     <div class="panel"><div class="tablewrap"><table><thead><tr><th style=${{width:"24px"}}></th><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num">Sold</th><th class="num" title="units out on adjustment / write-off / gift lines">Not sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
@@ -2786,7 +2802,14 @@ function App(){
     openExport:(title,text)=>setModal({type:"export",title,text}),
     openEncrypt:()=>setModal({type:"encsave"}),
     openDecrypt:obj=>setModal({type:"encopen",payload:obj}),
-    openStockCount:()=>setModal({type:"stockcount"}),
+    /* a count in progress is kept, so it can be done over an afternoon and across a reload */
+    setCountLine:(code,patch)=>setSt(s=>{const c=s.count||{lines:{}};const k=normCode(code);
+      const cur=Object.assign({},(c.lines||{})[k],patch);
+      const empty=(cur.counted==null||String(cur.counted).trim()==="")&&!cur.as;
+      const lines=Object.assign({},c.lines);if(empty)delete lines[k];else lines[k]=cur;
+      return {...s,count:Object.assign({},c,{lines})};}),
+    setCountMeta:patch=>setSt(s=>({...s,count:Object.assign({lines:{}},s.count,patch)})),
+    clearCount:()=>setSt(s=>{undoRef.current=s;return {...s,count:{lines:{}}};}),
     /* The count never replaces anything: it appends the difference. Short lines go out on an
        adjustment-kind channel, so stock leaves without being booked as a sale; found lines come
        in carrying whatever cost basis the product already had. */
@@ -2960,7 +2983,6 @@ function App(){
     ${modal&&modal.type==="invimport"?html`<${InvoiceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="catimport"?html`<${CatalogueImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="financeimport"?html`<${FinanceImportModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
-    ${modal&&modal.type==="stockcount"?html`<${StockCountModal} st=${st} act=${act} onClose=${()=>setModal(null)} show=${show}/>`:null}
     ${modal&&modal.type==="wipe"?html`<${WipeModal} st=${st} act=${act} show=${show} onClose=${()=>setModal(null)}/>`:null}
     ${toast?html`<div class="toast"><span>${toast}</span>${undoable&&undoRef.current?html`<button class="ubtn" onClick=${doUndo}>Undo</button>`:null}</div>`:null}
   </div>`;}

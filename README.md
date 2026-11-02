@@ -115,12 +115,21 @@ Finnish printer is indistinguishable from a domestic purchase by its header alon
 *Domestic* and is switched by hand.
 
 ## Stock count
-A count is a difference, not a replacement. Download the sheet, fill **Counted** for the products you
+A count is a difference, not a replacement. **Listed** is what the ledger says; **Counted** is what you
+type from the shelf; the app writes only the gap between them, in one commit — out where the shelf has
+fewer, in where it has more — taking cost and price from the catalogue. The difference appears as you
+type, and a count that agrees writes nothing at all.
+
+A count in progress is **kept**: counting a shop takes hours, so what has been typed survives leaving
+the tab and closing the browser, and the segment shows how many lines are pending. Nothing reaches the
+ledger until it is committed. The sheet is still there for walking the shelves or handing to someone —
+but reading a filled sheet back now fills the same on-screen count for review rather than committing
+straight to the ledger. One commit path, two ways to fill it. Download the sheet, fill **Counted** for the products you
 actually counted, upload it back, and the app writes exactly the movements needed to make the derived
 figure agree with the shelf: short lines as **adjustments** (stock leaves, nothing is booked as a sale),
 found lines as receipts. A line that already agrees writes nothing at all.
 
-Two rules carry the weight. A blank is **not counted**, never *counted zero* — so counting one shelf
+Two rules still carry the weight. A blank is **not counted**, never *counted zero* — so counting one shelf
 cannot write off the rest of the shop, and a count can be done in pieces. And a found unit is never
 given a silent cost of zero: it takes the FIFO average that product already has, failing that the
 catalogue cost, and if it has neither the preview says so and names the codes rather than inventing
@@ -353,3 +362,5 @@ same totals plus daily detail.
     the staged entry, so leaving the tab no longer discards them. ✅
 21. A stock count's shortfalls can be **sales** rather than adjustments — per count or per line, at
     the catalogue price, on a channel of their own — for stock sold away from the till. ✅
+22. The count becomes a **screen you type into** — Listed beside Counted, differences live, the count
+    kept until committed — with the sheet reduced to one way of filling it. ✅
