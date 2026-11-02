@@ -206,6 +206,21 @@ whose code is kept survives, fills in anything it left empty from the other, and
 entry disappears while its movements, staged entries and draft lines move across. Renaming carries history: the
 catalogue entry, its movements, its staged entries and any invoice draft lines all move together.
 
+## Several of a supplier's articles under one code
+A supplier may list a hundred variants of what the shop sells as one thing at one price — resin
+magnets, say. Giving them all one product code works: the invoice reconciles, every line still
+reaches the ledger, and Inventory shows one product with one blended cost. Each movement keeps the
+supplier's **article number and its own description** in its note, so the Ledger still says which
+variant arrived while the shop deals in one product.
+
+That needed a fix. Duplicate detection keyed on date, channel, code, quantity, unit price and batch,
+which made twenty magnet lines byte-identical — same day, same 0,95 €, same quantity — so the guard
+against re-importing a file was eating the invoice's own lines. Nine units posted as three, after the
+gate had said the invoice agreed to the cent. The supplier's article number is now part of what makes
+a line distinct, and an invoice's own lines are taken as distinct by definition when posting;
+duplicates are still looked for against what the ledger already holds, so posting twice or
+re-importing the same file is caught as before.
+
 ## Supplier article numbers
 The catalogue's supplier + supplier-ref pair is a live index. An imported or posted line whose code is
 unknown but whose provider and reference match a catalogue product resolves onto that product, and the
@@ -369,3 +384,5 @@ same totals plus daily detail.
     kept until committed — with the sheet reduced to one way of filling it. ✅
 23. The catalogue **Export** moved to the Catalogue screen, next to Import, where the round trip
     it belongs to starts. ✅
+24. Several of a supplier's articles can share one product code: each line still posts, each keeping
+    its article number and description, while the shop sees one product. ✅

@@ -721,13 +721,20 @@ function mergeStaging(cur,incoming,catSet){const staging=cur.slice();
       name:o.name||e.name,type:o.type||e.type,provider:o.provider||e.provider,providerRef:o.providerRef||e.providerRef});}
     else staging.push({code:e.code,name:e.name,type:e.type,seenCount:e.seenCount,qty:e.qty,firstDate:e.firstDate,provider:e.provider||"",providerRef:e.providerRef||""});}
   return staging;}
-function prepareMovements(raw,st,warnings0){
+/* opts.distinctLines: the caller knows its lines are genuinely separate — an invoice's own lines
+   are, even when two of them are the same quantity of the same thing at the same price, which is
+   exactly what happens when a hundred magnet variants are given one product code. Duplicates are
+   then only looked for against what the ledger already holds, never within the batch itself. */
+function prepareMovements(raw,st,warnings0,opts){
   const catSet=new Set(st.catalogue.map(p=>normCode(p.code)));
   /* An unknown code whose provider + provider ref match a catalogue product is that product:
      the supplier's own article number is the bridge. This is what stops the second invoice
      from a supplier refilling staging with articles already confirmed from the first. */
   const sidx=supplierIndex(st);let matchedRef=0;
-  const sig=m=>[m.date,m.channel,normCode(m.code),m.qty,m.unitPrice==null?"":m.unitPrice,m.batchRef].join("|");
+  /* the supplier's own article number is part of what makes a line distinct: two lines of the same
+     product code, quantity and price are different lines if they are different articles */
+  const sig=m=>[m.date,m.channel,normCode(m.code),m.qty,m.unitPrice==null?"":m.unitPrice,m.batchRef,
+    normRef(m.providerRef||"")].join("|");
   const existing=new Set(st.ledger.map(sig));const seen=new Set();
   /* how many lines each channel+batch already holds, so a corrected re-import is flagged
      rather than silently doubled (a changed price makes a new signature, not a duplicate) */
@@ -739,7 +746,7 @@ function prepareMovements(raw,st,warnings0){
     if(mv.code&&!catSet.has(normCode(mv.code))&&mv.providerRef){
       const hit=sidx.lookup(mv.provider,mv.providerRef);
       if(hit&&normCode(hit)!==normCode(mv.code)){mv=Object.assign({},mv,{code:hit});matchedRef++;}}
-    const s=sig(mv);if(existing.has(s)||seen.has(s)){dup++;continue;}seen.add(s);
+    const s=sig(mv);if(existing.has(s)||(!(opts&&opts.distinctLines)&&seen.has(s))){dup++;continue;}seen.add(s);
     const clean={date:mv.date,channel:mv.channel,dir:mv.dir,batchRef:mv.batchRef,code:mv.code,qty:mv.qty,unitPrice:mv.unitPrice,vatRate:(mv.vatRate==null?null:mv.vatRate),transport:(mv.transport==null?null:mv.transport),note:mv.note,country:mv.country||"",provider:mv.provider||"",providerRef:mv.providerRef||""};movements.push(clean);
     {const k=(mv.channel||"")+"|"+(mv.batchRef||"");incoming[k]=(incoming[k]||0)+1;}
     if(mv.channel&&!st.channels.some(c=>c.name.toLowerCase()===mv.channel.toLowerCase()))newCh[mv.channel]=mv.dir;
@@ -2932,7 +2939,7 @@ function App(){
           note:l.name||"",country:inv.country||"",provider:inv.provider||"",providerRef:l.supplierRef||"",
           _name:l.name||"",_type:l.type||guessType(code)});}
       if(!raw.length)return s;
-      const prep=prepareMovements(raw,s,[]);
+      const prep=prepareMovements(raw,s,[],{distinctLines:true});
       const now=new Date().toISOString();
       const ledger=[...s.ledger,...prep.movements.map(m=>({...m,id:uid(),createdAt:now}))];
       const staging=mergeStaging(s.staging,prep.staging,new Set(s.catalogue.map(p=>normCode(p.code))));
