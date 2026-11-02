@@ -1166,7 +1166,8 @@ function Catalogue({st,act,openProduct,q,setQ}){
   const Th=(k,label,cls)=>html`<th class=${"sortable"+(cls?" "+cls:"")} onClick=${()=>S(k)}>${label}${arrow(k)}</th>`;
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Products</h2></div>
-      <div class="hintrow">${st.catalogue.length?html`<button class="btn" onClick=${()=>act.openRecode()}>Re-code / rename…</button>`:null}<button class="btn" onClick=${()=>act.openCatImport()}><${Icon} name="upload"/>Import catalogue</button><button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button></div></div>
+      <div class="hintrow">${st.catalogue.length?html`<${React.Fragment}><button class="btn" onClick=${()=>act.openRecode()}>Re-code / rename…</button>
+        <button class="btn" onClick=${()=>act.exportCatalogue()}><${Icon} name="download"/>Export</button></${React.Fragment}>`:null}<button class="btn" onClick=${()=>act.openCatImport()}><${Icon} name="upload"/>Import catalogue</button><button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button></div></div>
     <div class="toolbar">
       <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, name, author…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
       <select class="filter" value=${ftype} onChange=${e=>setFtype(e.target.value)}><option value="">All types</option>${TYPES.map(([v,l])=>html`<option key=${v} value=${v}>${l}</option>`)}</select>
@@ -1551,9 +1552,7 @@ function Settings({st,act,show}){
   function invSheets(){const rows=computeInventory(st);const head=["Code","Name","Received","Sold","Not sold (adj.)","Not-sold cost","On hand","Sell-through %","Unit cost (FIFO)","Stock value","Realized profit","ROI %","Provider","Provider ref","Reorder point"];
     const body=rows.slice().sort((a,b)=>b.onHandValue-a.onHandValue).map(r=>[r.code,r.name,r.received,r.sold,r.shrink||0,r2(r.shrinkCost||0),r.onHand,r.sellThrough==null?"":r2(r.sellThrough*100),r.unitCost==null?"":r2(r.unitCost),r2(r.onHandValue),r2(r.realProfit),r.roi==null?"":r2(r.roi*100),r.provider,r.providerRef,r.reorderPoint||0]);
     return [{name:"Inventory",rows:[head].concat(body)}];}
-  function catSheets(){const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost","Price","Sellable","Stock-tracked","Online","Reorder point","Notes"];
-    const body=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost==null?"":+p.cost,p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.stocked!==false?"yes":"no",p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
-    return [{name:"Catalogue",rows:[head].concat(body)}];}
+  function catSheets(){return catalogueSheets(st);}
   function ledSheets(){const head=["Date","Channel","Dir","Batch ref","Country","Provider","Provider ref","Code","Qty","Unit price","VAT %","Line total","Transport (batch)","Note"];
     const body=st.ledger.map(r=>[r.date,r.channel,r.dir,r.batchRef,r.country||"",r.provider||"",r.providerRef||"",r.code,+r.qty||0,r.unitPrice==null?"":+r.unitPrice,r.vatRate==null?"":+r.vatRate,(r.unitPrice==null?"":r2((+r.qty||0)*(+r.unitPrice||0))),r.transport==null?"":+r.transport,r.note]);
     return [{name:"Ledger",rows:[head].concat(body)}];}
@@ -1740,6 +1739,15 @@ function lineVatFor(l,inv,st,byCode){
 function normRef(s){return String(s||"").replace(/[\s\-_.\/]/g,"").toUpperCase();}
 function normProv(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"")
   .replace(/(lda|oy|ab|gmbh|srl|sarl|bv|nv|spa|sa|ltd|llc|inc|unipessoal)$/,"");}
+/* The catalogue as a sheet. Shared, because export-edit-import is one round trip and the export
+   belongs next to the import rather than filed under Settings. The column names match what the
+   catalogue import reads, and an import only touches the columns the file carries. */
+function catalogueSheets(st){
+  const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost","Price","Sellable","Stock-tracked","Online","Reorder point","Notes"];
+  const body=(st.catalogue||[]).map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",
+    p.cost==null?"":+p.cost,p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.stocked!==false?"yes":"no",
+    p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
+  return [{name:"Catalogue",rows:[head].concat(body)}];}
 function supplierIndex(st){const byPair={},byRef={},refSeen={};
   for(const p of (st.catalogue||[])){const r=normRef(p.supplierRef);if(!r)continue;
     const pv=normProv(p.supplier);if(pv)byPair[pv+"|"+r]=p.code;
@@ -2894,6 +2902,7 @@ function App(){
       const staging=sg.filter(x=>!catSet.has(normCode(x.code)));
       return {...s,catalogue,ledger,staging,invoices};}),
     openRecode:()=>setModal({type:"recode"}),
+    exportCatalogue:()=>downloadXlsx("rosa-mystica_catalogue_"+today()+".xlsx",catalogueSheets(st),show),
     openInvoiceImport:()=>setModal({type:"invimport"}),
     saveInvoice:v=>setSt(s=>{const list=(s.invoices||[]).slice();const i=list.findIndex(x=>x.id===v.id);
       if(i>=0)list[i]=v;else list.push(v);return {...s,invoices:list};}),

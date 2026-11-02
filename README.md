@@ -185,6 +185,9 @@ online postage, the channels and the VAT settings. A checkbox makes it a true re
 settlement days counted in the warning so losing them is a choice rather than a surprise.
 
 ## Bulk editing
+**Export sits beside Import on the Catalogue screen**, because export-edit-import is one round trip
+and an export filed under Settings is an export nobody finds.
+
 A catalogue import only touches the columns the file actually contains. Export the catalogue, change
 one column, import it back, and everything the file does not mention — cost, price, supplier, reorder
 point, notes — is left exactly as it was. That makes export-edit-import a safe way to replace a stack
@@ -364,3 +367,5 @@ same totals plus daily detail.
     the catalogue price, on a channel of their own — for stock sold away from the till. ✅
 22. The count becomes a **screen you type into** — Listed beside Counted, differences live, the count
     kept until committed — with the sheet reduced to one way of filling it. ✅
+23. The catalogue **Export** moved to the Catalogue screen, next to Import, where the round trip
+    it belongs to starts. ✅
