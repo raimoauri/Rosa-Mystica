@@ -128,6 +128,15 @@ stock value — a zero-cost lot would later sell at an apparent 100% margin. Non
 left off the sheet, a bad cell is refused rather than guessed, and the whole count goes in under one
 `COUNT-<date>` reference so it can be filtered or removed in one go.
 
+A shortfall is not always shrinkage. Stock sold at a fair or over the counter without passing the
+till is a **sale**: it should book what it earned and take its cost with it. So the count asks what a
+shortfall means — gone, or sold — and any line can differ from that default, because breakage and
+external sales usually turn up in the same count. A line booked as a sale goes out at its catalogue
+price on a sale-kind channel, so it reaches takings, COGS, margins and the batch that supplied it like
+any till sale. It defaults to a channel of its own rather than the till's, since money the till never
+saw would otherwise land in the in-person takings and the Finance reconciliation would never square.
+A line with no price cannot be booked as a sale at all: the count says which, and waits.
+
 Stock on hand is never writable directly, by any import. It is derived from the ledger, so the only way
 to change it is a movement — which is why a count is entered as what you see, and the app works out the
 difference.
@@ -342,3 +351,5 @@ same totals plus daily detail.
 20. **Batches open** to a read-only product-by-product panel — landed cost, price, the margin it
     implies, and what sold — with not-for-sale lines carrying no margin; and staging edits kept on
     the staged entry, so leaving the tab no longer discards them. ✅
+21. A stock count's shortfalls can be **sales** rather than adjustments — per count or per line, at
+    the catalogue price, on a channel of their own — for stock sold away from the till. ✅

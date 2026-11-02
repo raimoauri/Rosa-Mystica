@@ -2044,17 +2044,27 @@ function countBasis(st){
     if(p.stocked===false)continue;                 /* till buttons and the like hold no stock */
     const k=normCode(p.code);const d=by[k]||{onHand:0,avg:null};
     const cc=(p.cost!=null&&p.cost!=="")?+p.cost:null;
-    rows.push({code:p.code,name:p.name||"",onHand:d.onHand||0,
+    rows.push({code:p.code,name:p.name||"",onHand:d.onHand||0,type:p.type||"goods",
+      price:(p.price!=null&&p.price!=="")?+p.price:null,sellable:p.sellable!==false,
       cost:(d.avg!=null?d.avg:cc),costFrom:(d.avg!=null?"its own lots":(cc!=null?"the catalogue cost":""))});
     seen[k]=1;}
   for(const r of inv)if(!seen[normCode(r.code)])   /* moved but never catalogued */
-    rows.push({code:r.code,name:r.name||"",onHand:r.onHand||0,cost:r.avgCost,
-      costFrom:r.avgCost!=null?"its own lots":""});
+    rows.push({code:r.code,name:r.name||"",onHand:r.onHand||0,type:"goods",price:null,sellable:true,
+      cost:r.avgCost,costFrom:r.avgCost!=null?"its own lots":""});
   return rows.sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))||String(a.code).localeCompare(String(b.code)));}
 
 function StockCountModal({st,act,onClose,show}){
   const [res,setRes]=useState(null);const [err,setErr]=useState("");const [fn,setFn]=useState("");
   const [date,setDate]=useState(today());const fileRef=useRef();
+  /* A shortfall is not always shrinkage. Stock sold at a fair or over the counter without going
+     through the till is a sale: it should take its cost with it and book what it earned. The count
+     sets a default and any line can differ. */
+  const [shortAs,setShortAs]=useState("adjustment");const [as,setAs]=useState({});
+  const saleChans=useMemo(()=>(st.channels||[]).filter(c=>c.dir==="out"&&isSaleKind(c.kind)).map(c=>c.name),[st.channels]);
+  const [chan,setChan]=useState("");
+  /* a channel of its own by default: folding these into the till channel would put money the till
+     never saw into the in-person takings, and the Finance reconciliation would never square again */
+  useEffect(()=>{if(!chan)setChan("External sale");},[]);
   const basis=useMemo(()=>countBasis(st),[st.catalogue,st.ledger]);
   function dl(){const head=["Product code","Name","On hand (app)","Counted"];
     downloadXlsx("Rosa-Mystica_Stock-count-sheet.xlsx",
@@ -2079,7 +2089,8 @@ function StockCountModal({st,act,onClose,show}){
       if(!b){problems.push("Row "+(i+1)+": \u201c"+code+"\u201d is not in the catalogue or the ledger.");continue;}
       const delta=Math.round((counted-b.onHand)*1e6)/1e6;
       if(!delta){agree++;continue;}
-      lines.push({code:b.code,name:b.name,onHand:b.onHand,counted,delta,cost:b.cost,costFrom:b.costFrom});}
+      lines.push({code:b.code,name:b.name,onHand:b.onHand,counted,delta,cost:b.cost,costFrom:b.costFrom,
+        price:b.price,type:b.type,sellable:b.sellable});}
     const short=lines.filter(l=>l.delta<0),found=lines.filter(l=>l.delta>0);
     const noCost=found.filter(l=>l.cost==null);
     const valUp=found.reduce((a,l)=>a+(l.cost||0)*l.delta,0);
@@ -2091,8 +2102,15 @@ function StockCountModal({st,act,onClose,show}){
     if(nm.endsWith(".csv")){rd.onload=()=>{try{ingest(csvParse(String(rd.result)));}catch(x){setErr("Couldn't parse that CSV.");}};rd.readAsText(f);}
     else{rd.onload=()=>{try{ingest(xlsxToRows(rd.result));}catch(x){setErr("Couldn't read that .xlsx.");}};rd.readAsArrayBuffer(f);}
     e.target.value="";}
-  const ok=res&&res.lines.length&&!res.problems.length&&date;
-  function run(){if(!ok)return;act.applyStockCount(res.lines,date);
+  const asOf=l=>(l.delta>0?"found":(as[normCode(l.code)]||shortAs));
+  const marked=res?res.lines.map(l=>Object.assign({},l,{as:asOf(l)})):[];
+  const asSale=marked.filter(l=>l.as==="sale");
+  const unpriced=asSale.filter(l=>l.price==null||!(l.price>0));
+  const saleNet=asSale.reduce((a,l)=>{if(l.price==null)return a;
+    const rate=vatRatesOf(st)[l.type]!=null?vatRatesOf(st)[l.type]:vatRatesOf(st).goods;
+    return a+(-l.delta)*(rate>0?l.price/(1+rate/100):l.price);},0);
+  const ok=res&&res.lines.length&&!res.problems.length&&date&&!unpriced.length&&(!asSale.length||chan.trim());
+  function run(){if(!ok)return;act.applyStockCount(marked,date,chan.trim());
     show("Stock count applied \u00b7 "+res.lines.length+" adjustment"+(res.lines.length>1?"s":""),true);onClose();}
   return html`<${Modal} wide=${true} title="Stock count" onClose=${onClose}
     footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button><button class="btn primary" onClick=${run} disabled=${!ok}>Write ${ok?res.lines.length:""} adjustment${ok&&res.lines.length===1?"":"s"}</button></${React.Fragment}>`}>
@@ -2104,6 +2122,18 @@ function StockCountModal({st,act,onClose,show}){
       <span style=${{flex:1}}></span>
       <label class="note">Count date</label><input type="date" class="filter" style=${{width:"auto"}} value=${date} onInput=${e=>setDate(e.target.value)}/>
     </div>
+    <div class="hintrow" style=${{marginTop:"10px"}}>
+      <label class="note">A shortfall means</label>
+      <select class="filter" style=${{width:"auto"}} value=${shortAs} onChange=${e=>{setShortAs(e.target.value);setAs({});}}>
+        <option value="adjustment">it is simply gone \u2014 an adjustment</option>
+        <option value="sale">it was sold \u2014 book the takings</option></select>
+      ${shortAs==="sale"||asSale.length?html`<${React.Fragment}><label class="note">on</label>
+        <input class="filter" style=${{width:"170px"}} list="countchans" value=${chan} onInput=${e=>setChan(e.target.value)} placeholder="External sale"/>
+        <datalist id="countchans">${saleChans.map(c=>html`<option key=${c} value=${c}></option>`)}</datalist></${React.Fragment}>`:null}
+    </div>
+    <div class="note" style=${{marginTop:"6px"}}>${shortAs==="sale"
+      ? "Each short line goes out as a sale at its catalogue price, so it takes its cost with it and books what it earned \u2014 for stock sold away from the till. Dated the count date; set that above if the sales happened earlier."
+      : "Each short line goes out as an adjustment: the stock leaves, but nothing is counted as takings. Breakage, miscounts, anything that did not earn."}</div>
     ${err?html`<div class="err" style=${{marginTop:"10px"}}>${err}</div>`:null}
     ${res?html`<${React.Fragment}>
       <div class="kpis" style=${{marginTop:"14px"}}>
@@ -2113,13 +2143,18 @@ function StockCountModal({st,act,onClose,show}){
         <div class="kpi"><div class="k">Not counted</div><div class="v">${num(res.blank)}</div><div class="f">left exactly as they are</div></div>
       </div>
       ${res.noCost.length?html`<div class="err" style=${{marginTop:"12px"}}>${num(res.noCost.length)} found line${res.noCost.length>1?"s have":" has"} no known cost \u2014 no purchase lot and no catalogue cost, so ${res.noCost.length>1?"they":"it"} would enter stock at zero and later sell at an apparent 100% margin. Set a cost on ${res.noCost.length>1?"those products":"that product"} first, or accept that ${res.noCost.length>1?"they":"it"} carries none: ${res.noCost.slice(0,4).map(l=>l.code).join(", ")}${res.noCost.length>4?", \u2026":""}</div>`:null}
+      ${unpriced.length?html`<div class="err" style=${{marginTop:"12px"}}>${num(unpriced.length)} line${unpriced.length>1?"s are":" is"} marked as sold but ${unpriced.length>1?"carry":"carries"} no price, so there is nothing to book as takings: ${unpriced.slice(0,4).map(l=>l.code).join(", ")}${unpriced.length>4?", \u2026":""}. Give ${unpriced.length>1?"them":"it"} a price, or treat ${unpriced.length>1?"them":"it"} as an adjustment.</div>`:null}
+      ${asSale.length?html`<div class="note" style=${{marginTop:"10px"}}>${num(asSale.length)} line${asSale.length>1?"s":""} will be written as sales on <b>${chan||"\u2014"}</b>, booking ${money(saleNet)} of takings net of VAT, with their cost coming off the shelf in FIFO order. The other short lines stay adjustments.</div>`:null}
       ${res.problems.length?html`<div class="err" style=${{marginTop:"10px"}}>${res.problems.slice(0,6).map(x=>html`<div>${x}</div>`)}${res.problems.length>6?html`<div>\u2026 and ${res.problems.length-6} more</div>`:null}</div>`:null}
       ${res.lines.length?html`<div class="tablewrap" style=${{marginTop:"12px",maxHeight:"300px",overflow:"auto"}}>
-        <table><thead><tr><th>Code</th><th>Product</th><th class="num">App</th><th class="num">Counted</th><th class="num">Writes</th><th>Cost used</th></tr></thead>
-        <tbody>${res.lines.map(l=>html`<tr key=${l.code}>
+        <table><thead><tr><th>Code</th><th>Product</th><th class="num">App</th><th class="num">Counted</th><th class="num">Writes</th><th>Treated as</th><th>Cost used</th></tr></thead>
+        <tbody>${marked.map(l=>html`<tr key=${l.code}>
           <td class="code">${l.code}</td><td>${l.name||html`<span class="faint">unlinked</span>`}</td>
           <td class="num">${num(l.onHand)}</td><td class="num">${num(l.counted)}</td>
           <td class="num mono" style=${{color:l.delta<0?"var(--bad)":"var(--good)"}}>${l.delta>0?"+":""}${num(l.delta)}</td>
+          <td>${l.delta>0?html`<span class="note">found</span>`:html`<select class="cellinput" style=${{width:"auto"}} value=${l.as} onChange=${e=>setAs(o=>Object.assign({},o,{[normCode(l.code)]:e.target.value}))}>
+            <option value="adjustment">adjustment</option><option value="sale">sold</option></select>`}
+            ${l.as==="sale"&&(l.price==null||!(l.price>0))?html`<div class="meta" style=${{color:"var(--bad)"}}>no price</div>`:(l.as==="sale"?html`<div class="meta">at ${money(l.price)}</div>`:null)}</td>
           <td class="note">${l.delta<0?"from its lots (FIFO)":(l.cost!=null?money(l.cost)+" from "+l.costFrom:html`<span class="err">none known</span>`)}</td></tr>`)}</tbody></table></div>`:null}
       ${res.lines.length?html`<div class="note" style=${{marginTop:"10px"}}>These go in under batch <span class="code">COUNT-${date}</span>, so the whole count can be filtered or removed in one go. One Undo follows.</div>`:null}
     </${React.Fragment}>`:null}
@@ -2755,16 +2790,21 @@ function App(){
     /* The count never replaces anything: it appends the difference. Short lines go out on an
        adjustment-kind channel, so stock leaves without being booked as a sale; found lines come
        in carrying whatever cost basis the product already had. */
-    applyStockCount:(lines,date)=>setSt(s=>{undoRef.current=s;
+    applyStockCount:(lines,date,saleChan)=>setSt(s=>{undoRef.current=s;
       const ref="COUNT-"+date;const now=new Date().toISOString();let ch=s.channels.slice();const add=[];
       const ensure=(name,dir,kind)=>{if(!ch.some(c=>c.name===name))ch=[...ch,{id:uid(),name,dir,mode:null,kind}];};
       if(lines.some(l=>l.delta>0))ensure("Stock count (found)","in",null);
-      if(lines.some(l=>l.delta<0))ensure("Stock count (short)","out","adjustment");
-      for(const l of lines){if(!l.delta)continue;const up=l.delta>0;
-        add.push({id:uid(),date,channel:up?"Stock count (found)":"Stock count (short)",dir:up?"in":"out",
+      if(lines.some(l=>l.delta<0&&l.as!=="sale"))ensure("Stock count (short)","out","adjustment");
+      /* a shortfall booked as a sale goes on a sale-kind channel at the shelf price, so it books
+         takings and takes its cost off in FIFO order like any other sale */
+      if(saleChan&&lines.some(l=>l.delta<0&&l.as==="sale"))ensure(saleChan,"out","sale");
+      for(const l of lines){if(!l.delta)continue;const up=l.delta>0;const sold=!up&&l.as==="sale";
+        add.push({id:uid(),date,
+          channel:up?"Stock count (found)":(sold?saleChan:"Stock count (short)"),dir:up?"in":"out",
           batchRef:ref,code:l.code,qty:Math.abs(l.delta),
-          unitPrice:(up&&l.cost!=null)?l.cost:null,vatRate:null,
-          note:"stock count \u00b7 app "+l.onHand+", counted "+l.counted,createdAt:now});}
+          unitPrice:up?(l.cost!=null?l.cost:null):(sold?(l.price!=null?l.price:null):null),vatRate:null,
+          note:(sold?"sold away from the till \u00b7 ":"stock count \u00b7 ")+"app "+l.onHand+", counted "+l.counted,
+          createdAt:now});}
       return {...s,channels:ch,ledger:[...s.ledger,...add]};}),
     openWipe:()=>setModal({type:"wipe"}),
     /* a wipe clears stock data; the settlement history and the setup survive unless asked for */
