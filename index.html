@@ -743,7 +743,13 @@ function prepareMovements(raw,st,warnings0,opts){
   const movements=[];const stage={};const newCh={};let dup=0;
   for(const mv0 of raw){
     let mv=mv0;
-    if(mv.code&&!catSet.has(normCode(mv.code))&&mv.providerRef){
+    /* The article-number bridge fills in a code a FILE did not resolve — that is its whole job, and
+       on an import the code in the file is the supplier's to give. But an invoice line's code is
+       yours: you typed it. So when posting, the bridge only fires where the code is still the
+       supplier's own article number, i.e. nothing of yours has been put there yet. Otherwise a
+       deliberate regrouping is silently undone on its way to the ledger. */
+    const codeIsYours=opts&&opts.respectCode&&mv.code&&normCode(mv.code)!==normCode(mv.providerRef||"");
+    if(mv.code&&!codeIsYours&&!catSet.has(normCode(mv.code))&&mv.providerRef){
       const hit=sidx.lookup(mv.provider,mv.providerRef);
       if(hit&&normCode(hit)!==normCode(mv.code)){mv=Object.assign({},mv,{code:hit});matchedRef++;}}
     const s=sig(mv);if(existing.has(s)||(!(opts&&opts.distinctLines)&&seen.has(s))){dup++;continue;}seen.add(s);
@@ -2228,14 +2234,19 @@ function RecodeModal({st,act,onClose,show}){
         const moves0=st.ledger.filter(x=>normCode(x.code)===normCode(from)).length;
         pairs.push({from:p.code,to:p.code,name:p.name||"",newName,moves:moves0,dls:0,into:""});continue;}
       const hits=catTaken[normCode(to)]&&normCode(catTaken[normCode(to)])!==normCode(from);
-      if(!hits&&taken[normCode(to)]){problems.push("Row "+(i+1)+": “"+to+"” is used twice in this file.");continue;}
+      /* Several rows aiming at one code that does not exist yet: a hundred of a supplier's magnet
+         variants becoming one product of your own. That is a fold like any other — the first row
+         creates the code and the rest join it — so it is only a mistake when folding is off. */
+      const repeated=!hits&&!!taken[normCode(to)];
+      if(repeated&&!allowMerge){problems.push("Row "+(i+1)+": “"+to+"” is used twice in this file. Tick “fold duplicates together” below if these rows are all one product.");continue;}
       if(hits&&!allowMerge){
         problems.push("Row "+(i+1)+": “"+to+"” already belongs to another product ("+(byCode[normCode(to)]||{}).name+"). Tick “fold duplicates together” below if they are the same product.");continue;}
-      taken[normCode(to)]=1;
+      if(!taken[normCode(to)])taken[normCode(to)]=newName||p.name||to;
       const moves=st.ledger.filter(x=>normCode(x.code)===normCode(from)).length;
       const dls=(st.invoices||[]).reduce((a,inv)=>a+(inv.lines||[]).filter(l=>normCode(l.code)===normCode(from)).length,0);
-      const row={from:p.code,to,name:p.name||"",newName,moves,dls,into:hits?((byCode[normCode(to)]||{}).name||to):""};
-      (hits?merges:pairs).push(row);}
+      const row={from:p.code,to,name:p.name||"",newName,moves,dls,
+        into:hits?((byCode[normCode(to)]||{}).name||to):(repeated?String(taken[normCode(to)]):"")};
+      ((hits||repeated)?merges:pairs).push(row);}
     setRes({pairs,merges,problems,blank,same});
     setErr((pairs.length+merges.length)?"":(problems.length?"Nothing can be applied until the problems below are fixed.":"No new codes filled in — the New code column is empty on every row."));}
   function onFile(e){const f=e.target.files&&e.target.files[0];if(!f)return;setErr("");setRes(null);setFn(f.name);
@@ -2260,7 +2271,7 @@ function RecodeModal({st,act,onClose,show}){
     ${err?html`<div class="err">${err}</div>`:null}
     ${res?html`<${React.Fragment}>
       <div class="kpis" style=${{marginTop:"4px"}}>
-        <div class="kpi"><div class="k">To re-code</div><div class="v">${num(res.pairs.length)}</div>${(res.merges||[]).length?html`<div class="f">${num(res.merges.length)} of them folded into an existing product</div>`:null}</div>
+        <div class="kpi"><div class="k">To re-code</div><div class="v">${num(res.pairs.length)}</div>${(res.merges||[]).length?html`<div class="f">${num(res.merges.length)} folded into ${num(new Set(res.merges.map(m=>normCode(m.to))).size)} product${new Set(res.merges.map(m=>normCode(m.to))).size===1?"":"s"}</div>`:null}</div>
         <div class="kpi"><div class="k">Movements relinked</div><div class="v">${num(res.pairs.reduce((a,p)=>a+p.moves,0))}</div></div>
         <div class="kpi"><div class="k">Renamed</div><div class="v">${num(res.pairs.filter(x=>x.newName).length+(res.merges||[]).filter(x=>x.newName).length)}</div><div class="f">new shelf names</div></div>
         <div class="kpi"><div class="k">Left alone</div><div class="v">${num(res.blank+res.same)}</div><div class="f">${num(res.blank)} blank · ${num(res.same)} already right</div></div>
@@ -2939,7 +2950,7 @@ function App(){
           note:l.name||"",country:inv.country||"",provider:inv.provider||"",providerRef:l.supplierRef||"",
           _name:l.name||"",_type:l.type||guessType(code)});}
       if(!raw.length)return s;
-      const prep=prepareMovements(raw,s,[],{distinctLines:true});
+      const prep=prepareMovements(raw,s,[],{distinctLines:true,respectCode:true});
       const now=new Date().toISOString();
       const ledger=[...s.ledger,...prep.movements.map(m=>({...m,id:uid(),createdAt:now}))];
       const staging=mergeStaging(s.staging,prep.staging,new Set(s.catalogue.map(p=>normCode(p.code))));
@@ -2947,7 +2958,10 @@ function App(){
       return {...s,ledger,staging,invoices};}),
     unpostInvoice:id=>setSt(s=>{const inv=(s.invoices||[]).find(x=>x.id===id);if(!inv||inv.status!=="posted")return s;
       undoRef.current=s;
-      return {...s,ledger:s.ledger.filter(r=>(r.batchRef||"")!==inv.batchRef),
+      /* the same rule as any other deletion: staged entries are a readout of the ledger, so taking
+         the movements away recounts them and drops the ones with nothing left behind them */
+      const led=s.ledger.filter(r=>(r.batchRef||"")!==inv.batchRef);
+      return {...s,ledger:led,staging:restage(led,s.staging),
         invoices:s.invoices.map(x=>x.id===id?Object.assign({},x,{status:"draft",postedAt:""}):x)};}),
     importLedger:parsed=>setSt(s=>{const now=new Date().toISOString();
       const channels=s.channels.slice();

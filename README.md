@@ -386,3 +386,10 @@ same totals plus daily detail.
     it belongs to starts. ✅
 24. Several of a supplier's articles can share one product code: each line still posts, each keeping
     its article number and description, while the shop sees one product. ✅
+25. **The duplicate guard stops eating an invoice's own lines.** Fingerprinting a movement by code,
+    quantity and price alone made the lines of a regrouped invoice identical twins: 69 magnet lines
+    posted as 5 movements, silently, after the gate had said the invoice agreed to the cent. The
+    fingerprint now carries the supplier's article number, and an invoice's lines are never compared
+    against each other — a reorder of the same article is a real second line. Alongside it: folding
+    several records into a code that does not exist yet is permitted when folding is on, and the
+    article-number bridge no longer overrides a code typed on an invoice line. ✅
