@@ -393,3 +393,11 @@ same totals plus daily detail.
     against each other — a reorder of the same article is a real second line. Alongside it: folding
     several records into a code that does not exist yet is permitted when folding is on, and the
     article-number bridge no longer overrides a code typed on an invoice line. ✅
+26. **Regular lines.** The reorder screen was a rule — what has fallen to its reorder point — which
+    says nothing about the handful of lines the shop always keeps. Products can now be starred, from
+    the catalogue row or the product editor, and Inventory → Reorder switches between the rule, the
+    starred lines and both. Either way it is grouped under supplier headings with a subtotal, so a
+    block is one order to place, and carries the volume (received, sold, on hand) beside the money
+    per unit: average landed cost across every receipt, the catalogue price netted to VAT, the
+    margin that implies and the cash profit per unit. A starred line that has never been bought is
+    listed too, its catalogue cost standing in for the average and marked as a stand-in. ✅

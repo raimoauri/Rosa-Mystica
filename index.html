@@ -152,6 +152,11 @@ tr:hover .rowact{opacity:1}
 .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
 .dot.on{background:var(--good)} .dot.no{background:var(--faint)}
 .pill{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--muted)}
+.starbtn{background:none;border:0;cursor:pointer;font-size:15px;line-height:1;padding:2px 3px;color:var(--faint)}
+.starbtn.on{color:var(--accent)}
+.starbtn:hover{color:var(--accent)}
+.suphead td{background:var(--surface-2);font-size:11.5px;letter-spacing:.03em;font-weight:600;color:var(--muted);padding-top:9px;padding-bottom:9px}
+.suphead .sub{font-weight:400;color:var(--faint);letter-spacing:0}
 
 /* filter bar */
 .toolbar{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
@@ -1194,9 +1199,12 @@ function Catalogue({st,act,openProduct,q,setQ}){
       <span class="sp" style=${{flex:1}}></span><span class="note">${rows.length} of ${st.catalogue.length}</span>
     </div>
     <div class="panel"><div class="tablewrap"><table><thead><tr>
+      <th style=${{width:"26px"}} title="A line you reorder regularly"></th>
       ${Th("code","Code")}${Th("name","Name")}${Th("author","Author")}${Th("type","Type")}${Th("category","Category")}${Th("supplier","Supplier")}
       ${Th("cost","Cost","num")}${Th("price","Price","num")}${Th("stock","On hand","num")}${Th("last","Last ordered")}<th>Flags</th></tr></thead>
       <tbody>${rows.map(p=>{const k=normCode(p.code);return html`<tr key=${k} class="clickable" onClick=${()=>openProduct(p)}>
+        <td><button class=${"starbtn"+(p.favourite?" on":"")} title=${p.favourite?"A regular line — in Inventory → Reorder":"Mark as a line you reorder regularly"}
+          onClick=${e=>{e.stopPropagation();act.toggleFavourite(p.code);}}>${p.favourite?"★":"☆"}</button></td>
         <td class="code">${p.code}</td>
         <td><span class="name">${p.name||html`<span class="faint">(unnamed)</span>`}</span></td>
         <td class="muted">${p.author||html`<span class="faint">\u2014</span>`}${p.year?html`<div class="meta">${p.year}</div>`:null}</td>
@@ -1206,14 +1214,14 @@ function Catalogue({st,act,openProduct,q,setQ}){
         <td class="num mono">${p.cost==null||p.cost===""?"—":money(+p.cost)}</td><td class="num mono">${p.price==null||p.price===""?"—":money(+p.price)}</td>
         <td class="num">${num(stock[k]||0)}</td><td class="mono muted">${lastOrd[k]?fmtD(lastOrd[k]):"—"}</td>
         <td><span class="pill"><span class=${"dot "+(p.sellable!==false?"on":"no")} title=${p.sellable!==false?"Sellable":"Not sellable"}></span>${p.online?html`<span class="badge" style=${{padding:"1px 6px"}}>online</span>`:null}</span></td></tr>`;})}
-      ${rows.length===0?html`<tr><td colSpan="11"><div class="empty"><${Icon} name="catalogue"/><div class="big">${st.catalogue.length===0?"The catalogue is empty":"Nothing matches"}</div><div class="note">${st.catalogue.length===0?"Add a product, or confirm items from staging after a ledger import.":"Adjust the filters or search."}</div>${st.catalogue.length===0?html`<button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button>`:null}</div></td></tr>`:null}
+      ${rows.length===0?html`<tr><td colSpan="12"><div class="empty"><${Icon} name="catalogue"/><div class="big">${st.catalogue.length===0?"The catalogue is empty":"Nothing matches"}</div><div class="note">${st.catalogue.length===0?"Add a product, or confirm items from staging after a ledger import.":"Adjust the filters or search."}</div>${st.catalogue.length===0?html`<button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button>`:null}</div></td></tr>`:null}
       </tbody></table></div></div>
   </div>`;}
 
 /* secure, atomic product editor — product code is the unique anchor */
 function ProductModal({st,act,editing,fromStaging,onClose,show}){
   const orig=editing||{};const origCode=editing?editing.code:null;
-  const blank={code:"",type:"goods",name:"",author:"",year:"",category:"",supplier:"",supplierRef:"",cost:"",price:"",sellable:true,stocked:true,online:false,reorderPoint:"",notes:""};
+  const blank={code:"",type:"goods",name:"",author:"",year:"",category:"",supplier:"",supplierRef:"",cost:"",price:"",sellable:true,stocked:true,online:false,favourite:false,reorderPoint:"",notes:""};
   const [f,setF]=useState(()=>Object.assign({},blank,editing||{},
     (fromStaging&&editing?{supplier:editing.provider||"",supplierRef:editing.providerRef||""}:{}),
     /* a till button takes money but holds no stock — start it that way */
@@ -1237,7 +1245,7 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
   function commit(){if(!valid)return;
     const clean={code:f.code.trim(),type:f.type,name:f.name.trim(),author:f.author.trim(),year:String(f.year).trim(),
       category:f.category.trim(),supplier:f.supplier.trim(),supplierRef:(f.supplierRef||"").trim(),cost:f.cost===""?null:parseNum(f.cost),price:f.price===""?null:parseNum(f.price),
-      sellable:!!f.sellable,stocked:f.stocked!==false,online:!!f.online,reorderPoint:f.reorderPoint===""?null:parseNum(f.reorderPoint),notes:f.notes.trim()};
+      sellable:!!f.sellable,stocked:f.stocked!==false,online:!!f.online,favourite:!!f.favourite,reorderPoint:f.reorderPoint===""?null:parseNum(f.reorderPoint),notes:f.notes.trim()};
     act.commitProduct(clean,origCode,fromStaging);
     show(editing?"Product saved":"Product added");onClose();}
   const canType=TYPES;
@@ -1273,6 +1281,7 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
       <label class="switch"><input type="checkbox" checked=${!!f.sellable} onChange=${e=>up("sellable",e.target.checked)}/> Sellable</label>
       <label class="switch" title="Untick for things that take money but hold no stock — a till button, a gift card, a service. They keep their revenue but stay out of stock figures and the reorder list."><input type="checkbox" checked=${f.stocked!==false} onChange=${e=>up("stocked",e.target.checked)}/> Stock-tracked</label>
       <label class="switch"><input type="checkbox" checked=${!!f.online} onChange=${e=>up("online",e.target.checked)}/> Online</label>
+      <label class="switch" title="A line you reorder regularly. Starred products are gathered in Inventory → Reorder, grouped by supplier, whether or not they have run down."><input type="checkbox" checked=${!!f.favourite} onChange=${e=>up("favourite",e.target.checked)}/> ★ Regular line</label>
     </div>
     <${Field} label="Reorder point (blank = reorder only when out of stock)">${html`<input class="mono" type="text" inputmode="numeric" value=${f.reorderPoint} onInput=${e=>up("reorderPoint",e.target.value)}/>`}</${Field}>
     <${Field} label="Notes">${html`<input type="text" value=${f.notes} onInput=${e=>up("notes",e.target.value)}/>`}</${Field}>
@@ -2535,6 +2544,18 @@ function Analytics({st,act,show}){
    by the line's own rate when present, else by the product type's rate from settings. */
 function vatRatesOf(st){const v=(st.settings&&st.settings.vatRates)||{};return {book:v.book==null?13.5:+v.book,goods:v.goods==null?25.5:+v.goods,other:v.other==null?0:+v.other};}
 function saleRateFor(p,st){const vr=vatRatesOf(st);const t=p&&p.type;if(t&&vr[t]!=null)return vr[t];return vr.goods;}
+/* What the shelf price implies against what the thing costs to buy in. The price is the
+   catalogue's, netted to VAT — the same convention the batch panel uses, so the two screens
+   cannot disagree — and the cost is the weighted average landed cost of everything ever
+   received, which is what the next order will resemble. The FIFO unit cost answers a different
+   question (what the units still on the shelf cost) and stays where it is. */
+function priceEconomics(p,st,avgCost){
+  const price=(p&&p.price!=null&&p.price!=="")?+p.price:null;
+  const saleRate=saleRateFor(p,st);
+  const priceNet=(price!=null&&price>0)?(saleRate>0?price/(1+saleRate/100):price):null;
+  const sellable=p?p.sellable!==false:true;
+  const ok=sellable&&priceNet!=null&&priceNet>0&&avgCost!=null;
+  return {price,priceNet,margin:ok?(priceNet-avgCost)/priceNet:null,profitUnit:ok?priceNet-avgCost:null};}
 function netCostUnit(m){const gross=+m.unitPrice||0;const r=m.vatRate==null?null:+m.vatRate;return (r&&r>0)?gross/(1+r/100):gross;}
 /* An explicit 0 on a sale line means the amount is already net — the same as it has always
    meant on a purchase line. Only a blank falls back to the product type's rate. */
@@ -2570,9 +2591,11 @@ function computeInventory(st){
     const unitCost=onHand>0?onHandValue/onHand:null;
     const lastIn=ins.length?ins[ins.length-1]:null;
     const avgCost=received>0?lots.reduce((a,l)=>a+l.qty*l.cost,0)/received:null;
-    rows.push({code:mvs[0].code,name:p?p.name:"",inCat:!!p,sellable:p?p.sellable!==false:true,stocked:p?p.stocked!==false:true,
+    rows.push(Object.assign({code:mvs[0].code,name:p?p.name:"",inCat:!!p,sellable:p?p.sellable!==false:true,stocked:p?p.stocked!==false:true,
+      favourite:!!(p&&p.favourite),
       received,sold,shrink,shrinkCost,onHand,unmatched,sellThrough:received>0?sold/received:null,onHandValue,unitCost,cogs,revenue,revenueNet,realProfit,roi,avgCost,reorderPoint:(p&&p.reorderPoint!=null)?+p.reorderPoint:0,
-      provider:(p&&p.supplier)||(lastIn?lastIn.provider:"")||"",providerRef:(p&&p.supplierRef)||(lastIn?lastIn.providerRef:"")||"",lastInDate:lastIn?lastIn.date:""});}
+      provider:(p&&p.supplier)||(lastIn?lastIn.provider:"")||"",providerRef:(p&&p.supplierRef)||(lastIn?lastIn.providerRef:"")||"",lastInDate:lastIn?lastIn.date:""},
+      priceEconomics(p,st,avgCost)));}
   return rows;
 }
 /* Per-invoice (batch) progress — FIFO lot→batch attribution from the one ledger. */
@@ -2622,6 +2645,7 @@ function computeBatches(st){
 }
 function Inventory({st,act,show}){
   const [view,setView]=useState("stock");const [q,setQ]=useState("");const [open,setOpen]=useState({});const [fstock,setFstock]=useState("");const [sort,setSort]=useState({k:"onHandValue",d:-1});
+  const [rmode,setRmode]=useState("low");const [rsort,setRsort]=useState({k:"sold",d:-1});const [rq,setRq]=useState("");
   const rows=useMemo(()=>computeInventory(st),[st]);
   const batches=useMemo(()=>computeBatches(st),[st]);
   let onHand=0,stockVal=0,profit=0,cogs=0,inStock=0,recvT=0,soldT=0,shrinkU=0,shrinkC=0,noCost=0,noCostN=0;
@@ -2637,9 +2661,44 @@ function Inventory({st,act,show}){
   const S=k=>setSort(s=>s.k===k?{k,d:-s.d}:{k,d:-1});
   const arrow=k=>sort.k===k?html`<span class="faint"> ${sort.d>0?"↑":"↓"}</span>`:null;
   const Th=(k,label,cls)=>html`<th class=${"sortable"+(cls?" "+cls:"")} onClick=${()=>S(k)}>${label}${arrow(k)}</th>`;
-  const reorder=rows.filter(r=>r.stocked&&r.onHand<=(r.reorderPoint||0)&&r.sellable&&(r.sold>0||r.received>0)).sort((a,b)=>b.sold-a.sold);
-  function reorderCSV(){const head=["code","name","provider","provider_ref","last_cost","sold","on_hand","reorder_point"];
-    const rr=reorder.map(r=>[r.code,r.name,r.provider,r.providerRef,r.avgCost==null?"":r.avgCost.toFixed(2),r.sold,r.onHand,r.reorderPoint||0]);
+  /* Two ways onto this screen, and they answer different questions: what has run down (the rule),
+     and what you simply always keep (the star). A starred line is listed whether or not it has run
+     down — including one that has never moved, which would otherwise be missing from the very
+     screen meant for ordering it. Such a line has no receipts to average, so its catalogue cost
+     stands in for the average, and the column says so. */
+  const lowList=rows.filter(r=>r.stocked&&r.onHand<=(r.reorderPoint||0)&&r.sellable&&(r.sold>0||r.received>0));
+  const reorder=lowList;
+  const starRows=useMemo(()=>{
+    const have={};for(const r of rows)have[normCode(r.code)]=1;
+    const blanks=(st.catalogue||[]).filter(p=>p.favourite&&!have[normCode(p.code)]).map(p=>{
+      const c=(p.cost!=null&&p.cost!=="")?+p.cost:null;
+      return Object.assign({code:p.code,name:p.name||"",inCat:true,sellable:p.sellable!==false,stocked:p.stocked!==false,
+        favourite:true,received:0,sold:0,shrink:0,shrinkCost:0,onHand:0,unmatched:0,sellThrough:null,onHandValue:0,
+        unitCost:null,cogs:0,revenue:0,revenueNet:0,realProfit:0,roi:null,avgCost:c,costIsListed:true,
+        reorderPoint:p.reorderPoint!=null?+p.reorderPoint:0,provider:p.supplier||"",providerRef:p.supplierRef||"",
+        lastInDate:""},priceEconomics(p,st,c));});
+    return rows.filter(r=>r.favourite).concat(blanks);},[rows,st]);
+  const rlist=(()=>{
+    let base;
+    if(rmode==="star")base=starRows;
+    else if(rmode==="both"){const seen={};base=[];
+      for(const r of lowList.concat(starRows)){const k=normCode(r.code);if(seen[k])continue;seen[k]=1;base.push(r);}}
+    else base=lowList;
+    const ql=rq.trim().toLowerCase();
+    return ql?base.filter(r=>[r.code,r.name,r.provider,r.providerRef].join(" ").toLowerCase().includes(ql)):base;})();
+  const rgroups=(()=>{
+    const by={};for(const r of rlist){const k=r.provider||"— no supplier —";(by[k]=by[k]||[]).push(r);}
+    const vl=(r,k)=>{const x=r[k];return x==null?-Infinity:(typeof x==="number"?x:String(x).toLowerCase());};
+    return Object.keys(by).sort((a,b)=>a.localeCompare(b)).map(sup=>{
+      const list=[...by[sup]].sort((a,b)=>{const x=vl(a,rsort.k),y=vl(b,rsort.k);return (x<y?-1:x>y?1:0)*rsort.d;});
+      return {sup,list,onHand:list.reduce((a,r)=>a+r.onHand,0),sold:list.reduce((a,r)=>a+r.sold,0),
+              profit:list.reduce((a,r)=>a+(r.realProfit||0),0)};});})();
+  const RS=k=>setRsort(s=>s.k===k?{k,d:-s.d}:{k,d:-1});
+  const RTh=(k,label,cls,title)=>html`<th class=${"sortable"+(cls?" "+cls:"")} title=${title||null} onClick=${()=>RS(k)}>${label}${rsort.k===k?html`<span class="faint"> ${rsort.d>0?"↑":"↓"}</span>`:null}</th>`;
+  function reorderCSV(){const head=["supplier","code","name","provider_ref","received","sold","on_hand","reorder_point","avg_cost","price","margin_pct","profit_per_unit"];
+    const rr=[];for(const g of rgroups)for(const r of g.list)rr.push([g.sup,r.code,r.name,r.providerRef,r.received,r.sold,r.onHand,r.reorderPoint||0,
+      r.avgCost==null?"":r.avgCost.toFixed(2),r.price==null?"":(+r.price).toFixed(2),
+      r.margin==null?"":(r.margin*100).toFixed(1),r.profitUnit==null?"":r.profitUnit.toFixed(2)]);
     const csv=toCSV(head,rr);if(IN_FRAME||!downloadText("rosa-mystica_reorder_"+today()+".csv",csv,"text/csv"))act.openExport("Reorder list — CSV",csv);else show("Saved CSV");}
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Inventory</h2>
@@ -2672,11 +2731,30 @@ function Inventory({st,act,show}){
         <td class="num mono">${money(r.onHandValue)}</td>
         <td class="num">${r.roi==null?"—":pct(r.roi)}</td></tr>`)}</tbody></table></div></div>
     </${React.Fragment}>`:view==="reorder"?html`<${React.Fragment}>
-    <div class="rowbetween" style=${{marginBottom:"14px"}}><div class="note" style=${{maxWidth:"560px"}}>Sellable codes that are out of stock and have moved before. Provider and their reference are carried for re-ordering; your product code stays the anchor.</div>${reorder.length?html`<button class="btn" onClick=${reorderCSV}><${Icon} name="download"/>Reorder CSV</button>`:null}</div>
-    ${reorder.length===0?html`<div class="panel"><div class="empty"><${Icon} name="inventory"/><div class="big">Nothing to reorder</div><div class="note">Everything sellable is in stock.</div></div></div>`:
-    html`<div class="panel"><div class="tablewrap"><table><thead><tr><th>Code</th><th>Product</th><th>Provider</th><th>Provider ref</th><th class="num">Last cost</th><th class="num">Sold</th><th class="num">On hand</th><th class="num">Reorder pt</th></tr></thead>
-      <tbody>${reorder.map(r=>html`<tr key=${normCode(r.code)}><td class="code">${r.code}</td><td>${r.inCat?html`<span class="name">${r.name}</span>`:html`<span class="faint">unlinked</span>`}</td>
-        <td>${r.provider||"—"}</td><td class="code">${r.providerRef||"—"}</td><td class="num mono">${r.avgCost==null?"—":money(r.avgCost)}</td><td class="num">${num(r.sold)}</td><td class="num" style=${{color:r.onHand<0?"var(--bad)":"inherit"}}>${num(r.onHand)}</td><td class="num">${num(r.reorderPoint||0)}</td></tr>`)}</tbody></table></div></div>`}
+    <div class="toolbar">
+      <div class="seg"><button aria-pressed=${rmode==="low"} onClick=${()=>setRmode("low")}>Below reorder point${lowList.length?" · "+num(lowList.length):""}</button><button aria-pressed=${rmode==="star"} onClick=${()=>setRmode("star")}>★ Regular lines${starRows.length?" · "+num(starRows.length):""}</button><button aria-pressed=${rmode==="both"} onClick=${()=>setRmode("both")}>Both</button></div>
+      <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, product, supplier…" value=${rq} onInput=${e=>setRq(e.target.value)}/></div>
+      <span style=${{flex:1}}></span>
+      ${rlist.length?html`<button class="btn" onClick=${reorderCSV}><${Icon} name="download"/>Reorder CSV</button>`:null}
+    </div>
+    <div class="note" style=${{marginBottom:"14px",maxWidth:"760px"}}>${rmode==="low"?"Sellable, stock-tracked codes that have fallen to their reorder point and have moved before.":rmode==="star"?"The lines you have starred, whether or not they have run down. Star a product from the Catalogue, or in its editor.":"Starred lines and anything that has fallen to its reorder point, each listed once."} Grouped by supplier, so each block is one order to place. <b>Avg cost</b> is the weighted landed cost of every unit ever received — freight included, net of VAT — which is what the next order will resemble; it is not the FIFO cost of what is on the shelf. <b>Margin</b> and <b>profit per unit</b> read the catalogue price against it, netted to VAT.</div>
+    ${rlist.length===0?html`<div class="panel"><div class="empty"><${Icon} name="inventory"/><div class="big">${rmode==="star"?"Nothing starred yet":"Nothing to reorder"}</div><div class="note" style=${{maxWidth:"430px"}}>${rmode==="star"?"Star a product in the Catalogue — the ☆ in the first column — and the lines you reorder regularly gather here, grouped by supplier.":"Everything sellable is above its reorder point."}</div></div></div>`:
+    html`<div class="panel"><div class="tablewrap"><table><thead><tr><th style=${{width:"26px"}}></th>${RTh("code","Code")}${RTh("name","Product")}${RTh("received","Recv","num","units ever received")}${RTh("sold","Sold","num","units ever sold")}${RTh("onHand","On hand","num")}${RTh("reorderPoint","Reorder pt","num")}${RTh("avgCost","Avg cost","num","weighted average landed cost across every receipt")}${RTh("price","Price","num","the catalogue price, incl VAT")}${RTh("margin","Margin","num","against the price net of VAT")}${RTh("profitUnit","Profit/unit","num","price net of VAT, less average landed cost")}</tr></thead>
+      <tbody>${rgroups.map(g=>html`<${React.Fragment} key=${g.sup}>
+        <tr class="suphead"><td colSpan="11">${g.sup} <span class="sub">· ${num(g.list.length)} product${g.list.length===1?"":"s"} · ${num(g.onHand)} on hand · ${num(g.sold)} sold${g.profit?" · "+money(g.profit)+" profit":""}</span></td></tr>
+        ${g.list.map(r=>html`<tr key=${normCode(r.code)}>
+          <td>${r.inCat?html`<button class=${"starbtn"+(r.favourite?" on":"")} title=${r.favourite?"A regular line":"Mark as a line you reorder regularly"} onClick=${()=>act.toggleFavourite(r.code)}>${r.favourite?"★":"☆"}</button>`:null}</td>
+          <td class="code">${r.code}</td>
+          <td>${r.inCat?html`<span class="name">${r.name||"(unnamed)"}</span>`:html`<span class="faint">unlinked</span>`}${r.providerRef?html`<div class="meta code">${r.providerRef}</div>`:null}</td>
+          <td class="num">${r.received?num(r.received):html`<span class="faint">—</span>`}</td>
+          <td class="num">${r.sold?num(r.sold):html`<span class="faint">—</span>`}</td>
+          <td class="num" style=${{fontWeight:"500",color:r.onHand<0?"var(--bad)":(r.onHand<=(r.reorderPoint||0)?"var(--warn)":"inherit")}}>${num(r.onHand)}</td>
+          <td class="num faint">${num(r.reorderPoint||0)}</td>
+          <td class="num mono">${r.avgCost==null?html`<span class="faint">—</span>`:html`<span title=${r.costIsListed?"never received — the catalogue cost standing in":null}>${money(r.avgCost)}${r.costIsListed?html`<span class="faint">*</span>`:null}</span>`}</td>
+          <td class="num mono">${!r.sellable?html`<span class="faint">—</span>`:(r.price==null?html`<span class="faint">no price</span>`:money(r.price))}</td>
+          <td class="num mono" style=${{color:r.margin==null?"inherit":(r.margin<0?"var(--bad)":(r.margin<0.2?"inherit":"var(--good)"))}}>${r.margin==null?html`<span class="faint">—</span>`:pct(r.margin)}</td>
+          <td class="num mono" style=${{color:r.profitUnit==null?"inherit":(r.profitUnit<0?"var(--bad)":"inherit")}}>${r.profitUnit==null?html`<span class="faint">—</span>`:money(r.profitUnit)}</td></tr>`)}
+      </${React.Fragment}>`)}</tbody></table></div></div>`}
     </${React.Fragment}>`:view==="count"?html`<${CountPanel} st=${st} act=${act} show=${show}/>`:html`<${React.Fragment}>
     ${batches.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"470px"}}>Purchases that share a batch reference form an invoice. Record or import in-movements and each invoice's progress — sold vs received, capital recouped, ROI — builds here.</div></div></div>`:html`<${React.Fragment}>
     <div class="note" style=${{marginBottom:"14px",maxWidth:"700px"}}>Each row is one invoice / batch. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT. <b>Open a batch</b> to read it product by product — what each one cost landed, what it is priced at, and the margin that implies. Nothing here is editable; it is a reading of the ledger.</div>
@@ -2800,6 +2878,10 @@ function App(){
     removePostage:id=>setSt(s=>({...s,postage:(s.postage||[]).filter(x=>x.id!==id)})),
     setChannelMode:(id,mode)=>setSt(s=>({...s,channels:s.channels.map(c=>c.id===id?{...c,mode:(mode||null)}:c)})),
     setVatRate:(type,rate)=>setSt(s=>{const n=parseNum(rate);return {...s,settings:{...s.settings,vatRates:{...(s.settings.vatRates||{book:13.5,goods:25.5,other:0}),[type]:(n==null?0:n)}}};}),
+    /* Starring is a one-click edit on a product, kept apart from commitProduct so a star never
+       drags a half-filled form's values into the record. */
+    toggleFavourite:code=>setSt(s=>({...s,catalogue:s.catalogue.map(p=>
+      normCode(p.code)===normCode(code)?Object.assign({},p,{favourite:!p.favourite,updatedAt:new Date().toISOString()}):p)})),
     commitProduct:(clean,origCode,fromStaging)=>setSt(s=>{
       const nc=normCode(clean.code), oc=origCode?normCode(origCode):null;
       let catalogue=s.catalogue.slice();
