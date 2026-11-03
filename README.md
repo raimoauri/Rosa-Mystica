@@ -401,3 +401,10 @@ same totals plus daily detail.
     per unit: average landed cost across every receipt, the catalogue price netted to VAT, the
     margin that implies and the cash profit per unit. A starred line that has never been bought is
     listed too, its catalogue cost standing in for the average and marked as a stand-in. ✅
+27. **How many to order.** Each line on the reorder screen carries an editable quantity, proposed
+    from the rate it has actually been selling — units sold over the weeks the shop has held the
+    line, that window floored at four so a brisk first weekend cannot propose an absurd order —
+    covering a span set once on the toolbar, less what is on the shelf. Write-offs are not demand
+    and a line that has never sold gets no proposal. What you type is kept until the order is
+    placed, and each supplier block, and the screen, totals the units and what they will cost at
+    average landed cost. ✅

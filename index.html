@@ -157,6 +157,11 @@ tr:hover .rowact{opacity:1}
 .starbtn:hover{color:var(--accent)}
 .suphead td{background:var(--surface-2);font-size:11.5px;letter-spacing:.03em;font-weight:600;color:var(--muted);padding-top:9px;padding-bottom:9px}
 .suphead .sub{font-weight:400;color:var(--faint);letter-spacing:0}
+.suphead td.num{text-align:right}
+input.qtyin{width:68px;padding:5px 7px;font-size:12.5px;text-align:right}
+input.qtyin::placeholder{color:var(--faint);font-style:italic}
+.ordertot{display:flex;gap:10px;align-items:baseline;justify-content:flex-end;font-size:12.5px;color:var(--muted);margin-bottom:10px}
+.ordertot b{font-size:15px;color:var(--ink)}
 
 /* filter bar */
 .toolbar{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
@@ -568,12 +573,13 @@ const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 
 /* ---------- persistence ---------- */
 const SCHEMA=4;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
-function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],count:{lines:{}},
+function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],count:{lines:{}},order:{lines:{}},
   channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
   settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG"}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
   s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];s.count=s.count||{lines:{}};if(!s.count.lines)s.count.lines={};
+  s.order=s.order||{lines:{}};if(!s.order.lines)s.order.lines={};
   if(!s.channels||!s.channels.length)s.channels=[{id:uid(),name:"Purchase",dir:"in",mode:null}];
   s.channels=s.channels.map(c=>{const o=("mode" in c)?c:Object.assign({},c,{mode:(c.dir==="out"?inferMode(c.name):null)});
     return ("kind" in o)?o:Object.assign({},o,{kind:(o.dir==="out"?"sale":null)});});
@@ -2544,6 +2550,25 @@ function Analytics({st,act,show}){
    by the line's own rate when present, else by the product type's rate from settings. */
 function vatRatesOf(st){const v=(st.settings&&st.settings.vatRates)||{};return {book:v.book==null?13.5:+v.book,goods:v.goods==null?25.5:+v.goods,other:v.other==null?0:+v.other};}
 function saleRateFor(p,st){const vr=vatRatesOf(st);const t=p&&p.type;if(t&&vr[t]!=null)return vr[t];return vr.goods;}
+/* How fast a line actually sells, and therefore how much of it to order.
+
+   The rate is units sold divided by the weeks the shop has held the line — first receipt to
+   today — because you cannot sell what you have not had. That window is floored at four weeks:
+   without it, a line received on Friday that sold three over the weekend reads as 21 a week and
+   proposes an absurd order. Only sale lines count; an adjustment or a write-off is not demand.
+
+   The proposal is then enough to cover `weeks` of that rate, less what is on the shelf. It is a
+   starting number, not an instruction — every cell is editable and what you type is what is
+   ordered. */
+function orderRate(r,todayISO){
+  if(!r||!r.firstInDate||!(r.sold>0))return null;
+  const d0=new Date(r.firstInDate+"T00:00:00"),d1=new Date(todayISO+"T00:00:00");
+  if(isNaN(d0)||isNaN(d1))return null;
+  const weeks=Math.max(4,(d1-d0)/604800000);
+  return weeks>0?r.sold/weeks:null;}
+function orderSuggestion(r,weeksCover,todayISO){
+  const rate=orderRate(r,todayISO);if(rate==null)return null;
+  return Math.max(0,Math.ceil(rate*weeksCover)-(r.onHand||0));}
 /* What the shelf price implies against what the thing costs to buy in. The price is the
    catalogue's, netted to VAT — the same convention the batch panel uses, so the two screens
    cannot disagree — and the cost is the weighted average landed cost of everything ever
@@ -2589,12 +2614,13 @@ function computeInventory(st){
     /* the FIFO cost of the units still on the shelf — Stock value divided by what is left, which
        is not the average of everything ever received once an older lot has been sold through */
     const unitCost=onHand>0?onHandValue/onHand:null;
-    const lastIn=ins.length?ins[ins.length-1]:null;
+    const lastIn=ins.length?ins[ins.length-1]:null;const firstIn=ins.length?ins[0]:null;
     const avgCost=received>0?lots.reduce((a,l)=>a+l.qty*l.cost,0)/received:null;
     rows.push(Object.assign({code:mvs[0].code,name:p?p.name:"",inCat:!!p,sellable:p?p.sellable!==false:true,stocked:p?p.stocked!==false:true,
       favourite:!!(p&&p.favourite),
       received,sold,shrink,shrinkCost,onHand,unmatched,sellThrough:received>0?sold/received:null,onHandValue,unitCost,cogs,revenue,revenueNet,realProfit,roi,avgCost,reorderPoint:(p&&p.reorderPoint!=null)?+p.reorderPoint:0,
-      provider:(p&&p.supplier)||(lastIn?lastIn.provider:"")||"",providerRef:(p&&p.supplierRef)||(lastIn?lastIn.providerRef:"")||"",lastInDate:lastIn?lastIn.date:""},
+      provider:(p&&p.supplier)||(lastIn?lastIn.provider:"")||"",providerRef:(p&&p.supplierRef)||(lastIn?lastIn.providerRef:"")||"",lastInDate:lastIn?lastIn.date:"",
+      firstInDate:firstIn?firstIn.date:""},
       priceEconomics(p,st,avgCost)));}
   return rows;
 }
@@ -2646,6 +2672,8 @@ function computeBatches(st){
 function Inventory({st,act,show}){
   const [view,setView]=useState("stock");const [q,setQ]=useState("");const [open,setOpen]=useState({});const [fstock,setFstock]=useState("");const [sort,setSort]=useState({k:"onHandValue",d:-1});
   const [rmode,setRmode]=useState("low");const [rsort,setRsort]=useState({k:"sold",d:-1});const [rq,setRq]=useState("");
+  const coverWeeks=(st.settings&&+st.settings.coverWeeks)||8;
+  const orderLines=(st.order&&st.order.lines)||{};const todayISO=today();
   const rows=useMemo(()=>computeInventory(st),[st]);
   const batches=useMemo(()=>computeBatches(st),[st]);
   let onHand=0,stockVal=0,profit=0,cogs=0,inStock=0,recvT=0,soldT=0,shrinkU=0,shrinkC=0,noCost=0,noCostN=0;
@@ -2690,15 +2718,26 @@ function Inventory({st,act,show}){
     const by={};for(const r of rlist){const k=r.provider||"— no supplier —";(by[k]=by[k]||[]).push(r);}
     const vl=(r,k)=>{const x=r[k];return x==null?-Infinity:(typeof x==="number"?x:String(x).toLowerCase());};
     return Object.keys(by).sort((a,b)=>a.localeCompare(b)).map(sup=>{
-      const list=[...by[sup]].sort((a,b)=>{const x=vl(a,rsort.k),y=vl(b,rsort.k);return (x<y?-1:x>y?1:0)*rsort.d;});
+      const list=[...by[sup]].sort((a,b)=>{const x=vl(a,rsort.k),y=vl(b,rsort.k);return (x<y?-1:x>y?1:0)*rsort.d;})
+        .map(r=>{const k=normCode(r.code);const typed=orderLines[k];
+          const sugg=orderSuggestion(r,coverWeeks,todayISO);
+          const hasTyped=typed!=null&&String(typed).trim()!=="";
+          const q=hasTyped?Math.max(0,Math.round(parseNum(typed)||0)):(sugg==null?0:sugg);
+          return Object.assign({},r,{sugg,typed:hasTyped?String(typed):"",orderQty:q,
+            rate:orderRate(r,todayISO),orderCost:r.avgCost!=null?q*r.avgCost:0});});
       return {sup,list,onHand:list.reduce((a,r)=>a+r.onHand,0),sold:list.reduce((a,r)=>a+r.sold,0),
-              profit:list.reduce((a,r)=>a+(r.realProfit||0),0)};});})();
+              profit:list.reduce((a,r)=>a+(r.realProfit||0),0),
+              orderQty:list.reduce((a,r)=>a+r.orderQty,0),orderCost:list.reduce((a,r)=>a+r.orderCost,0)};});})();
+  const orderTotalQty=rgroups.reduce((a,g)=>a+g.orderQty,0);
+  const orderTotalCost=rgroups.reduce((a,g)=>a+g.orderCost,0);
+  const typedCount=Object.keys(orderLines).length;
   const RS=k=>setRsort(s=>s.k===k?{k,d:-s.d}:{k,d:-1});
   const RTh=(k,label,cls,title)=>html`<th class=${"sortable"+(cls?" "+cls:"")} title=${title||null} onClick=${()=>RS(k)}>${label}${rsort.k===k?html`<span class="faint"> ${rsort.d>0?"↑":"↓"}</span>`:null}</th>`;
-  function reorderCSV(){const head=["supplier","code","name","provider_ref","received","sold","on_hand","reorder_point","avg_cost","price","margin_pct","profit_per_unit"];
+  function reorderCSV(){const head=["supplier","code","name","provider_ref","received","sold","on_hand","reorder_point","avg_cost","price","margin_pct","profit_per_unit","sold_per_week","qty_to_order","order_cost"];
     const rr=[];for(const g of rgroups)for(const r of g.list)rr.push([g.sup,r.code,r.name,r.providerRef,r.received,r.sold,r.onHand,r.reorderPoint||0,
       r.avgCost==null?"":r.avgCost.toFixed(2),r.price==null?"":(+r.price).toFixed(2),
-      r.margin==null?"":(r.margin*100).toFixed(1),r.profitUnit==null?"":r.profitUnit.toFixed(2)]);
+      r.margin==null?"":(r.margin*100).toFixed(1),r.profitUnit==null?"":r.profitUnit.toFixed(2),
+      r.rate==null?"":r.rate.toFixed(2),r.orderQty,r.orderCost?r.orderCost.toFixed(2):""]);
     const csv=toCSV(head,rr);if(IN_FRAME||!downloadText("rosa-mystica_reorder_"+today()+".csv",csv,"text/csv"))act.openExport("Reorder list — CSV",csv);else show("Saved CSV");}
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Inventory</h2>
@@ -2734,14 +2773,20 @@ function Inventory({st,act,show}){
     <div class="toolbar">
       <div class="seg"><button aria-pressed=${rmode==="low"} onClick=${()=>setRmode("low")}>Below reorder point${lowList.length?" · "+num(lowList.length):""}</button><button aria-pressed=${rmode==="star"} onClick=${()=>setRmode("star")}>★ Regular lines${starRows.length?" · "+num(starRows.length):""}</button><button aria-pressed=${rmode==="both"} onClick=${()=>setRmode("both")}>Both</button></div>
       <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, product, supplier…" value=${rq} onInput=${e=>setRq(e.target.value)}/></div>
+      <label class="switch" style=${{gap:"6px"}}>Cover
+        <select class="filter" style=${{maxWidth:"110px"}} value=${String(coverWeeks)} onChange=${e=>act.setCoverWeeks(+e.target.value)}>
+          ${[4,6,8,10,12,16,20,26].map(w=>html`<option key=${w} value=${String(w)}>${w} weeks</option>`)}</select></label>
       <span style=${{flex:1}}></span>
+      ${typedCount?html`<button class="btn sm ghost" onClick=${()=>{act.clearOrder();show("Typed quantities cleared");}}>Clear ${num(typedCount)} typed</button>`:null}
       ${rlist.length?html`<button class="btn" onClick=${reorderCSV}><${Icon} name="download"/>Reorder CSV</button>`:null}
     </div>
-    <div class="note" style=${{marginBottom:"14px",maxWidth:"760px"}}>${rmode==="low"?"Sellable, stock-tracked codes that have fallen to their reorder point and have moved before.":rmode==="star"?"The lines you have starred, whether or not they have run down. Star a product from the Catalogue, or in its editor.":"Starred lines and anything that has fallen to its reorder point, each listed once."} Grouped by supplier, so each block is one order to place. <b>Avg cost</b> is the weighted landed cost of every unit ever received — freight included, net of VAT — which is what the next order will resemble; it is not the FIFO cost of what is on the shelf. <b>Margin</b> and <b>profit per unit</b> read the catalogue price against it, netted to VAT.</div>
+    <div class="note" style=${{marginBottom:"14px",maxWidth:"760px"}}>${rmode==="low"?"Sellable, stock-tracked codes that have fallen to their reorder point and have moved before.":rmode==="star"?"The lines you have starred, whether or not they have run down. Star a product from the Catalogue, or in its editor.":"Starred lines and anything that has fallen to its reorder point, each listed once."} Grouped by supplier, so each block is one order to place. <b>Avg cost</b> is the weighted landed cost of every unit ever received — freight included, net of VAT — which is what the next order will resemble; it is not the FIFO cost of what is on the shelf. <b>Margin</b> and <b>profit per unit</b> read the catalogue price against it, netted to VAT. <b>To order</b> proposes enough to cover ${coverWeeks} weeks at the rate the line has been selling since you first received it, less what is on hand — type over it and what you type is kept.</div>
+    ${orderTotalQty?html`<div class="ordertot"><span>This order</span><b>${num(orderTotalQty)} units</b><span>·</span><b>${money(orderTotalCost)}</b><span>at average landed cost, net${typedCount?" · "+num(typedCount)+" typed by hand":""}</span></div>`:null}
     ${rlist.length===0?html`<div class="panel"><div class="empty"><${Icon} name="inventory"/><div class="big">${rmode==="star"?"Nothing starred yet":"Nothing to reorder"}</div><div class="note" style=${{maxWidth:"430px"}}>${rmode==="star"?"Star a product in the Catalogue — the ☆ in the first column — and the lines you reorder regularly gather here, grouped by supplier.":"Everything sellable is above its reorder point."}</div></div></div>`:
-    html`<div class="panel"><div class="tablewrap"><table><thead><tr><th style=${{width:"26px"}}></th>${RTh("code","Code")}${RTh("name","Product")}${RTh("received","Recv","num","units ever received")}${RTh("sold","Sold","num","units ever sold")}${RTh("onHand","On hand","num")}${RTh("reorderPoint","Reorder pt","num")}${RTh("avgCost","Avg cost","num","weighted average landed cost across every receipt")}${RTh("price","Price","num","the catalogue price, incl VAT")}${RTh("margin","Margin","num","against the price net of VAT")}${RTh("profitUnit","Profit/unit","num","price net of VAT, less average landed cost")}</tr></thead>
+    html`<div class="panel"><div class="tablewrap"><table><thead><tr><th style=${{width:"26px"}}></th>${RTh("code","Code")}${RTh("name","Product")}${RTh("received","Recv","num","units ever received")}${RTh("sold","Sold","num","units ever sold")}${RTh("onHand","On hand","num")}${RTh("reorderPoint","Reorder pt","num")}${RTh("avgCost","Avg cost","num","weighted average landed cost across every receipt")}${RTh("price","Price","num","the catalogue price, incl VAT")}${RTh("margin","Margin","num","against the price net of VAT")}${RTh("profitUnit","Profit/unit","num","price net of VAT, less average landed cost")}${RTh("orderQty","To order","num","enough to cover "+coverWeeks+" weeks at the rate this line has been selling, less what is on hand — editable")}</tr></thead>
       <tbody>${rgroups.map(g=>html`<${React.Fragment} key=${g.sup}>
-        <tr class="suphead"><td colSpan="11">${g.sup} <span class="sub">· ${num(g.list.length)} product${g.list.length===1?"":"s"} · ${num(g.onHand)} on hand · ${num(g.sold)} sold${g.profit?" · "+money(g.profit)+" profit":""}</span></td></tr>
+        <tr class="suphead"><td colSpan="11">${g.sup} <span class="sub">· ${num(g.list.length)} product${g.list.length===1?"":"s"} · ${num(g.onHand)} on hand · ${num(g.sold)} sold${g.profit?" · "+money(g.profit)+" profit":""}</span></td>
+          <td class="num">${g.orderQty?html`<b>${num(g.orderQty)}</b><div class="sub">${money(g.orderCost)}</div>`:html`<span class="faint">—</span>`}</td></tr>
         ${g.list.map(r=>html`<tr key=${normCode(r.code)}>
           <td>${r.inCat?html`<button class=${"starbtn"+(r.favourite?" on":"")} title=${r.favourite?"A regular line":"Mark as a line you reorder regularly"} onClick=${()=>act.toggleFavourite(r.code)}>${r.favourite?"★":"☆"}</button>`:null}</td>
           <td class="code">${r.code}</td>
@@ -2753,7 +2798,11 @@ function Inventory({st,act,show}){
           <td class="num mono">${r.avgCost==null?html`<span class="faint">—</span>`:html`<span title=${r.costIsListed?"never received — the catalogue cost standing in":null}>${money(r.avgCost)}${r.costIsListed?html`<span class="faint">*</span>`:null}</span>`}</td>
           <td class="num mono">${!r.sellable?html`<span class="faint">—</span>`:(r.price==null?html`<span class="faint">no price</span>`:money(r.price))}</td>
           <td class="num mono" style=${{color:r.margin==null?"inherit":(r.margin<0?"var(--bad)":(r.margin<0.2?"inherit":"var(--good)"))}}>${r.margin==null?html`<span class="faint">—</span>`:pct(r.margin)}</td>
-          <td class="num mono" style=${{color:r.profitUnit==null?"inherit":(r.profitUnit<0?"var(--bad)":"inherit")}}>${r.profitUnit==null?html`<span class="faint">—</span>`:money(r.profitUnit)}</td></tr>`)}
+          <td class="num mono" style=${{color:r.profitUnit==null?"inherit":(r.profitUnit<0?"var(--bad)":"inherit")}}>${r.profitUnit==null?html`<span class="faint">—</span>`:money(r.profitUnit)}</td>
+          <td class="num"><input type="text" inputmode="numeric" class="mono qtyin" value=${r.typed}
+            placeholder=${r.sugg==null?"—":String(r.sugg)}
+            title=${r.rate==null?"never sold, so nothing to project from — type a quantity":"sells about "+r.rate.toFixed(2)+" a week; "+coverWeeks+" weeks' cover is "+Math.ceil(r.rate*coverWeeks)+", less "+num(r.onHand)+" on hand"}
+            onInput=${e=>act.setOrderLine(r.code,e.target.value)}/></td></tr>`)}
       </${React.Fragment}>`)}</tbody></table></div></div>`}
     </${React.Fragment}>`:view==="count"?html`<${CountPanel} st=${st} act=${act} show=${show}/>`:html`<${React.Fragment}>
     ${batches.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"470px"}}>Purchases that share a batch reference form an invoice. Record or import in-movements and each invoice's progress — sold vs received, capital recouped, ROI — builds here.</div></div></div>`:html`<${React.Fragment}>
@@ -2923,6 +2972,14 @@ function App(){
       return {...s,count:Object.assign({},c,{lines})};}),
     setCountMeta:patch=>setSt(s=>({...s,count:Object.assign({lines:{}},s.count,patch)})),
     clearCount:()=>setSt(s=>{undoRef.current=s;return {...s,count:{lines:{}}};}),
+    /* An order being built up over a day or two: what is typed is kept, so closing the tab does
+       not lose it. An empty cell is removed rather than stored as a blank. */
+    setOrderLine:(code,v)=>setSt(s=>{const o=s.order||{lines:{}};const k=normCode(code);
+      const lines=Object.assign({},o.lines);
+      if(v==null||String(v).trim()==="")delete lines[k];else lines[k]=String(v);
+      return {...s,order:Object.assign({},o,{lines})};}),
+    clearOrder:()=>setSt(s=>{undoRef.current=s;return {...s,order:{lines:{}}};}),
+    setCoverWeeks:n=>setSt(s=>({...s,settings:{...s.settings,coverWeeks:n}})),
     /* The count never replaces anything: it appends the difference. Short lines go out on an
        adjustment-kind channel, so stock leaves without being booked as a sale; found lines come
        in carrying whatever cost basis the product already had. */
