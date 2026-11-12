@@ -434,3 +434,9 @@ repo, because the previous one lived in a scratch directory and went with the co
     it — and the list groups by normalised name, saying how many spellings it covers. The rows are
     keyed by the product's own code too: a repeated key was making React keep stale rows and
     repeat a code down the sheet. ✅
+30. **Recouped as a ratio, beside the amount.** Batches showed Invested and Recouped as sums and
+    left the question they answer together — has this invoice paid for itself? — to arithmetic in
+    the reader's head, where it was easily confused with ROI. Each Recouped figure now carries the
+    share of the invoice's cost it covers, with a small bar, turning green at 100% where the stock
+    still on the shelf becomes free. ROI is untouched: profit over the whole invoice is a different
+    question from money back over money out. ✅
