@@ -130,7 +130,7 @@ th.sortable:hover{color:var(--ink)}
 tbody td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
 tbody tr:last-child td{border-bottom:0}
 tbody tr.clickable{cursor:pointer}
-tbody tr.clickable:hover td{background:var(--surface-2)}
+tbody tr.clickable:hover td{background-color:var(--surface-2)}
 td .name{font-weight:500}
 td .meta{color:var(--faint);font-size:11.5px}
 .code{font-family:var(--mono);font-size:12px;color:var(--muted)}
@@ -158,6 +158,28 @@ tr:hover .rowact{opacity:1}
 .suphead td{background:var(--surface-2);font-size:11.5px;letter-spacing:.03em;font-weight:600;color:var(--muted);padding-top:9px;padding-bottom:9px}
 .suphead .sub{font-weight:400;color:var(--faint);letter-spacing:0}
 .suphead td.num{text-align:right}
+/* Overview: compact ranked lists and the chart key */
+.toplist{padding:4px 0 6px}
+.toprow{padding:9px 16px 10px}
+.toprow+.toprow{border-top:1px solid var(--line)}
+.toprow-t{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:6px}
+.toprow-t .name{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toprow-t .mono{font-size:13px;font-variant-numeric:tabular-nums;flex:none}
+.toprow-s{font-size:11.5px;color:var(--faint);margin-top:5px;font-variant-numeric:tabular-nums}
+.toplist-f{padding:10px 16px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted)}
+.minibar{height:5px;border-radius:3px;background:var(--surface-2);overflow:hidden}
+.minibar span{display:block;height:100%;border-radius:3px}
+.chartkey{display:flex;flex-wrap:wrap;gap:15px;align-items:center;padding:0 16px 13px;font-size:11.5px;color:var(--muted)}
+.chartkey i{display:inline-block;width:9px;height:9px;border-radius:2.5px;margin-right:6px;vertical-align:-1px}
+/* An opened batch and its panel read as one block, lifted off the rows around them. The panel
+   used to be var(--bg2, transparent) and --bg2 was never defined, so it had no contrast at all. */
+tr.rowopen>td{background:var(--surface-2);border-bottom:0;font-weight:500}
+/* a gradient rather than an inset shadow or a border: box-shadow on a cell is unreliable under
+   border-collapse, and a real border would shift the column by its width */
+tr.rowopen>td:first-child,td.openpanel{background-image:linear-gradient(to right,var(--accent) 0 3px,transparent 3px)}
+.clickable.rowopen:hover td{background-color:var(--surface-2)}
+td.openpanel{background-color:var(--surface-2)}
+td.openpanel table.sub th{color:var(--muted)}
 input.qtyin{width:68px;padding:5px 7px;font-size:12.5px;text-align:right}
 input.qtyin::placeholder{color:var(--faint);font-style:italic}
 .ordertot{display:flex;gap:10px;align-items:baseline;justify-content:flex-end;font-size:12.5px;color:var(--muted);margin-bottom:10px}
@@ -1131,30 +1153,123 @@ function Field({label,children}){return html`<div><label class="lab">${label}</l
 function Badge({dir}){return html`<span class=${"badge "+(dir==="in"?"in":"out")}>${dir==="in"?"In":"Out"}</span>`;}
 
 /* ===================== Overview ===================== */
+/* The Overview reads the same two functions the Inventory tab does, so a figure here and a figure
+   there are the same figure. In particular stock value is the FIFO landed value of what is on the
+   shelf — it used to be quantity × the catalogue's cost field, which disagreed with Inventory and
+   was blank wherever a cost had never been typed. */
+function MiniBar({frac,tone}){
+  const f=Math.max(0,Math.min(1,frac||0));
+  return html`<div class="minibar"><span style=${{width:(f*100).toFixed(1)+"%",background:"var(--"+(tone||"accent")+")"}}></span></div>`;}
 function Overview({st,go}){
-  const stock=useMemo(()=>stockByCode(st),[st]);
-  const cat=st.catalogue;const byCode=useMemo(()=>indexCatalogue(cat),[cat]);
-  let onHand=0,stockVal=0,withStock=0;
-  for(const k in stock){const q=stock[k];if(q>0)withStock++;onHand+=q;const p=byCode[k];if(p&&p.cost)stockVal+=q*(+p.cost||0);}
-  const sellable=cat.filter(p=>p.sellable!==false).length;const online=cat.filter(p=>p.online).length;
-  const recent=[...st.ledger].sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.createdAt||"").localeCompare(a.createdAt||"")).slice(0,8);
+  const [tip,setTip]=useState(null);
+  const tp=label=>({onMouseEnter:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseMove:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseLeave:()=>setTip(null)});
+  const inv=useMemo(()=>computeInventory(st),[st]);
+  const batches=useMemo(()=>computeBatches(st),[st]);
+
+  let stockVal=0,onHand=0,inStock=0,profit=0,cogs=0,netRev=0,recvT=0,soldT=0,deadVal=0,deadU=0;
+  for(const r of inv){profit+=r.realProfit;cogs+=r.cogs;netRev+=r.revenueNet;
+    if(!r.stocked)continue;
+    stockVal+=r.onHandValue;onHand+=r.onHand;if(r.onHand>0)inStock++;
+    if(r.received>0){recvT+=r.received;soldT+=r.sold;}
+    if(r.sold===0&&r.onHandValue>0){deadVal+=r.onHandValue;deadU+=r.onHand;}}
+  const roi=cogs>0?profit/cogs:null;const sellThrough=recvT>0?soldT/recvT:null;
+  /* capital still out: what each invoice cost, less what its sales have brought back, counting
+     only the invoices still in the red — a recouped batch does not offset an unrecouped one */
+  let out=0,outN=0;
+  for(const b of batches){const left=b.investedNet-b.recoupedNet;if(left>0){out+=left;outN++;}}
+
+  /* ---- ROI by invoice, oldest first, read against the shop's own average ---- */
+  const chartB=batches.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).slice(-24);
+  function roiChart(){
+    if(!chartB.length)return html`<div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note">Post a purchase invoice and each one's return builds here.</div></div>`;
+    const vals=chartB.map(b=>b.roi==null?0:b.roi);
+    const hi=Math.max(0.05,...vals),lo=Math.min(0,...vals);
+    const W=720,H=236,padL=46,padR=14,padT=16,padB=44,iw=W-padL-padR,ih=H-padT-padB;
+    const ticks=niceTicks(hi*100,4).map(t=>t/100);const top=Math.max(hi,ticks[ticks.length-1]);
+    const span=top-lo||1;const y=v=>padT+ih-((v-lo)/span)*ih;const zero=y(0);
+    const step=iw/chartB.length,bw=Math.min(34,step*0.6);const skip=chartB.length>12;
+    /* The reference line must share the bars' denominator. A batch's ROI is profit over what the
+       invoice cost — everything received, sold or not — while the Return-on-cost tile divides by
+       the cost of what actually sold. Drawing the tile's figure here would float it above every
+       bar and mean nothing, so this is the invested-weighted average of the bars themselves. */
+    const pSum=chartB.reduce((a,b)=>a+b.profit,0),iSum=chartB.reduce((a,b)=>a+b.investedNet,0);
+    const bavg=iSum>0?pSum/iSum:null;
+    const avg=bavg==null?null:Math.max(lo,Math.min(top,bavg));
+    return html`<svg viewBox="0 0 ${W} ${H}" style=${{width:"100%",height:"auto"}}>
+      ${ticks.concat(lo<0?[lo]:[]).map(t=>html`<g key=${t}><line x1=${padL} x2=${W-padR} y1=${y(t)} y2=${y(t)} style=${{stroke:"var(--line)"}}/>
+        <text x=${padL-8} y=${y(t)+3} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${Math.round(t*100)+"%"}</text></g>`)}
+      ${avg!=null?html`<${React.Fragment}><line x1=${padL} x2=${W-padR} y1=${y(avg)} y2=${y(avg)}
+        style=${{stroke:"var(--accent)",strokeWidth:"1.5",strokeDasharray:"4 3",opacity:".75"}}/>
+        <text x=${W-padR} y=${y(avg)-6} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--accent)",fontWeight:"600"}}>average across these invoices ${pct(bavg)}</text></${React.Fragment}>`:null}
+      ${chartB.map((b,i)=>{const v=b.roi==null?0:b.roi;const cx=padL+step*i+step/2;
+        /* an invoice that has returned nothing yet is a fact worth seeing, not a blank column,
+           so it keeps a short stub sitting on the zero line */
+        const stub=Math.abs(y(v)-zero)<3;
+        const hgt=stub?3:Math.abs(y(v)-zero);const yy=v>=0?(stub?zero-3:y(v)):zero;
+        return html`<g key=${b.batchRef} style=${{cursor:"pointer"}} onClick=${()=>go("inventory")}
+          ...${tp([b.batchRef+(b.provider?" · "+b.provider:""),fmtD(b.date),
+            "ROI "+(b.roi==null?"—":pct(b.roi)),"invested "+money(b.investedNet),"recouped "+money(b.recoupedNet),
+            "profit "+money(b.profit),"sold "+num(b.sold)+" of "+num(b.received)])}>
+          <rect x=${cx-bw/2} y=${yy} width=${bw} height=${hgt} rx="4"
+            style=${{fill:v<0?"var(--bad)":(b.sold===0?"var(--line-strong)":"var(--good)")}}/>
+          <text x=${cx} y=${H-padB+15} text-anchor="middle" style=${{fontSize:"9.5px",fill:"var(--faint)"}}>${skip&&(i%2)?"":fmtD(b.date).slice(0,5)}</text>
+        </g>`;})}
+      <line x1=${padL} x2=${W-padR} y1=${zero} y2=${zero} style=${{stroke:"var(--line-strong)"}}/>
+    </svg>`;}
+
+  /* ---- the three lists ---- */
+  const sold=inv.filter(r=>r.sold>0&&r.inCat);
+  const best=sold.slice().sort((a,b)=>b.realProfit-a.realProfit).slice(0,6);
+  const bestMax=Math.max(1,...best.map(r=>r.realProfit));
+  /* realised margin, not the shelf price's: what the units that sold actually returned. Three
+     sold is the floor — one lucky sale at an odd price is not a margin worth ranking. */
+  const marg=sold.filter(r=>r.sold>=3&&r.revenueNet>0).map(r=>Object.assign({},r,{realised:r.realProfit/r.revenueNet}))
+    .sort((a,b)=>b.realised-a.realised).slice(0,6);
+  const dead=inv.filter(r=>r.inCat&&r.stocked&&r.sold===0&&r.onHandValue>0)
+    .sort((a,b)=>b.onHandValue-a.onHandValue).slice(0,6);
+  const deadMax=Math.max(1,...dead.map(r=>r.onHandValue));
+  const ageOf=d=>{if(!d)return "";const m=Math.floor((new Date()-new Date(d+"T00:00:00"))/2629800000);
+    return m<1?"this month":(m===1?"1 month":m+" months");};
+
+  const Row=(r,right,sub,frac,tone)=>html`<div class="toprow" key=${normCode(r.code)}>
+    <div class="toprow-t"><span class="name">${r.name||r.code}</span><span class="mono">${right}</span></div>
+    <${MiniBar} frac=${frac} tone=${tone}/>
+    <div class="toprow-s">${sub}</div></div>`;
+
   return html`<div class="content">
-    <div class="rowbetween" style=${{marginBottom:"18px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>The hub at a glance</h2></div></div>
+    <div class="rowbetween" style=${{marginBottom:"18px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>The hub at a glance</h2>
+      <div class="note">Every figure here is the same one the Inventory tab computes — landed, net of VAT.</div></div></div>
     <div class="kpis" style=${{marginBottom:"20px"}}>
-      <div class="kpi"><div class="k">Catalogue</div><div class="v">${num(cat.length)}</div><div class="f">${num(sellable)} sellable · ${num(online)} online</div></div>
-      <div class="kpi"><div class="k">On hand</div><div class="v">${num(onHand)}</div><div class="f">${num(withStock)} codes in stock</div></div>
-      <div class="kpi"><div class="k">Stock value</div><div class="v">${money(stockVal)}</div><div class="f">at catalogue cost</div></div>
-      <div class="kpi"><div class="k">Ledger</div><div class="v">${num(st.ledger.length)}</div><div class="f">${num(st.staging.length)} in staging</div></div>
+      <div class="kpi"><div class="k">Stock value</div><div class="v">${money(stockVal)}</div><div class="f">${num(onHand)} units · ${num(inStock)} codes in stock</div></div>
+      <div class="kpi"><div class="k">Capital still out</div><div class="v">${money(out)}</div><div class="f">${num(outN)} invoice${outN===1?"":"s"} not yet recouped</div></div>
+      <div class="kpi"><div class="k">Profit realised</div><div class="v" style=${{color:profit>0?"var(--good)":profit<0?"var(--bad)":"inherit"}}>${money(profit)}</div><div class="f">on ${money(netRev)} of sales</div></div>
+      <div class="kpi"><div class="k">Return on cost</div><div class="v">${roi==null?"—":pct(roi)}</div><div class="f">${sellThrough==null?"nothing received yet":pct(sellThrough)+" of stock sold through"}</div></div>
     </div>
-    <div class="panel">
-      <div class="panel-h"><h3>Recent movements</h3><button class="btn sm ghost" onClick=${()=>go("ledger")}>Open ledger →</button></div>
-      ${recent.length===0?html`<div class="empty"><${Icon} name="ledger"/><div class="big">No movements yet</div><div class="note">Record a purchase in the Ledger, or import one.</div></div>`:
-      html`<div class="tablewrap"><table><thead><tr><th>Date</th><th>Channel</th><th>Code</th><th>Product</th><th class="num">Qty</th><th class="num">Unit price</th><th>Batch</th></tr></thead>
-      <tbody>${recent.map(r=>{const p=byCode[normCode(r.code)];return html`<tr key=${r.id}>
-        <td class="mono">${fmtD(r.date)}</td><td><${Badge} dir=${r.dir}/> <span class="muted" style=${{marginLeft:"4px"}}>${r.channel}</span></td>
-        <td class="code">${r.code||"—"}</td><td>${p?html`<span class="name">${p.name}</span>`:html`<span class="faint">unlinked</span>`}</td>
-        <td class="num">${num(r.qty)}</td><td class="num mono">${r.unitPrice==null?"—":money(r.unitPrice)}</td><td class="code">${r.batchRef||"—"}</td></tr>`;})}</tbody></table></div>`}
+    <div class="panel" style=${{marginBottom:"13px"}}>
+      <div class="panel-h"><h3>Return by invoice</h3><button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div>
+      <div style=${{padding:"12px 14px 6px"}}>${roiChart()}</div>
+      ${chartB.length?html`<div class="chartkey">
+        <span><i style=${{background:"var(--good)"}}></i>returning</span>
+        <span><i style=${{background:"var(--line-strong)"}}></i>nothing sold yet</span>
+        <span><i style=${{background:"var(--bad)"}}></i>sold below cost</span>
+        <span class="faint">profit ÷ what the invoice cost · newest on the right</span></div>`:null}
     </div>
+    <div class="grid3">
+      <div class="panel"><div class="panel-h"><h3>Earning most</h3></div>
+        <div class="toplist">${best.length?best.map(r=>Row(r,money(r.realProfit),
+          num(r.sold)+" sold · "+(r.revenueNet>0?pct(r.realProfit/r.revenueNet)+" margin":"—"),r.realProfit/bestMax,"good")):
+          html`<div class="note" style=${{padding:"14px"}}>Nothing has sold yet.</div>`}</div></div>
+      <div class="panel"><div class="panel-h"><h3>Best margin</h3></div>
+        <div class="toplist">${marg.length?marg.map(r=>Row(r,pct(r.realised),
+          num(r.sold)+" sold · "+money(r.realProfit)+" earned",r.realised,"accent")):
+          html`<div class="note" style=${{padding:"14px"}}>Nothing has sold three or more yet — the floor that keeps one lucky sale out of this list.</div>`}</div></div>
+      <div class="panel"><div class="panel-h"><h3>Money sitting still</h3></div>
+        <div class="toplist">${dead.length?dead.map(r=>Row(r,money(r.onHandValue),
+          num(r.onHand)+" on hand · in stock "+ageOf(r.firstInDate),r.onHandValue/deadMax,"warn")):
+          html`<div class="note" style=${{padding:"14px"}}>Everything in stock has sold at least once.</div>`}
+          ${dead.length?html`<div class="toplist-f">${money(deadVal)} across ${num(deadU)} units has never sold</div>`:null}</div></div>
+    </div>
+    ${tip?html`<div class="charttip" style=${{left:clampX(tip.x)+"px",top:tip.y+"px"}}>${Array.isArray(tip.label)?tip.label.map((l,i)=>html`<div key=${i}>${l}</div>`):tip.label}</div>`:null}
   </div>`;}
 
 /* ===================== Catalogue ===================== */
@@ -2811,9 +2926,9 @@ function Inventory({st,act,show}){
       <tbody>${batches.map(b=>{const isOpen=!!open[b.batchRef];
         const noSale=(b.lines||[]).filter(l=>!l.sellable);
         return html`<${React.Fragment} key=${b.batchRef}>
-        <tr class="clickable" onClick=${()=>setOpen(o=>Object.assign({},o,{[b.batchRef]:!o[b.batchRef]}))}>
+        <tr class=${"clickable"+(isOpen?" rowopen":"")} onClick=${()=>setOpen(o=>Object.assign({},o,{[b.batchRef]:!o[b.batchRef]}))}>
         <td class="faint" style=${{textAlign:"center"}}>${isOpen?"\u25be":"\u25b8"}</td><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}</td><td class="num faint">${b.shrink?num(b.shrink):"—"}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${b.transport?money(b.transport):"—"}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"\u2014":pct(b.roi)}</td></tr>
-        ${isOpen?html`<tr><td colSpan="15" style=${{padding:"0 0 14px 0",background:"var(--bg2, transparent)"}}>
+        ${isOpen?html`<tr><td class="openpanel" colSpan="15" style=${{padding:"0 0 14px 0"}}>
           <div style=${{padding:"10px 14px 0 42px"}}>
             <div class="note" style=${{marginBottom:"8px"}}>${num((b.lines||[]).length)} product${(b.lines||[]).length===1?"":"s"} in ${b.batchRef}${b.transport?" \u00b7 freight "+money(b.transport)+" spread over "+num(b.received)+" units, "+money(b.transport/Math.max(1,b.received))+" each":""}${noSale.length?" \u00b7 "+num(noSale.length)+" not for sale, so no price or margin is shown for "+(noSale.length===1?"it":"them"):""}</div>
             <table class="sub"><thead><tr>

@@ -408,3 +408,20 @@ same totals plus daily detail.
     and a line that has never sold gets no proposal. What you type is kept until the order is
     placed, and each supplier block, and the screen, totals the units and what they will cost at
     average landed cost. ✅
+28. **The Overview becomes a reading of the money.** It used to count catalogue rows and ledger
+    rows and value stock at quantity × the catalogue's cost field — a number that disagreed with
+    Inventory and was blank wherever a cost had never been typed. It now shows stock at FIFO landed
+    value, capital still out across invoices not yet recouped, profit realised and return on cost,
+    all from the same two functions the Inventory tab uses. Beneath them, return by invoice as a
+    bar per batch against the average of those bars, and three rankings: earning most, best
+    realised margin, and money sitting still in what has never sold. An opened batch and its panel
+    now share a surface and an accent edge — the panel asked for `--bg2`, which was never defined,
+    so it had no contrast at all. ✅
+
+---
+
+## Tests
+
+`tests/run.sh` drives the real page in Chromium and prints one `ok`/`FAIL` line per check. A file
+that prints neither crashed, and says so rather than passing quietly. The suite lives here, in the
+repo, because the previous one lived in a scratch directory and went with the container.
