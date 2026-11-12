@@ -425,3 +425,12 @@ same totals plus daily detail.
 `tests/run.sh` drives the real page in Chromium and prints one `ok`/`FAIL` line per check. A file
 that prints neither crashed, and says so rather than passing quietly. The suite lives here, in the
 repo, because the previous one lived in a scratch directory and went with the container.
+29. **The stock count's supplier filter stops hiding shelves.** It read only the catalogue's
+    Supplier field, compared it as an exact string, and kept one supplier per *normalised* product
+    code. So a supplier named only on the invoices was missing from the list entirely; four
+    spellings of one name appeared as identical-looking separate options, each holding part of the
+    shelf; and two codes differing only by hyphens lent each other their suppliers. Each count row
+    now carries its own supplier — the record's, or the provider from the invoice that delivered
+    it — and the list groups by normalised name, saying how many spellings it covers. The rows are
+    keyed by the product's own code too: a repeated key was making React keep stale rows and
+    repeat a code down the sheet. ✅
