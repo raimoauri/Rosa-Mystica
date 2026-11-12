@@ -60,9 +60,30 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
       +asNum(avgTxt)+" vs the tile's "+(truth.roi*100).toFixed(1)+")");
   chk(Math.abs(truth.batchRoi-truth.roi)>0.01,"the two really do differ here, so that check means something");
 
-  const bars=await p.evaluate(()=>[...document.querySelectorAll("svg rect")].map(r=>+r.getAttribute("height")));
-  chk(bars.length===3,"a bar per invoice, three here ("+bars.length+")");
-  chk(bars.every(h=>h>=3),"including a visible stub for an invoice that has returned nothing yet");
+  /* each bar stacks the capital coming back under the profit on top of it, so an invoice that
+     has returned something draws two segments and one that has not draws a single stub */
+  const groups=await p.evaluate(()=>[...document.querySelectorAll("svg g")]
+    .filter(g=>g.querySelector("rect")).map(g=>({rects:g.querySelectorAll("rect").length,
+      fills:[...g.querySelectorAll("rect")].map(r=>r.style.fill)})));
+  chk(groups.length===3,"a group per invoice, three here ("+groups.length+")");
+  const sold=groups.filter(g=>g.rects===2),idle=groups.filter(g=>g.rects===1);
+  chk(sold.length===2,"each invoice that has sold draws two stacked segments ("+sold.length+")");
+  chk(sold[0].fills.some(f=>/accent-soft/.test(f))&&sold[0].fills.some(f=>/--good/.test(f)),
+      "capital back beneath, profit above ("+sold[0].fills.join(" + ")+")");
+  chk(idle.length===1,"the one that has returned nothing draws a visible stub ("+idle.length+")");
+  chk(idle.every(g=>/line-strong/.test(g.fills[0])),"in the muted tone, not as profit");
+  const paid=await p.evaluate(()=>[...document.querySelectorAll("svg text")]
+    .map(t=>t.textContent).filter(t=>/paid for itself/.test(t)).length);
+  chk(paid===1,"and a line at 100% marks where an invoice has paid for itself");
+
+  /* the tile carries the same ratio for the shop as a whole */
+  const tileTxt=await p.evaluate(()=>{for(const k of document.querySelectorAll(".kpi"))
+    if(k.querySelector(".k").textContent.trim()==="Capital still out")return k.textContent;return "";});
+  chk(/of everything bought has come back/.test(tileTxt),"the Capital still out tile says what share has come back");
+  const expShare=await p.evaluate(()=>{const bs=computeBatches(JSON.parse(localStorage.getItem("rosamystica:v1")));
+    const i=bs.reduce((a,x)=>a+x.investedNet,0),r=bs.reduce((a,x)=>a+x.recoupedNet,0);return i>0?r/i*100:0;});
+  chk(tileTxt.indexOf(expShare.toFixed(1).replace(".",","))>=0,
+      "and the figure is total recouped over total invested ("+expShare.toFixed(1)+"%)");
 
   /* ---- the three lists ---- */
   const list=async title=>p.evaluate(t=>{for(const pan of document.querySelectorAll(".panel"))

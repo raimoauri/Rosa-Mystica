@@ -1177,15 +1177,23 @@ function Overview({st,go}){
   const roi=cogs>0?profit/cogs:null;const sellThrough=recvT>0?soldT/recvT:null;
   /* capital still out: what each invoice cost, less what its sales have brought back, counting
      only the invoices still in the red — a recouped batch does not offset an unrecouped one */
-  let out=0,outN=0;
-  for(const b of batches){const left=b.investedNet-b.recoupedNet;if(left>0){out+=left;outN++;}}
+  let out=0,outN=0,invT=0,recT=0;
+  for(const b of batches){const left=b.investedNet-b.recoupedNet;if(left>0){out+=left;outN++;}
+    invT+=b.investedNet;recT+=b.recoupedNet;}
+  const backShare=invT>0?recT/invT:null;
 
   /* ---- ROI by invoice, oldest first, read against the shop's own average ---- */
   const chartB=batches.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).slice(-24);
   function roiChart(){
     if(!chartB.length)return html`<div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note">Post a purchase invoice and each one's return builds here.</div></div>`;
-    const vals=chartB.map(b=>b.roi==null?0:b.roi);
-    const hi=Math.max(0.05,...vals),lo=Math.min(0,...vals);
+    /* Each bar is the whole return on what the invoice cost, because recouped and profit share
+       that denominator and so belong on one axis. The pale part is the capital coming back, the
+       solid part the profit on top of it; together they are the money-back ratio, and the line at
+       100% is where the invoice has paid for itself. */
+    const share=b=>b.investedNet>0?{back:b.recoupedNet/b.investedNet,
+      cost:(b.recoupedNet-b.profit)/b.investedNet,roi:b.roi==null?0:b.roi}:{back:0,cost:0,roi:0};
+    const sh=chartB.map(share);
+    const hi=Math.max(0.05,1.05,...sh.map(s=>s.back)),lo=Math.min(0,...sh.map(s=>Math.min(s.roi,s.back)));
     const W=720,H=236,padL=46,padR=14,padT=16,padB=44,iw=W-padL-padR,ih=H-padT-padB;
     const ticks=niceTicks(hi*100,4).map(t=>t/100);const top=Math.max(hi,ticks[ticks.length-1]);
     const span=top-lo||1;const y=v=>padT+ih-((v-lo)/span)*ih;const zero=y(0);
@@ -1206,17 +1214,27 @@ function Overview({st,go}){
       ${chartB.map((b,i)=>{const v=b.roi==null?0:b.roi;const cx=padL+step*i+step/2;
         /* an invoice that has returned nothing yet is a fact worth seeing, not a blank column,
            so it keeps a short stub sitting on the zero line */
-        const stub=Math.abs(y(v)-zero)<3;
-        const hgt=stub?3:Math.abs(y(v)-zero);const yy=v>=0?(stub?zero-3:y(v)):zero;
+        const s=sh[i];const x0=cx-bw/2;
+        const seg=(a,z,fill,r)=>{const y1=y(Math.max(a,z)),y2=y(Math.min(a,z));
+          return html`<rect x=${x0} y=${y1} width=${bw} height=${Math.max(0,y2-y1)} rx=${r||0} style=${{fill}}/>`;};
+        const nothing=s.back<=0.001&&s.roi<=0.001;
         return html`<g key=${b.batchRef} style=${{cursor:"pointer"}} onClick=${()=>go("inventory")}
           ...${tp([b.batchRef+(b.provider?" · "+b.provider:""),fmtD(b.date),
-            "ROI "+(b.roi==null?"—":pct(b.roi)),"invested "+money(b.investedNet),"recouped "+money(b.recoupedNet),
-            "profit "+money(b.profit),"sold "+num(b.sold)+" of "+num(b.received)])}>
-          <rect x=${cx-bw/2} y=${yy} width=${bw} height=${hgt} rx="4"
-            style=${{fill:v<0?"var(--bad)":(b.sold===0?"var(--line-strong)":"var(--good)")}}/>
+            "invested "+money(b.investedNet),
+            "recouped "+money(b.recoupedNet)+(b.investedNet>0?" — "+pct(s.back)+" of cost":""),
+            "of which profit "+money(b.profit),
+            "ROI "+(b.roi==null?"—":pct(b.roi)),
+            "sold "+num(b.sold)+" of "+num(b.received)])}>
+          ${nothing?html`<rect x=${x0} y=${zero-3} width=${bw} height="3" rx="1.5" style=${{fill:"var(--line-strong)"}}/>`
+            :(s.roi<0?seg(Math.min(0,s.back),Math.max(0,s.back),"var(--bad)",4)
+              :html`<${React.Fragment}>${seg(0,s.cost,"var(--accent-soft)")}${seg(s.cost,s.back,"var(--good)",4)}</${React.Fragment}>`)}
           <text x=${cx} y=${H-padB+15} text-anchor="middle" style=${{fontSize:"9.5px",fill:"var(--faint)"}}>${skip&&(i%2)?"":fmtD(b.date).slice(0,5)}</text>
         </g>`;})}
       <line x1=${padL} x2=${W-padR} y1=${zero} y2=${zero} style=${{stroke:"var(--line-strong)"}}/>
+      ${(()=>{const y1=y(1);return (y1>padT-1&&y1<padT+ih)?html`<${React.Fragment}>
+        <line x1=${padL} x2=${W-padR} y1=${y1} y2=${y1} style=${{stroke:"var(--good)",strokeWidth:"1.5",strokeDasharray:"4 3",opacity:".8"}}/>
+        <text x=${W-padR} y=${y1-6} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--good)",fontWeight:"600"}}>paid for itself</text>
+        </${React.Fragment}>`:null;})()}
     </svg>`;}
 
   /* ---- the three lists ---- */
@@ -1243,18 +1261,22 @@ function Overview({st,go}){
       <div class="note">Every figure here is the same one the Inventory tab computes — landed, net of VAT.</div></div></div>
     <div class="kpis" style=${{marginBottom:"20px"}}>
       <div class="kpi"><div class="k">Stock value</div><div class="v">${money(stockVal)}</div><div class="f">${num(onHand)} units · ${num(inStock)} codes in stock</div></div>
-      <div class="kpi"><div class="k">Capital still out</div><div class="v">${money(out)}</div><div class="f">${num(outN)} invoice${outN===1?"":"s"} not yet recouped</div></div>
+      <div class="kpi"><div class="k">Capital still out</div><div class="v">${money(out)}</div>
+        <div class="f">${num(outN)} invoice${outN===1?"":"s"} not yet recouped</div>
+        ${backShare==null?null:html`<${React.Fragment}><${MiniBar} frac=${Math.min(1,backShare)} tone=${backShare>=1?"good":"accent"}/>
+        <div class="f">${pct(backShare)} of everything bought has come back</div></${React.Fragment}>`}</div>
       <div class="kpi"><div class="k">Profit realised</div><div class="v" style=${{color:profit>0?"var(--good)":profit<0?"var(--bad)":"inherit"}}>${money(profit)}</div><div class="f">on ${money(netRev)} of sales</div></div>
       <div class="kpi"><div class="k">Return on cost</div><div class="v">${roi==null?"—":pct(roi)}</div><div class="f">${sellThrough==null?"nothing received yet":pct(sellThrough)+" of stock sold through"}</div></div>
     </div>
     <div class="panel" style=${{marginBottom:"13px"}}>
-      <div class="panel-h"><h3>Return by invoice</h3><button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div>
+      <div class="panel-h"><h3>What each invoice has returned</h3><button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div>
       <div style=${{padding:"12px 14px 6px"}}>${roiChart()}</div>
       ${chartB.length?html`<div class="chartkey">
-        <span><i style=${{background:"var(--good)"}}></i>returning</span>
+        <span><i style=${{background:"var(--accent-soft)"}}></i>capital back</span>
+        <span><i style=${{background:"var(--good)"}}></i>profit on top</span>
         <span><i style=${{background:"var(--line-strong)"}}></i>nothing sold yet</span>
         <span><i style=${{background:"var(--bad)"}}></i>sold below cost</span>
-        <span class="faint">profit ÷ what the invoice cost · newest on the right</span></div>`:null}
+        <span class="faint">each bar is money back ÷ what the invoice cost · newest on the right</span></div>`:null}
     </div>
     <div class="grid3">
       <div class="panel"><div class="panel-h"><h3>Earning most</h3></div>

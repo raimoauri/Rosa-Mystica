@@ -440,3 +440,8 @@ repo, because the previous one lived in a scratch directory and went with the co
     share of the invoice's cost it covers, with a small bar, turning green at 100% where the stock
     still on the shelf becomes free. ROI is untouched: profit over the whole invoice is a different
     question from money back over money out. ✅
+31. **The Overview chart carries both questions at once.** Recouped and ROI share a denominator —
+    what the invoice cost — so they belong on one axis. Each bar is now the whole return: the pale
+    part is capital coming back, the solid part the profit on top, and together they are the
+    money-back ratio, against a line at 100% where the invoice has paid for itself. The Capital
+    still out tile gains the same ratio for the shop as a whole. ✅
