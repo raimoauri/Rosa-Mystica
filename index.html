@@ -1231,12 +1231,13 @@ function Overview({st,go}){
         const nothing=s.back<=0.001&&s.roi<=0.001;
         const hasProfit=s.back>s.cost+0.0001;
         return html`<g key=${b.batchRef} style=${{cursor:"pointer"}} onClick=${()=>go("inventory")}
+          ${/* the tooltip reads bottom-up, in the order the bar stacks */""}
           ...${tp([b.batchRef+(b.provider?" · "+b.provider:""),fmtD(b.date),
-            "invested "+money(b.investedNet),
-            "recouped "+money(b.recoupedNet)+(b.investedNet>0?" — "+pct(s.back)+" of cost":""),
-            "of which profit "+money(b.profit),
-            "ROI "+(b.roi==null?"—":pct(b.roi)),
-            "sold "+num(b.sold)+" of "+num(b.received)])}>
+            "invested "+money(b.investedNet)+" · sold "+num(b.sold)+" of "+num(b.received),
+            "stock sold, at cost "+money(b.recoupedNet-b.profit)+(b.investedNet>0?" — "+pct(s.cost):""),
+            "profit on it "+money(b.profit)+(b.investedNet>0?" — "+pct(s.roi):""),
+            "money back "+money(b.recoupedNet)+(b.investedNet>0?" — "+pct(s.back)+" of cost":""),
+            "ROI "+(b.roi==null?"—":pct(b.roi))])}>
           ${nothing?px(zero-3,zero,"var(--line-strong)",true,false)
             :(s.roi<0?px(Math.min(zero,y(s.back)),Math.max(zero,y(s.back)),"var(--bad)",s.back>0,s.back<0)
               :html`<${React.Fragment}>
@@ -1290,8 +1291,8 @@ function Overview({st,go}){
       <div class="panel-h"><h3>What each invoice has returned</h3><button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div>
       <div style=${{padding:"12px 14px 6px"}}>${roiChart()}</div>
       ${chartB.length?html`<div class="chartkey">
-        <span><i style=${{background:"var(--good)",opacity:".3"}}></i>cost recovered</span>
-        <span><i style=${{background:"var(--good)"}}></i>profit on top</span>
+        <span><i style=${{background:"var(--good)",opacity:".3"}}></i>stock sold, at cost</span>
+        <span><i style=${{background:"var(--good)"}}></i>profit on it</span>
         <span><i style=${{background:"var(--line-strong)"}}></i>nothing sold yet</span>
         <span><i style=${{background:"var(--bad)"}}></i>sold below cost</span>
         <span class="faint">each bar is money back ÷ what the invoice cost · newest on the right</span></div>`:null}

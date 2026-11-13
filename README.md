@@ -453,3 +453,9 @@ repo, because the previous one lived in a scratch directory and went with the co
     wherever the system hides scrollbars: the Inventory screen is now exempt from the
     reading-width cap, *Not sold* moved under the Sold figure rather than holding a column of
     dashes, and the scroll is styled so a narrow screen shows there is more. ✅
+33. **The stacked bar says what it is.** Its lower segment is the cost of the units that have
+    sold, not the capital recovered — an invoice 150% recouped has its capital back in full while
+    that segment sits near 60%. The label said "capital back", which contradicted the total above
+    it. It now reads *stock sold, at cost* beneath *profit on it*, so the pale part doubles as
+    sell-through measured in money and profit stays visible from the first sale rather than only
+    after break-even. Both segments are one hue, the lower a tint. ✅

@@ -77,6 +77,13 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
   const paid=await p.evaluate(()=>[...document.querySelectorAll("svg text")]
     .map(t=>t.textContent).filter(t=>/paid for itself/.test(t)).length);
   chk(paid===1,"and a line at 100% marks where an invoice has paid for itself");
+  /* the lower segment is the cost of what sold, not the capital recovered: an invoice 150%
+     recouped has its capital back in full while this segment sits near the margin complement.
+     The label has to say so, or the bar contradicts the total above it. */
+  const key=await p.evaluate(()=>[...document.querySelectorAll(".chartkey span")].map(s=>s.textContent.trim()));
+  chk(key.some(k=>/stock sold, at cost/.test(k)),"the legend names the lower segment for what it is — "+key.join(" · "));
+  chk(!key.some(k=>/cost recovered|capital back/.test(k)),
+      "and not as capital recovered, which it is not");
   const refs=await p.evaluate(()=>[...document.querySelectorAll("svg text")]
     .map(t=>t.textContent).filter(t=>/average|%$/.test(t)&&!/paid for itself/.test(t)));
   chk(!refs.some(t=>/average/.test(t)),
