@@ -250,11 +250,11 @@ textarea.io{font-family:var(--mono);font-size:11.5px;min-height:150px;white-spac
   .rail{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;border-bottom:1px solid var(--line);padding:10px 12px}
   .brand{padding:0 10px 0 4px}.railspace{flex:0}.railfoot{border-top:0;margin:0;padding:0}
   .navitem{width:auto} .navitem .count{display:none}
-  .kpis{grid-template-columns:repeat(2,1fr)}
+  .kpis,.kpis.five{grid-template-columns:repeat(2,1fr)}
   .content,.topbar{padding-left:16px;padding-right:16px}
   .grid3{grid-template-columns:1fr 1fr}
 }
-@media (max-width:520px){ .kpis{grid-template-columns:1fr} .grid2,.grid3{grid-template-columns:1fr} }
+@media (max-width:520px){ .kpis,.kpis.five{grid-template-columns:1fr} .grid2,.grid3{grid-template-columns:1fr} }
 .charttip{position:fixed;z-index:200;pointer-events:none;background:var(--ink);color:var(--bg);font-size:11.5px;font-weight:500;padding:5px 9px;border-radius:7px;box-shadow:var(--shadow-lift);transform:translate(-50%,calc(-100% - 12px));white-space:nowrap;font-variant-numeric:tabular-nums}
 @media (max-width:860px){.anrow{grid-template-columns:1fr!important}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -1185,8 +1185,11 @@ function Overview({st,go}){
   const roi=cogs>0?profit/cogs:null;const sellThrough=recvT>0?soldT/recvT:null;
   /* capital still out: what each invoice cost, less what its sales have brought back, counting
      only the invoices still in the red — a recouped batch does not offset an unrecouped one */
-  let out=0,outN=0,invT=0,recT=0;
+  let out=0,outN=0,invT=0,recT=0,surplus=0,paidN=0;
   for(const b of batches){const left=b.investedNet-b.recoupedNet;if(left>0){out+=left;outN++;}
+    /* money returned beyond what an invoice cost, counted per invoice: a batch still in the red
+       does not cancel one that is ahead, because the shelf stock of the first is not cash */
+    else if(b.investedNet>0){surplus+=-left;paidN++;}
     invT+=b.investedNet;recT+=b.recoupedNet;}
   const backShare=invT>0?recT/invT:null;
 
@@ -1278,7 +1281,7 @@ function Overview({st,go}){
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"18px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>The hub at a glance</h2>
       <div class="note">Every figure here is the same one the Inventory tab computes — landed, net of VAT.</div></div></div>
-    <div class="kpis" style=${{marginBottom:"20px"}}>
+    <div class="kpis five" style=${{marginBottom:"20px"}}>
       <div class="kpi"><div class="k">Stock value</div><div class="v">${money(stockVal)}</div><div class="f">${num(onHand)} units · ${num(inStock)} codes in stock</div></div>
       <div class="kpi"><div class="k">Capital still out</div><div class="v">${money(out)}</div>
         <div class="f">${num(outN)} invoice${outN===1?"":"s"} not yet recouped</div>
@@ -1286,6 +1289,9 @@ function Overview({st,go}){
         <div class="f">${pct(backShare)} of everything bought has come back</div></${React.Fragment}>`}</div>
       <div class="kpi"><div class="k">Profit realised</div><div class="v" style=${{color:profit>0?"var(--good)":profit<0?"var(--bad)":"inherit"}}>${money(profit)}</div><div class="f">on ${money(netRev)} of sales</div></div>
       <div class="kpi"><div class="k">Return on cost</div><div class="v">${roi==null?"—":pct(roi)}</div><div class="f">${sellThrough==null?"nothing received yet":pct(sellThrough)+" of stock sold through"}</div></div>
+      <div class="kpi"><div class="k">Returned beyond cost</div>
+        <div class="v" style=${{color:surplus>0?"var(--good)":"inherit"}}>${money(surplus)}</div>
+        <div class="f">${paidN?"from "+num(paidN)+" invoice"+(paidN===1?"":"s")+" past "+(paidN===1?"its":"their")+" own cost":"no invoice has passed its cost yet"}</div></div>
     </div>
     <div class="panel" style=${{marginBottom:"13px"}}>
       <div class="panel-h"><h3>What each invoice has returned</h3><button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div>

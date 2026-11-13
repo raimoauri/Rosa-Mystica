@@ -459,3 +459,8 @@ repo, because the previous one lived in a scratch directory and went with the co
     it. It now reads *stock sold, at cost* beneath *profit on it*, so the pale part doubles as
     sell-through measured in money and profit stays visible from the first sale rather than only
     after break-even. Both segments are one hue, the lower a tint. ✅
+34. **Returned beyond cost**, a fifth tile: the money invoices have brought in past what they
+    themselves cost. Counted per invoice, so a batch still in the red does not cancel one that is
+    ahead — the first one's shelf stock is not cash. Accumulated profit was already on the
+    Overview as *Profit realised*; this is the different question of how much has come back above
+    the line the chart draws at 100%. ✅

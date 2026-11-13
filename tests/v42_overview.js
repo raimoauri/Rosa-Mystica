@@ -49,6 +49,20 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
   chk(near(asNum(await kpi("Capital still out")),truth.out,0.02),
       "Capital still out counts only invoices still in the red ("+(await kpi("Capital still out"))+")");
   chk(truth.out>0,"and that figure is not simply zero in this fixture");
+  /* the surplus is counted per invoice: one still in the red must not cancel one that is ahead,
+     because the shelf stock of the first is not cash */
+  const surplus=await p.evaluate(()=>{const bs=computeBatches(JSON.parse(localStorage.getItem("rosamystica:v1")));
+    return bs.reduce((a,b)=>a+Math.max(0,b.recoupedNet-b.investedNet),0);});
+  chk(near(asNum(await kpi("Returned beyond cost")),surplus,0.02),
+      "Returned beyond cost sums what each paid-off invoice has brought in past its own cost ("
+      +(await kpi("Returned beyond cost"))+")");
+  chk(surplus>0,"and the fixture has an invoice past its cost, so the check bites");
+  const net=await p.evaluate(()=>{const bs=computeBatches(JSON.parse(localStorage.getItem("rosamystica:v1")));
+    return bs.reduce((a,b)=>a+(b.recoupedNet-b.investedNet),0);});
+  chk(Math.abs(net-surplus)>0.02,
+      "it is not the net across all invoices, which this fixture shows would be a different number ("
+      +net.toFixed(2)+" vs "+surplus.toFixed(2)+")");
+  chk(await p.evaluate(()=>!!document.querySelector(".kpis.five")),"five tiles, laid out as five");
 
   /* ---- the chart ---- */
 
