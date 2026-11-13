@@ -59,12 +59,15 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
   const groups=await p.evaluate(()=>[...document.querySelectorAll("svg g")]
     .filter(g=>g.querySelector("path")).map(g=>({rects:g.querySelectorAll("path").length,
       fills:[...g.querySelectorAll("path")].map(r=>r.style.fill),
+      ops:[...g.querySelectorAll("path")].map(r=>+(r.style.fillOpacity||1)),
       ds:[...g.querySelectorAll("path")].map(r=>r.getAttribute("d"))})));
   chk(groups.length===3,"a group per invoice, three here ("+groups.length+")");
   const sold=groups.filter(g=>g.rects===2),idle=groups.filter(g=>g.rects===1);
   chk(sold.length===2,"each invoice that has sold draws two stacked segments ("+sold.length+")");
-  chk(sold[0].fills.some(f=>/accent-soft/.test(f))&&sold[0].fills.some(f=>/--good/.test(f)),
-      "capital back beneath, profit above ("+sold[0].fills.join(" + ")+")");
+  chk(sold[0].fills.every(f=>/--good/.test(f)),
+      "both segments are the one hue — a second colour beneath read as a loss under a gain");
+  chk(sold[0].ops[0]<0.5&&sold[0].ops[1]===1,
+      "cost recovered is a tint of it, profit solid on top ("+sold[0].ops.join(" then ")+")");
   chk(idle.length===1,"the one that has returned nothing draws a visible stub ("+idle.length+")");
   chk(idle.every(g=>/line-strong/.test(g.fills[0])),"in the muted tone, not as profit");
   /* the join is square: the lower segment's path carries no curve, the upper one two */

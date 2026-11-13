@@ -1220,14 +1220,14 @@ function Overview({st,go}){
         /* Only the outer end of a stack is rounded. Rounding each segment leaves the upper one
            curving away from the lower where they meet; the join is square, with a 2px gap of
            surface between the two so the colours do not touch. */
-        const px=(yTop,yBot,fill,rt,rb)=>{const h=yBot-yTop;if(h<=0.4)return null;
+        const px=(yTop,yBot,fill,rt,rb,op)=>{const h=yBot-yTop;if(h<=0.4)return null;
           const r=Math.min(4,bw/2,h/2),t=rt?r:0,bo=rb?r:0;
           const d="M"+x0+" "+(yBot-bo)+" L"+x0+" "+(yTop+t)
             +(t?" Q"+x0+" "+yTop+" "+(x0+t)+" "+yTop:"")+" L"+(x0+bw-t)+" "+yTop
             +(t?" Q"+(x0+bw)+" "+yTop+" "+(x0+bw)+" "+(yTop+t):"")+" L"+(x0+bw)+" "+(yBot-bo)
             +(bo?" Q"+(x0+bw)+" "+yBot+" "+(x0+bw-bo)+" "+yBot:"")+" L"+(x0+bo)+" "+yBot
             +(bo?" Q"+x0+" "+yBot+" "+x0+" "+(yBot-bo):"")+" Z";
-          return html`<path d=${d} style=${{fill}}/>`;};
+          return html`<path d=${d} style=${{fill,fillOpacity:op==null?1:op}}/>`;};
         const nothing=s.back<=0.001&&s.roi<=0.001;
         const hasProfit=s.back>s.cost+0.0001;
         return html`<g key=${b.batchRef} style=${{cursor:"pointer"}} onClick=${()=>go("inventory")}
@@ -1240,7 +1240,10 @@ function Overview({st,go}){
           ${nothing?px(zero-3,zero,"var(--line-strong)",true,false)
             :(s.roi<0?px(Math.min(zero,y(s.back)),Math.max(zero,y(s.back)),"var(--bad)",s.back>0,s.back<0)
               :html`<${React.Fragment}>
-                ${px(y(s.cost)+(hasProfit?2:0),zero,"var(--accent-soft)",!hasProfit,false)}
+                ${/* a tint of the same green, not a second hue: the lower part is the same
+                      return, minus the earnings. A red block under a green one read as a loss
+                      under a gain, which is the opposite of what cost coming back is. */""}
+                ${px(y(s.cost)+(hasProfit?2:0),zero,"var(--good)",!hasProfit,false,0.3)}
                 ${hasProfit?px(y(s.back),y(s.cost),"var(--good)",true,false):null}
               </${React.Fragment}>`)}
           <text x=${cx} y=${H-padB+15} text-anchor="middle" style=${{fontSize:"9.5px",fill:"var(--faint)"}}>${skip&&(i%2)?"":fmtD(b.date).slice(0,5)}</text>
@@ -1287,7 +1290,7 @@ function Overview({st,go}){
       <div class="panel-h"><h3>What each invoice has returned</h3><button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div>
       <div style=${{padding:"12px 14px 6px"}}>${roiChart()}</div>
       ${chartB.length?html`<div class="chartkey">
-        <span><i style=${{background:"var(--accent-soft)"}}></i>capital back</span>
+        <span><i style=${{background:"var(--good)",opacity:".3"}}></i>cost recovered</span>
         <span><i style=${{background:"var(--good)"}}></i>profit on top</span>
         <span><i style=${{background:"var(--line-strong)"}}></i>nothing sold yet</span>
         <span><i style=${{background:"var(--bad)"}}></i>sold below cost</span>
