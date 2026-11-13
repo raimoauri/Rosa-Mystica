@@ -120,7 +120,15 @@ button{font-family:inherit}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
 .panel-h{padding:13px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}
 .panel-h h3{font-size:14.5px}
-.tablewrap{overflow-x:auto}
+/* A wide table scrolls rather than squashing, and says so: overlay scrollbars vanish on most
+   systems, so a table running past the edge simply looked cut off. */
+.tablewrap{overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--line-strong) var(--surface-2)}
+.tablewrap::-webkit-scrollbar{height:9px}
+.tablewrap::-webkit-scrollbar-track{background:var(--surface-2)}
+.tablewrap::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:5px}
+.tablewrap::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+/* screens built around a wide table are not text, so the reading-width cap does not apply */
+.content.full{max-width:none}
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead th{position:sticky;top:0;background:var(--surface);color:var(--muted);font-weight:500;font-size:11.5px;text-align:left;
   padding:10px 14px;border-bottom:1px solid var(--line-strong);white-space:nowrap;z-index:1;cursor:default}
@@ -1393,6 +1401,7 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
   if(f.price!==""&&parseNum(f.price)==null)errs.push("Price must be a number.");
   const codeChanged=editing&&normCode(origCode)!==nc;
   const relinkN=codeChanged?st.ledger.filter(r=>normCode(r.code)===normCode(origCode)).length:0;
+  const relinkL=codeChanged?(st.invoices||[]).reduce((a,i)=>a+(i.lines||[]).filter(l=>normCode(l.code)===normCode(origCode)).length,0):0;
   const valid=errs.length===0;
   function commit(){if(!valid)return;
     const clean={code:f.code.trim(),type:f.type,name:f.name.trim(),author:f.author.trim(),year:String(f.year).trim(),
@@ -1437,7 +1446,7 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
     </div>
     <${Field} label="Reorder point (blank = reorder only when out of stock)">${html`<input class="mono" type="text" inputmode="numeric" value=${f.reorderPoint} onInput=${e=>up("reorderPoint",e.target.value)}/>`}</${Field}>
     <${Field} label="Notes">${html`<input type="text" value=${f.notes} onInput=${e=>up("notes",e.target.value)}/>`}</${Field}>
-    ${codeChanged&&relinkN>0?html`<div class="warnbox">Changing the code will relink <b>${relinkN}</b> ledger movement${relinkN>1?"s":""} from <span class="code">${origCode}</span> to <span class="code">${f.code.trim()}</span> in one atomic step.</div>`:null}
+    ${codeChanged&&(relinkN>0||relinkL>0)?html`<div class="warnbox">Changing the code moves everything that points at <span class="code">${origCode}</span> to <span class="code">${f.code.trim()}</span> in one atomic step: <b>${num(relinkN)}</b> ledger movement${relinkN===1?"":"s"}${relinkL>0?html` and <b>${num(relinkL)}</b> invoice line${relinkL===1?"":"s"}`:null}.</div>`:null}
     ${errs.length?html`<div>${errs.map((e,i)=>html`<div class="err" key=${i}>• ${e}</div>`)}</div>`:html`<div class="okmsg">Ready to save.</div>`}
   </${Modal}>`;}
 
@@ -2910,7 +2919,7 @@ function Inventory({st,act,show}){
       r.margin==null?"":(r.margin*100).toFixed(1),r.profitUnit==null?"":r.profitUnit.toFixed(2),
       r.rate==null?"":r.rate.toFixed(2),r.orderQty,r.orderCost?r.orderCost.toFixed(2):""]);
     const csv=toCSV(head,rr);if(IN_FRAME||!downloadText("rosa-mystica_reorder_"+today()+".csv",csv,"text/csv"))act.openExport("Reorder list — CSV",csv);else show("Saved CSV");}
-  return html`<div class="content">
+  return html`<div class="content full">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Inventory</h2>
       <div class="hintrow">
       <div class="seg"><button aria-pressed=${view==="stock"} onClick=${()=>setView("stock")}>Stock</button><button aria-pressed=${view==="reorder"} onClick=${()=>setView("reorder")}>Reorder${reorder.length?" · "+reorder.length:""}</button><button aria-pressed=${view==="batches"} onClick=${()=>setView("batches")}>Batches${batches.length?" · "+batches.length:""}</button><button aria-pressed=${view==="count"} onClick=${()=>setView("count")}>Count${Object.keys((st.count&&st.count.lines)||{}).length?" · "+num(Object.keys(st.count.lines).length):""}</button></div></div></div>
@@ -2978,19 +2987,19 @@ function Inventory({st,act,show}){
     </${React.Fragment}>`:view==="count"?html`<${CountPanel} st=${st} act=${act} show=${show}/>`:html`<${React.Fragment}>
     ${batches.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"470px"}}>Purchases that share a batch reference form an invoice. Record or import in-movements and each invoice's progress — sold vs received, capital recouped, ROI — builds here.</div></div></div>`:html`<${React.Fragment}>
     <div class="note" style=${{marginBottom:"14px",maxWidth:"700px"}}>Each row is one invoice / batch. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT. <b>Open a batch</b> to read it product by product — what each one cost landed, what it is priced at, and the margin that implies. Nothing here is editable; it is a reading of the ledger.</div>
-    <div class="panel"><div class="tablewrap"><table><thead><tr><th style=${{width:"24px"}}></th><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num">Sold</th><th class="num" title="units out on adjustment / write-off / gift lines">Not sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num" title="Net sales matched back to this invoice, and what share of its cost that covers. At 100% the invoice has paid for itself and the stock still on the shelf is free.">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
+    <div class="panel"><div class="tablewrap"><table><thead><tr><th style=${{width:"24px"}}></th><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num" title="Units sold. Any that left on an adjustment, write-off or gift line are noted beneath — they consume stock but book no takings.">Sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num" title="Net sales matched back to this invoice, and what share of its cost that covers. At 100% the invoice has paid for itself and the stock still on the shelf is free.">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
       <tbody>${batches.map(b=>{const isOpen=!!open[b.batchRef];
         const noSale=(b.lines||[]).filter(l=>!l.sellable);
         return html`<${React.Fragment} key=${b.batchRef}>
         <tr class=${"clickable"+(isOpen?" rowopen":"")} onClick=${()=>setOpen(o=>Object.assign({},o,{[b.batchRef]:!o[b.batchRef]}))}>
-        <td class="faint" style=${{textAlign:"center"}}>${isOpen?"\u25be":"\u25b8"}</td><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}</td><td class="num faint">${b.shrink?num(b.shrink):"—"}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${b.transport?money(b.transport):"—"}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}${(()=>{
+        <td class="faint" style=${{textAlign:"center"}}>${isOpen?"\u25be":"\u25b8"}</td><td class="code">${b.batchRef}</td><td class="note">${fmtD(b.date)}</td><td>${b.provider||"—"}</td><td class="num">${num(b.codes)}</td><td class="num">${num(b.received)}</td><td class="num">${num(b.sold)}${b.shrink?html`<div class="meta">${num(b.shrink)} not sold</div>`:null}</td><td class="num" style=${{color:b.onHand<0?"var(--bad)":"inherit"}}>${num(b.onHand)}</td><td class="num">${b.sellThrough==null?"—":pct(b.sellThrough)}</td><td class="num mono">${b.transport?money(b.transport):"—"}</td><td class="num mono">${money(b.investedNet)}</td><td class="num mono">${money(b.recoupedNet)}${(()=>{
           /* The ratio answers a question ROI does not: has this invoice paid for itself yet?
              ROI is profit over the whole invoice; this is money back over money out, so 100%
              is the line where the stock still on the shelf becomes free. Both are kept. */
           if(!(b.investedNet>0))return null;const f=b.recoupedNet/b.investedNet;
           return html`<div class="meta recouped"><span class=${f>=1?"good":null}>${pct(f)} back</span>
             <${MiniBar} frac=${Math.min(1,f)} tone=${f>=1?"good":"accent"}/></div>`;})()}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"\u2014":pct(b.roi)}</td></tr>
-        ${isOpen?html`<tr><td class="openpanel" colSpan="15" style=${{padding:"0 0 14px 0"}}>
+        ${isOpen?html`<tr><td class="openpanel" colSpan="14" style=${{padding:"0 0 14px 0"}}>
           <div style=${{padding:"10px 14px 0 42px"}}>
             <div class="note" style=${{marginBottom:"8px"}}>${num((b.lines||[]).length)} product${(b.lines||[]).length===1?"":"s"} in ${b.batchRef}${b.transport?" \u00b7 freight "+money(b.transport)+" spread over "+num(b.received)+" units, "+money(b.transport/Math.max(1,b.received))+" each":""}${noSale.length?" \u00b7 "+num(noSale.length)+" not for sale, so no price or margin is shown for "+(noSale.length===1?"it":"them"):""}</div>
             <table class="sub"><thead><tr>
@@ -3115,11 +3124,17 @@ function App(){
       const idx=oc?catalogue.findIndex(p=>normCode(p.code)===oc):-1;
       const rec=Object.assign({},idx>=0?catalogue[idx]:{createdAt:now},clean,{updatedAt:now});
       if(idx>=0)catalogue[idx]=rec; else catalogue=[...catalogue,rec];
-      let ledger=s.ledger;
-      if(oc&&oc!==nc)ledger=ledger.map(r=>normCode(r.code)===oc?{...r,code:clean.code}:r);
-      let staging=s.staging;
+      let ledger=s.ledger,invoices=s.invoices||[],staging=s.staging;
+      /* A code change here carries the same history the bulk Re-code tool carries. It used to
+         move the ledger and leave invoice lines pointing at the old code, so the ledger read
+         right and the invoice it came from read wrong, with nothing to say why. */
+      if(oc&&oc!==nc){
+        ledger=ledger.map(r=>normCode(r.code)===oc?{...r,code:clean.code}:r);
+        invoices=invoices.map(i=>Object.assign({},i,{lines:(i.lines||[]).map(l=>
+          normCode(l.code)===oc?Object.assign({},l,{code:clean.code}):l)}));
+        staging=staging.map(x=>normCode(x.code)===oc?Object.assign({},x,{code:clean.code}):x);}
       if(fromStaging)staging=staging.filter(x=>normCode(x.code)!==nc&&normCode(x.code)!==oc);
-      return {...s,catalogue,ledger,staging};}),
+      return {...s,catalogue,ledger,invoices,staging};}),
     deleteProduct:code=>setSt(s=>{undoRef.current=s;return {...s,catalogue:s.catalogue.filter(p=>normCode(p.code)!==normCode(code))};}),
     saveMovement:rec=>setSt(s=>{const now=new Date().toISOString();
       if(rec.id&&s.ledger.some(r=>r.id===rec.id))return {...s,ledger:s.ledger.map(r=>r.id===rec.id?{...r,...rec}:r)};

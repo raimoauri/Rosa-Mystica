@@ -445,3 +445,11 @@ repo, because the previous one lived in a scratch directory and went with the co
     part is capital coming back, the solid part the profit on top, and together they are the
     money-back ratio, against a line at 100% where the invoice has paid for itself. The Capital
     still out tile gains the same ratio for the shop as a whole. ✅
+32. **The product editor carries the same history the bulk tool does**, and the Batches table fits
+    the screen. Changing a code in the editor moved ledger movements and left invoice lines
+    pointing at the old code, so the ledger read right and the invoice it came from read wrong
+    with nothing to explain why; it now moves invoice lines and staged entries too, and says so
+    before you save. The Batches table was wider than its container and the overflow was invisible
+    wherever the system hides scrollbars: the Inventory screen is now exempt from the
+    reading-width cap, *Not sold* moved under the Sold figure rather than holding a column of
+    dashes, and the scroll is styled so a narrow screen shows there is more. ✅
