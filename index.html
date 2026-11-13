@@ -1215,9 +1215,19 @@ function Overview({st,go}){
         /* an invoice that has returned nothing yet is a fact worth seeing, not a blank column,
            so it keeps a short stub sitting on the zero line */
         const s=sh[i];const x0=cx-bw/2;
-        const seg=(a,z,fill,r)=>{const y1=y(Math.max(a,z)),y2=y(Math.min(a,z));
-          return html`<rect x=${x0} y=${y1} width=${bw} height=${Math.max(0,y2-y1)} rx=${r||0} style=${{fill}}/>`;};
+        /* Only the outer end of a stack is rounded. Rounding each segment leaves the upper one
+           curving away from the lower where they meet; the join is square, with a 2px gap of
+           surface between the two so the colours do not touch. */
+        const px=(yTop,yBot,fill,rt,rb)=>{const h=yBot-yTop;if(h<=0.4)return null;
+          const r=Math.min(4,bw/2,h/2),t=rt?r:0,bo=rb?r:0;
+          const d="M"+x0+" "+(yBot-bo)+" L"+x0+" "+(yTop+t)
+            +(t?" Q"+x0+" "+yTop+" "+(x0+t)+" "+yTop:"")+" L"+(x0+bw-t)+" "+yTop
+            +(t?" Q"+(x0+bw)+" "+yTop+" "+(x0+bw)+" "+(yTop+t):"")+" L"+(x0+bw)+" "+(yBot-bo)
+            +(bo?" Q"+(x0+bw)+" "+yBot+" "+(x0+bw-bo)+" "+yBot:"")+" L"+(x0+bo)+" "+yBot
+            +(bo?" Q"+x0+" "+yBot+" "+x0+" "+(yBot-bo):"")+" Z";
+          return html`<path d=${d} style=${{fill}}/>`;};
         const nothing=s.back<=0.001&&s.roi<=0.001;
+        const hasProfit=s.back>s.cost+0.0001;
         return html`<g key=${b.batchRef} style=${{cursor:"pointer"}} onClick=${()=>go("inventory")}
           ...${tp([b.batchRef+(b.provider?" · "+b.provider:""),fmtD(b.date),
             "invested "+money(b.investedNet),
@@ -1225,9 +1235,12 @@ function Overview({st,go}){
             "of which profit "+money(b.profit),
             "ROI "+(b.roi==null?"—":pct(b.roi)),
             "sold "+num(b.sold)+" of "+num(b.received)])}>
-          ${nothing?html`<rect x=${x0} y=${zero-3} width=${bw} height="3" rx="1.5" style=${{fill:"var(--line-strong)"}}/>`
-            :(s.roi<0?seg(Math.min(0,s.back),Math.max(0,s.back),"var(--bad)",4)
-              :html`<${React.Fragment}>${seg(0,s.cost,"var(--accent-soft)")}${seg(s.cost,s.back,"var(--good)",4)}</${React.Fragment}>`)}
+          ${nothing?px(zero-3,zero,"var(--line-strong)",true,false)
+            :(s.roi<0?px(Math.min(zero,y(s.back)),Math.max(zero,y(s.back)),"var(--bad)",s.back>0,s.back<0)
+              :html`<${React.Fragment}>
+                ${px(y(s.cost)+(hasProfit?2:0),zero,"var(--accent-soft)",!hasProfit,false)}
+                ${hasProfit?px(y(s.back),y(s.cost),"var(--good)",true,false):null}
+              </${React.Fragment}>`)}
           <text x=${cx} y=${H-padB+15} text-anchor="middle" style=${{fontSize:"9.5px",fill:"var(--faint)"}}>${skip&&(i%2)?"":fmtD(b.date).slice(0,5)}</text>
         </g>`;})}
       <line x1=${padL} x2=${W-padR} y1=${zero} y2=${zero} style=${{stroke:"var(--line-strong)"}}/>

@@ -62,9 +62,12 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
 
   /* each bar stacks the capital coming back under the profit on top of it, so an invoice that
      has returned something draws two segments and one that has not draws a single stub */
+  /* segments are paths, not rects: only the outer end of a stack is rounded, which a rect's
+     rx cannot express without curving the join between the two colours */
   const groups=await p.evaluate(()=>[...document.querySelectorAll("svg g")]
-    .filter(g=>g.querySelector("rect")).map(g=>({rects:g.querySelectorAll("rect").length,
-      fills:[...g.querySelectorAll("rect")].map(r=>r.style.fill)})));
+    .filter(g=>g.querySelector("path")).map(g=>({rects:g.querySelectorAll("path").length,
+      fills:[...g.querySelectorAll("path")].map(r=>r.style.fill),
+      ds:[...g.querySelectorAll("path")].map(r=>r.getAttribute("d"))})));
   chk(groups.length===3,"a group per invoice, three here ("+groups.length+")");
   const sold=groups.filter(g=>g.rects===2),idle=groups.filter(g=>g.rects===1);
   chk(sold.length===2,"each invoice that has sold draws two stacked segments ("+sold.length+")");
@@ -72,6 +75,10 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
       "capital back beneath, profit above ("+sold[0].fills.join(" + ")+")");
   chk(idle.length===1,"the one that has returned nothing draws a visible stub ("+idle.length+")");
   chk(idle.every(g=>/line-strong/.test(g.fills[0])),"in the muted tone, not as profit");
+  /* the join is square: the lower segment's path carries no curve, the upper one two */
+  const lower=sold[0].ds[0],upper=sold[0].ds[1];
+  chk((lower.match(/Q/g)||[]).length===0,"the capital segment is square at both ends");
+  chk((upper.match(/Q/g)||[]).length===2,"the profit segment is rounded only at its outer end");
   const paid=await p.evaluate(()=>[...document.querySelectorAll("svg text")]
     .map(t=>t.textContent).filter(t=>/paid for itself/.test(t)).length);
   chk(paid===1,"and a line at 100% marks where an invoice has paid for itself");
