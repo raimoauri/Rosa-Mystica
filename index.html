@@ -1173,15 +1173,32 @@ function MiniBar({frac,tone}){
 function Overview({st,go}){
   const [tip,setTip]=useState(null);
   const tp=label=>({onMouseEnter:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseMove:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseLeave:()=>setTip(null)});
+  /* The Overview is the invoice view. Stock that arrived some other way — inherited, an opening
+     balance, a ledger import — carries costs nobody can vouch for, and mixing it in produced
+     figures that were part record and part guess with no way to tell which. Every number here
+     now comes from batches a posted invoice created. FIFO still draws on every lot, so costs and
+     sell-through are unchanged; those batches are simply not reported. Inventory still shows
+     the whole shelf. */
+  const allB=useMemo(()=>computeBatches(st),[st]);
+  const ibs=useMemo(()=>invoiceBatchSet(st),[st.invoices]);
+  const batches=useMemo(()=>allB.filter(b=>ibs.has(batchKey(b.batchRef))),[allB,ibs]);
+  const hiddenB=allB.length-batches.length;
   const inv=useMemo(()=>computeInventory(st),[st]);
-  const batches=useMemo(()=>computeBatches(st),[st]);
+
+  /* per product, across invoice batches only */
+  const prod=useMemo(()=>{const m={};
+    for(const b of batches)for(const l of (b.lines||[])){const k=normCode(l.code);
+      const t=m[k]||(m[k]={code:l.code,name:l.name,inCat:l.inCat,sellable:l.sellable,
+        received:0,sold:0,profit:0,netRev:0,cogsNet:0,valueNet:0});
+      t.received+=l.received;t.sold+=l.sold;t.profit+=l.profit;t.netRev+=l.netRev;
+      t.cogsNet+=l.cogsNet;t.valueNet+=l.valueNet;}
+    return Object.values(m);},[batches]);
 
   let stockVal=0,onHand=0,inStock=0,profit=0,cogs=0,netRev=0,recvT=0,soldT=0,deadVal=0,deadU=0;
-  for(const r of inv){profit+=r.realProfit;cogs+=r.cogs;netRev+=r.revenueNet;
-    if(!r.stocked)continue;
-    stockVal+=r.onHandValue;onHand+=r.onHand;if(r.onHand>0)inStock++;
-    if(r.received>0){recvT+=r.received;soldT+=r.sold;}
-    if(r.sold===0&&r.onHandValue>0){deadVal+=r.onHandValue;deadU+=r.onHand;}}
+  for(const r of prod){profit+=r.profit;cogs+=r.cogsNet;netRev+=r.netRev;
+    stockVal+=r.valueNet;const oh=r.received-r.sold;if(oh>0){onHand+=oh;inStock++;}
+    recvT+=r.received;soldT+=r.sold;
+    if(r.sold===0&&r.valueNet>0){deadVal+=r.valueNet;deadU+=oh;}}
   const roi=cogs>0?profit/cogs:null;const sellThrough=recvT>0?soldT/recvT:null;
   /* capital still out: what each invoice cost, less what its sales have brought back, counting
      only the invoices still in the red — a recouped batch does not offset an unrecouped one */
@@ -1260,18 +1277,16 @@ function Overview({st,go}){
     </svg>`;}
 
   /* ---- the three lists ---- */
-  const sold=inv.filter(r=>r.sold>0&&r.inCat);
-  const best=sold.slice().sort((a,b)=>b.realProfit-a.realProfit).slice(0,6);
-  const bestMax=Math.max(1,...best.map(r=>r.realProfit));
+  const sold=prod.filter(r=>r.sold>0&&r.inCat);
+  const best=sold.slice().sort((a,b)=>b.profit-a.profit).slice(0,6);
+  const bestMax=Math.max(1,...best.map(r=>r.profit));
   /* realised margin, not the shelf price's: what the units that sold actually returned. Three
      sold is the floor — one lucky sale at an odd price is not a margin worth ranking. */
-  const marg=sold.filter(r=>r.sold>=3&&r.revenueNet>0).map(r=>Object.assign({},r,{realised:r.realProfit/r.revenueNet}))
+  const marg=sold.filter(r=>r.sold>=3&&r.netRev>0).map(r=>Object.assign({},r,{realised:r.profit/r.netRev}))
     .sort((a,b)=>b.realised-a.realised).slice(0,6);
-  const dead=inv.filter(r=>r.inCat&&r.stocked&&r.sold===0&&r.onHandValue>0)
-    .sort((a,b)=>b.onHandValue-a.onHandValue).slice(0,6);
-  const deadMax=Math.max(1,...dead.map(r=>r.onHandValue));
-  const ageOf=d=>{if(!d)return "";const m=Math.floor((new Date()-new Date(d+"T00:00:00"))/2629800000);
-    return m<1?"this month":(m===1?"1 month":m+" months");};
+  const dead=prod.filter(r=>r.inCat&&r.sold===0&&r.valueNet>0)
+    .sort((a,b)=>b.valueNet-a.valueNet).slice(0,6);
+  const deadMax=Math.max(1,...dead.map(r=>r.valueNet));
 
   const Row=(r,right,sub,frac,tone)=>html`<div class="toprow" key=${normCode(r.code)}>
     <div class="toprow-t"><span class="name">${r.name||r.code}</span><span class="mono">${right}</span></div>
@@ -1280,7 +1295,7 @@ function Overview({st,go}){
 
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"18px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>The hub at a glance</h2>
-      <div class="note">Every figure here is the same one the Inventory tab computes — landed, net of VAT.</div></div></div>
+      <div class="note">Everything here is read from your posted invoices — landed, net of VAT. ${hiddenB?html`<b>${num(hiddenB)} batch${hiddenB===1?"":"es"}</b> in the ledger came from somewhere else and ${hiddenB===1?"is":"are"} left out; Inventory shows the whole shelf.`:"Every batch in the ledger came from one."}</div></div></div>
     <div class="kpis five" style=${{marginBottom:"20px"}}>
       <div class="kpi"><div class="k">Stock value</div><div class="v">${money(stockVal)}</div><div class="f">${num(onHand)} units · ${num(inStock)} codes in stock</div></div>
       <div class="kpi"><div class="k">Capital still out</div><div class="v">${money(out)}</div>
@@ -1305,16 +1320,16 @@ function Overview({st,go}){
     </div>
     <div class="grid3">
       <div class="panel"><div class="panel-h"><h3>Earning most</h3></div>
-        <div class="toplist">${best.length?best.map(r=>Row(r,money(r.realProfit),
-          num(r.sold)+" sold · "+(r.revenueNet>0?pct(r.realProfit/r.revenueNet)+" margin":"—"),r.realProfit/bestMax,"good")):
+        <div class="toplist">${best.length?best.map(r=>Row(r,money(r.profit),
+          num(r.sold)+" sold · "+(r.netRev>0?pct(r.profit/r.netRev)+" margin":"—"),r.profit/bestMax,"good")):
           html`<div class="note" style=${{padding:"14px"}}>Nothing has sold yet.</div>`}</div></div>
       <div class="panel"><div class="panel-h"><h3>Best margin</h3></div>
         <div class="toplist">${marg.length?marg.map(r=>Row(r,pct(r.realised),
-          num(r.sold)+" sold · "+money(r.realProfit)+" earned",r.realised,"accent")):
+          num(r.sold)+" sold · "+money(r.profit)+" earned",r.realised,"accent")):
           html`<div class="note" style=${{padding:"14px"}}>Nothing has sold three or more yet — the floor that keeps one lucky sale out of this list.</div>`}</div></div>
       <div class="panel"><div class="panel-h"><h3>Money sitting still</h3></div>
-        <div class="toplist">${dead.length?dead.map(r=>Row(r,money(r.onHandValue),
-          num(r.onHand)+" on hand · in stock "+ageOf(r.firstInDate),r.onHandValue/deadMax,"warn")):
+        <div class="toplist">${dead.length?dead.map(r=>Row(r,money(r.valueNet),
+          num(r.received-r.sold)+" on hand, never sold",r.valueNet/deadMax,"warn")):
           html`<div class="note" style=${{padding:"14px"}}>Everything in stock has sold at least once.</div>`}
           ${dead.length?html`<div class="toplist-f">${money(deadVal)} across ${num(deadU)} units has never sold</div>`:null}</div></div>
     </div>
@@ -2815,6 +2830,13 @@ function computeInventory(st){
   return rows;
 }
 /* Per-invoice (batch) progress — FIFO lot→batch attribution from the one ledger. */
+/* Which batch references a posted invoice actually created. Everything else in the ledger —
+   opening balances, imported history — is stock whose cost nobody recorded against a document. */
+function batchKey(b){return String(b==null?"":b).trim().toUpperCase();}
+function invoiceBatchSet(st){const s=new Set();
+  for(const i of (st.invoices||[])){const b=batchKey(i.batchRef);
+    if(b&&i.status==="posted")s.add(b);}
+  return s;}
 function computeBatches(st){
   const byCode=indexCatalogue(st.catalogue);const insBy={},outsBy={};const ti=batchTransportInfo(st);const tperU=ti.per;const ttotal=ti.total;const km=kindMap(st);
   for(const r of st.ledger){const k=normCode(r.code);if(!k)continue;if(r.dir==="in")(insBy[k]=insBy[k]||[]).push(r);else if(r.dir==="out")(outsBy[k]=outsBy[k]||[]).push(r);}
@@ -2865,7 +2887,12 @@ function Inventory({st,act,show}){
   const coverWeeks=(st.settings&&+st.settings.coverWeeks)||8;
   const orderLines=(st.order&&st.order.lines)||{};const todayISO=today();
   const rows=useMemo(()=>computeInventory(st),[st]);
-  const batches=useMemo(()=>computeBatches(st),[st]);
+  /* same rule as the Overview: a batch is an invoice you posted. Stock that arrived any other
+     way is still in Stock, Reorder and Count — it just has no invoice to report against. */
+  const allBatches=useMemo(()=>computeBatches(st),[st]);
+  const ibs=useMemo(()=>invoiceBatchSet(st),[st.invoices]);
+  const batches=useMemo(()=>allBatches.filter(b=>ibs.has(batchKey(b.batchRef))),[allBatches,ibs]);
+  const hiddenB=allBatches.length-batches.length;
   let onHand=0,stockVal=0,profit=0,cogs=0,inStock=0,recvT=0,soldT=0,shrinkU=0,shrinkC=0,noCost=0,noCostN=0;
   for(const r of rows){profit+=r.realProfit;cogs+=r.cogs;if(r.unmatched>0){noCost+=r.unmatched;noCostN++;}
     if(!r.stocked)continue;
@@ -2996,7 +3023,7 @@ function Inventory({st,act,show}){
       </${React.Fragment}>`)}</tbody></table></div></div>`}
     </${React.Fragment}>`:view==="count"?html`<${CountPanel} st=${st} act=${act} show=${show}/>`:html`<${React.Fragment}>
     ${batches.length===0?html`<div class="panel"><div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note" style=${{maxWidth:"470px"}}>Purchases that share a batch reference form an invoice. Record or import in-movements and each invoice's progress — sold vs received, capital recouped, ROI — builds here.</div></div></div>`:html`<${React.Fragment}>
-    <div class="note" style=${{marginBottom:"14px",maxWidth:"700px"}}>Each row is one invoice / batch. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT. <b>Open a batch</b> to read it product by product — what each one cost landed, what it is priced at, and the margin that implies. Nothing here is editable; it is a reading of the ledger.</div>
+    <div class="note" style=${{marginBottom:"14px",maxWidth:"700px"}}>Each row is one posted invoice. Sales are matched to the batch that supplied them, oldest first (FIFO), so a reordered code's sales land against the right invoice. All figures net of VAT.${hiddenB?" "+num(hiddenB)+" batch"+(hiddenB===1?"":"es")+" in the ledger came from an import or an opening balance rather than an invoice, and "+(hiddenB===1?"is":"are")+" not listed — their stock still counts everywhere else.":""} <b>Open a batch</b> to read it product by product — what each one cost landed, what it is priced at, and the margin that implies. Nothing here is editable; it is a reading of the ledger.</div>
     <div class="panel"><div class="tablewrap"><table><thead><tr><th style=${{width:"24px"}}></th><th>Batch ref</th><th>Date</th><th>Provider</th><th class="num">Codes</th><th class="num">Recv</th><th class="num" title="Units sold. Any that left on an adjustment, write-off or gift line are noted beneath — they consume stock but book no takings.">Sold</th><th class="num">On hand</th><th class="num">Sell-thru</th><th class="num">Transport</th><th class="num">Invested</th><th class="num" title="Net sales matched back to this invoice, and what share of its cost that covers. At 100% the invoice has paid for itself and the stock still on the shelf is free.">Recouped</th><th class="num">Profit</th><th class="num">ROI</th></tr></thead>
       <tbody>${batches.map(b=>{const isOpen=!!open[b.batchRef];
         const noSale=(b.lines||[]).filter(l=>!l.sellable);

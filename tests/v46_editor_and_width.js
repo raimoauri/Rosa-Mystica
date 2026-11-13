@@ -58,7 +58,9 @@ const A=[];const chk=(c,n)=>A.push((c?"ok   ":"FAIL ")+n);
       code:"P-1",qty:40,unitPrice:2,vatRate:0,provider:"Fatirosarium, Lda",createdAt:"x"},
       {id:"o1",date:"2026-05-01",channel:"Vektori",dir:"out",batchRef:"V1",code:"P-1",qty:10,unitPrice:5,createdAt:"x"},
       {id:"w1",date:"2026-05-02",channel:"Breakage",dir:"out",batchRef:"W1",code:"P-1",qty:3,unitPrice:0,createdAt:"x"}];
-    s.invoices=[];s.staging=[];localStorage.setItem("rosamystica:v1",JSON.stringify(s));});
+    s.invoices=[{id:"inv9",status:"posted",provider:"Fatirosarium, Lda",invoiceNo:"FA2026-100",
+      date:"2026-02-02",batchRef:"FA2026-100",postedAt:"x",lines:[]}];
+    s.staging=[];localStorage.setItem("rosamystica:v1",JSON.stringify(s));});
   await p.reload({waitUntil:"domcontentloaded"});await p.waitForTimeout(650);
   await p.getByRole("button",{name:/^Inventory/}).first().click();await p.waitForTimeout(300);
   await p.getByRole("button",{name:/^Batches/}).first().click();await p.waitForTimeout(500);

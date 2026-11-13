@@ -22,7 +22,9 @@ const A=[];const chk=(c,n)=>A.push((c?"ok   ":"FAIL ")+n);
     buy("B-1","2026-01-02"); buy("B-2","2026-02-02"); buy("B-3","2026-03-02");
     /* FIFO drains B-1 first: 20 units -> 100,00 back on a 200,00 invoice = 50% */
     sell("V1","2026-04-01",20);
-    s.ledger=L;s.staging=[];s.invoices=[];
+    s.ledger=L;s.staging=[];
+    s.invoices=["B-1","B-2","B-3"].map((b,i)=>({id:"inv"+i,status:"posted",provider:"A",
+      invoiceNo:b,date:"2026-0"+(i+1)+"-02",batchRef:b,postedAt:"x",lines:[]}));
     localStorage.setItem("rosamystica:v1",JSON.stringify(s));});
   await p.reload({waitUntil:"domcontentloaded"});await p.waitForTimeout(700);
 

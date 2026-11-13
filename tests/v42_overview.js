@@ -28,6 +28,9 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
       {id:"o1",date:"2026-06-01",channel:"Vektori",dir:"out",batchRef:"V1",code:"P-1",qty:60,unitPrice:12.55,createdAt:"x"},
       {id:"o2",date:"2026-06-02",channel:"Vektori",dir:"out",batchRef:"V2",code:"P-2",qty:10,unitPrice:12.55,createdAt:"x"},
       {id:"o3",date:"2026-06-03",channel:"Vektori",dir:"out",batchRef:"V3",code:"P-3",qty:1,unitPrice:12.55,createdAt:"x"}];
+    /* every batch is a posted invoice: the Overview reports invoice-backed batches only */
+    s.invoices=["B-1","B-2","B-3"].map((b,i)=>({id:"inv"+i,status:"posted",provider:"Alfa",
+      invoiceNo:b,date:"2026-0"+(i+2)+"-01",batchRef:b,postedAt:"x",lines:[]}));
     localStorage.setItem("rosamystica:v1",JSON.stringify(s));});
   await p.reload({waitUntil:"domcontentloaded"});await p.waitForTimeout(800);
 

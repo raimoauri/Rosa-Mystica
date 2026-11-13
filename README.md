@@ -464,3 +464,10 @@ repo, because the previous one lived in a scratch directory and went with the co
     ahead — the first one's shelf stock is not cash. Accumulated profit was already on the
     Overview as *Profit realised*; this is the different question of how much has come back above
     the line the chart draws at 100%. ✅
+35. **The Overview and Batches report posted invoices, and nothing else.** A shop that inherited
+    its stock has batches in the ledger that no document stands behind — opening balances, ledger
+    imports — and their costs are guesses. Mixing them with invoiced stock produced figures that
+    were part record and part guess with no way to tell which. Every number on the Overview, and
+    every row in Batches, now comes from a batch a posted invoice created; both say how many
+    batches that leaves out. FIFO still draws on every lot, so costs and sell-through are
+    unchanged, and Stock, Reorder and Count still show the whole shelf. ✅
