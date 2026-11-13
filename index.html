@@ -1198,19 +1198,13 @@ function Overview({st,go}){
     const ticks=niceTicks(hi*100,4).map(t=>t/100);const top=Math.max(hi,ticks[ticks.length-1]);
     const span=top-lo||1;const y=v=>padT+ih-((v-lo)/span)*ih;const zero=y(0);
     const step=iw/chartB.length,bw=Math.min(34,step*0.6);const skip=chartB.length>12;
-    /* The reference line must share the bars' denominator. A batch's ROI is profit over what the
-       invoice cost — everything received, sold or not — while the Return-on-cost tile divides by
-       the cost of what actually sold. Drawing the tile's figure here would float it above every
-       bar and mean nothing, so this is the invested-weighted average of the bars themselves. */
-    const pSum=chartB.reduce((a,b)=>a+b.profit,0),iSum=chartB.reduce((a,b)=>a+b.investedNet,0);
-    const bavg=iSum>0?pSum/iSum:null;
-    const avg=bavg==null?null:Math.max(lo,Math.min(top,bavg));
+    /* One reference line only, at 100%, because that is the threshold the bars are measured
+       against. An average-ROI line used to sit here, from when the bars were ROI; once they
+       became the money-back ratio it was a second measure on the same axis, inviting exactly
+       the comparison it could not support. The shop-wide figures live on the tiles. */
     return html`<svg viewBox="0 0 ${W} ${H}" style=${{width:"100%",height:"auto"}}>
       ${ticks.concat(lo<0?[lo]:[]).map(t=>html`<g key=${t}><line x1=${padL} x2=${W-padR} y1=${y(t)} y2=${y(t)} style=${{stroke:"var(--line)"}}/>
         <text x=${padL-8} y=${y(t)+3} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--faint)"}}>${Math.round(t*100)+"%"}</text></g>`)}
-      ${avg!=null?html`<${React.Fragment}><line x1=${padL} x2=${W-padR} y1=${y(avg)} y2=${y(avg)}
-        style=${{stroke:"var(--accent)",strokeWidth:"1.5",strokeDasharray:"4 3",opacity:".75"}}/>
-        <text x=${W-padR} y=${y(avg)-6} text-anchor="end" style=${{fontSize:"10.5px",fill:"var(--accent)",fontWeight:"600"}}>average across these invoices ${pct(bavg)}</text></${React.Fragment}>`:null}
       ${chartB.map((b,i)=>{const v=b.roi==null?0:b.roi;const cx=padL+step*i+step/2;
         /* an invoice that has returned nothing yet is a fact worth seeing, not a blank column,
            so it keeps a short stub sitting on the zero line */

@@ -38,8 +38,7 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
     let sv=0,pr=0,cg=0,out=0;
     for(const r of inv){pr+=r.realProfit;cg+=r.cogs;if(r.stocked)sv+=r.onHandValue;}
     for(const x of bs){const l=x.investedNet-x.recoupedNet;if(l>0)out+=l;}
-    return {stockVal:sv,profit:pr,roi:cg>0?pr/cg:null,out,
-            batchRoi:bs.reduce((a,x)=>a+x.profit,0)/bs.reduce((a,x)=>a+x.investedNet,0)};});
+    return {stockVal:sv,profit:pr,roi:cg>0?pr/cg:null,out};});
 
   /* ---- the tiles say what Inventory says ---- */
   const asNum=s=>parseFloat(String(s).replace(/[^0-9,.-]/g,"").replace(/\s/g,"").replace(",","."));
@@ -51,14 +50,7 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
       "Capital still out counts only invoices still in the red ("+(await kpi("Capital still out"))+")");
   chk(truth.out>0,"and that figure is not simply zero in this fixture");
 
-  /* ---- the chart's reference line shares the bars' denominator ---- */
-  const avgTxt=await p.evaluate(()=>{const t=[...document.querySelectorAll("svg text")]
-    .map(x=>x.textContent).filter(x=>/average across/.test(x));return t[0]||"";});
-  chk(/average across these invoices/.test(avgTxt),"the chart names its reference line — "+avgTxt);
-  chk(near(asNum(avgTxt),truth.batchRoi*100,0.15),
-      "and it is profit ÷ invested across the bars, not the Return-on-cost tile's profit ÷ COGS ("
-      +asNum(avgTxt)+" vs the tile's "+(truth.roi*100).toFixed(1)+")");
-  chk(Math.abs(truth.batchRoi-truth.roi)>0.01,"the two really do differ here, so that check means something");
+  /* ---- the chart ---- */
 
   /* each bar stacks the capital coming back under the profit on top of it, so an invoice that
      has returned something draws two segments and one that has not draws a single stub */
@@ -82,6 +74,10 @@ const near=(a,b,t)=>a!=null&&Math.abs(a-b)<=(t||0.005);
   const paid=await p.evaluate(()=>[...document.querySelectorAll("svg text")]
     .map(t=>t.textContent).filter(t=>/paid for itself/.test(t)).length);
   chk(paid===1,"and a line at 100% marks where an invoice has paid for itself");
+  const refs=await p.evaluate(()=>[...document.querySelectorAll("svg text")]
+    .map(t=>t.textContent).filter(t=>/average|%$/.test(t)&&!/paid for itself/.test(t)));
+  chk(!refs.some(t=>/average/.test(t)),
+      "and it is the only reference line — the average-ROI line is gone, being a second measure on one axis");
 
   /* the tile carries the same ratio for the shop as a whole */
   const tileTxt=await p.evaluate(()=>{for(const k of document.querySelectorAll(".kpi"))
