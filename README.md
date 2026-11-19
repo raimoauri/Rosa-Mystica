@@ -97,6 +97,14 @@ Four **tax treatments** set the line VAT, defaulted from the country and always 
 Finland, intra-EU acquisition (0% on the invoice, self-accounted), import from outside the EU, and own
 print. On a domestic invoice a line whose code is already in the catalogue takes that product's own
 statutory rate — 13,5% for a book, 25,5% for goods — so a mixed invoice needs no per-line typing.
+
+Codes that are *not* yet in the catalogue have no product to ask, so the invoice says what they are:
+**These lines are** — goods, books or other — seeds the default rate and decides what each new code
+becomes when it reaches staging. An invoice is nearly always all of one kind, so this is one control
+rather than a column of identical dropdowns; the Lines table's **Type** column overrules it for the
+single line that differs, and a line left on *(invoice)* follows whatever the header says. Own print
+is deliberately exempt: it is the printer's service fee, charged at the general rate whatever is
+being printed.
 **Freight and duty are separate fields**: freight is keyed exactly as billed, with its own VAT rate
 beside it, so the gate compares like with like against the printed total while only its **net** part is
 spread per unit into landed cost. Duty is outside VAT; import VAT is recorded for the VAT return and

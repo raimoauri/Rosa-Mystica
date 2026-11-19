@@ -1907,14 +1907,21 @@ const EU=["at","austria","be","belgium","bg","bulgaria","hr","croatia","cy","cyp
 function treatmentForCountry(c){const n=String(c||"").trim().toLowerCase();if(!n)return "eu_acq";
   if(/^(fi|finland|suomi)$/.test(n))return "domestic";
   return EU.indexOf(n)>=0?"eu_acq":"import";}
-function defaultVatFor(treatment,st){const vr=vatRatesOf(st);
-  if(treatment==="domestic")return vr.goods;if(treatment==="own")return vr.goods;return 0;}
+/* Only a domestic invoice carries Finnish VAT that depends on what the goods are. Own print is the
+   printer's service fee, which is the general rate whatever is being printed — a book's own rate has
+   no business there. Called without a line type it answers exactly as it always did. */
+function defaultVatFor(treatment,st,lineType){const vr=vatRatesOf(st);
+  if(treatment==="domestic"){const lt=lineType||"goods";return vr[lt]==null?vr.goods:vr[lt];}
+  if(treatment==="own")return vr.goods;return 0;}
 /* An invoice number makes the best batch reference; keep it filterable. */
 function refFromInvoiceNo(s){return String(s||"").trim().toUpperCase().replace(/[^A-Z0-9]+/g,"-").replace(/^-|-$/g,"");}
 function blankInvoice(st){const c="";return {id:uid(),status:"draft",provider:"",country:c,invoiceNo:"",
   date:today(),due:"",currency:"EUR",rate:"1",treatment:treatmentForCountry(c),
-  freight:"",freightVat:"",duty:"",importVat:"",vatDefault:"",invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:""};}
-function blankLine(){return {id:uid(),supplierRef:"",code:"",name:"",qty:"",qtyRecv:"",lineTotal:"",vatRate:"",type:"goods"};}
+  freight:"",freightVat:"",duty:"",importVat:"",vatDefault:"",invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:"",lineType:"goods"};}
+/* A line's type is left empty so it follows the invoice. An older invoice has no lineType, so the
+   fallback below keeps it on goods exactly as before. */
+function blankLine(){return {id:uid(),supplierRef:"",code:"",name:"",qty:"",qtyRecv:"",lineTotal:"",vatRate:"",type:""};}
+function lineTypeFor(l,inv){return (l&&l.type)||(inv&&inv.lineType)||"goods";}
 const r2=x=>Math.round(x*100)/100;
 function invoiceTotals(inv){
   let lines=0,units=0,recv=0,missing=0;
@@ -1947,8 +1954,11 @@ function lineVatFor(l,inv,st,byCode){
   const own=parseNum(l&&l.vatRate);if(own!=null)return own;
   const p=byCode?byCode[normCode(l&&l.code)]:null;
   if(inv.treatment==="domestic"&&p)return saleRateFor(p,st);
+  /* A line told what it is outranks the invoice's default — that is the whole point of the override.
+     A line left on "(invoice)" falls through, because changing the invoice's type reseeds that default. */
+  if(inv.treatment==="domestic"&&l&&l.type)return defaultVatFor("domestic",st,l.type);
   const hd=parseNum(inv.vatDefault);if(hd!=null)return hd;
-  return defaultVatFor(inv.treatment,st);}
+  return defaultVatFor(inv.treatment,st,inv.lineType);}
 function normRef(s){return String(s||"").replace(/[\s\-_.\/]/g,"").toUpperCase();}
 function normProv(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"")
   .replace(/(lda|oy|ab|gmbh|srl|sarl|bv|nv|spa|sa|ltd|llc|inc|unipessoal)$/,"");}
@@ -2081,7 +2091,7 @@ function Invoices({st,act,show,openProduct}){
       <div style=${{padding:"16px"}}>
         <div class="grid3" style=${{marginBottom:"12px"}}>
           ${F("Provider",inp("provider","e.g. MRP Unipessoal, Lda"))}
-          ${F("Country",html`<input type="text" disabled=${posted} placeholder="Portugal" value=${inv.country||""} onInput=${e=>{const v=e.target.value;const auto=treatmentForCountry(v);upd({country:v,treatment:auto,vatDefault:defaultVatFor(auto,st)});}}/>`)}
+          ${F("Country",html`<input type="text" disabled=${posted} placeholder="Portugal" value=${inv.country||""} onInput=${e=>{const v=e.target.value;const auto=treatmentForCountry(v);upd({country:v,treatment:auto,vatDefault:defaultVatFor(auto,st,inv.lineType)});}}/>`)}
           ${F("Invoice number",inp("invoiceNo","FAT 90SED26/2654","mono"))}
         </div>
         <div class="grid3" style=${{marginBottom:"12px"}}>
@@ -2092,10 +2102,12 @@ function Invoices({st,act,show,openProduct}){
         <div style=${{marginBottom:"12px"}}>
           <div style=${{display:"flex",gap:"12px",alignItems:"flex-end"}}>
             <div style=${{flex:1}}><label class="lab">Tax treatment</label>
-              <select disabled=${posted} value=${inv.treatment||"eu_acq"} onChange=${e=>{const v=e.target.value;upd({treatment:v,vatDefault:String(defaultVatFor(v,st)),freightVat:String(defaultVatFor(v,st))});}}>${TREATMENTS.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select></div>
+              <select disabled=${posted} value=${inv.treatment||"eu_acq"} onChange=${e=>{const v=e.target.value;upd({treatment:v,vatDefault:String(defaultVatFor(v,st,inv.lineType)),freightVat:String(defaultVatFor(v,st))});}}>${TREATMENTS.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select></div>
+            <div style=${{width:"150px"}}><label class="lab">These lines are</label>
+              <select disabled=${posted} value=${inv.lineType||"goods"} onChange=${e=>{const v=e.target.value;upd({lineType:v,vatDefault:String(defaultVatFor(inv.treatment||"eu_acq",st,v))});}}>${TYPES.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select></div>
             <div style=${{width:"150px"}}><label class="lab">Default line VAT %</label>
-              <input class="mono" type="text" disabled=${posted} placeholder=${String(defaultVatFor(inv.treatment,st))} value=${inv.vatDefault||""} onInput=${e=>upd({vatDefault:e.target.value})}/></div></div>
-          <div class="note" style=${{marginTop:"7px"}}>${treatNote}${inv.treatment==="domestic"?" A line whose code is already in the catalogue takes that product's own rate — "+num(vatRatesOf(st).book)+"% for a book, "+num(vatRatesOf(st).goods)+"% for goods.":""}</div>
+              <input class="mono" type="text" disabled=${posted} placeholder=${String(defaultVatFor(inv.treatment,st,inv.lineType))} value=${inv.vatDefault||""} onInput=${e=>upd({vatDefault:e.target.value})}/></div></div>
+          <div class="note" style=${{marginTop:"7px"}}>${treatNote}${inv.treatment==="domestic"?" A line whose code is already in the catalogue takes that product's own rate — "+num(vatRatesOf(st).book)+"% for a book, "+num(vatRatesOf(st).goods)+"% for goods.":""} “These lines are” decides what a new code becomes in staging, and seeds the default above; set a single line's Type in the table to overrule it.</div>
         </div>
         <div class="grid3">
           ${F("Freight, as billed",html`<div style=${{display:"flex",gap:"6px"}}>
@@ -2132,7 +2144,7 @@ function Invoices({st,act,show,openProduct}){
         <div class="hintrow"><span class="note">${num(inv.lines.length)} line${inv.lines.length===1?"":"s"} · quantity billed vs received</span>
         ${(!posted&&inv.lines.some(l=>!l.code))?html`<button class="btn sm" title="Give every unmatched line the next free code in your own scheme; the supplier's reference stays beside it" onClick=${allocCodes}>Give our codes to ${num(inv.lines.filter(l=>!l.code).length)}</button>`:null}</div></div>
       ${inv.lines.length===0?html`<div class="empty"><div class="note">No lines yet — paste them above.</div></div>`:
-      html`<div class="tablewrap"><table><thead><tr><th>Supplier ref</th><th>Our code</th><th>Description</th><th class="num">Qty</th><th class="num">Recv</th><th class="num">Line total</th><th class="num">VAT %</th><th></th></tr></thead>
+      html`<div class="tablewrap"><table><thead><tr><th>Supplier ref</th><th>Our code</th><th>Description</th><th class="num">Qty</th><th class="num">Recv</th><th class="num">Line total</th><th class="num">VAT %</th><th>Type</th><th></th></tr></thead>
         <tbody>${inv.lines.map(l=>{const known=!!byCode[normCode(l.code)];const q=parseNum(l.qty)||0;const rq=(l.qtyRecv===""||l.qtyRecv==null)?q:(parseNum(l.qtyRecv)||0);
           const cell=(k,w,cls,ph)=>html`<input type="text" disabled=${posted} class=${cls||""} style=${{width:w,padding:"5px 7px",fontSize:"12.5px"}} placeholder=${ph||""} value=${l[k]||""} onInput=${e=>updLine(l.id,{[k]:e.target.value})}/>`;
           return html`<tr key=${l.id}>
@@ -2143,6 +2155,7 @@ function Invoices({st,act,show,openProduct}){
             <td class="num">${posted?html`<span class="mono">${num(rq)}</span>`:html`<input type="text" class="mono" style=${{width:"62px",padding:"5px 7px",fontSize:"12.5px"}} placeholder=${String(q||"")} value=${l.qtyRecv||""} onInput=${e=>updLine(l.id,{qtyRecv:e.target.value})}/>`}${rq!==q?html`<div class="meta" style=${{color:"var(--bad)"}}>${rq<q?"short "+num(q-rq):"over "+num(rq-q)}</div>`:null}</td>
             <td class="num">${cell("lineTotal","84px","mono num")}</td>
             <td class="num">${posted?html`<span class="mono">${num(lineVatFor(l,inv,st,byCode))}</span>`:html`<input type="text" class="mono" style=${{width:"56px",padding:"5px 7px",fontSize:"12.5px"}} placeholder=${String(lineVatFor(Object.assign({},l,{vatRate:""}),inv,st,byCode))} value=${l.vatRate||""} onInput=${e=>updLine(l.id,{vatRate:e.target.value})}/>`}</td>
+            <td>${posted?html`<span class="meta">${typeLabel(lineTypeFor(l,inv))}</span>`:html`<select style=${{width:"92px",padding:"4px 6px",fontSize:"12.5px"}} value=${l.type||""} onChange=${e=>updLine(l.id,{type:e.target.value})}><option value="">${typeLabel(inv.lineType||"goods")} (invoice)</option>${TYPES.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select>`}</td>
             <td class="num">${posted?null:html`<button class="btn sm ghost rowact" onClick=${()=>upd({lines:inv.lines.filter(x=>x.id!==l.id)})}>×</button>`}</td></tr>`;})}</tbody></table></div>`}
     </div>
 
@@ -3316,7 +3329,7 @@ function App(){
         raw.push({date:inv.date||today(),channel:chan,dir:"in",batchRef:bref,code,qty:rq,
           unitPrice:Math.round((lt/q)*rate*1e6)/1e6,vatRate:lineVatFor(l,inv,s,byCode),transport,
           note:l.name||"",country:inv.country||"",provider:inv.provider||"",providerRef:l.supplierRef||"",
-          _name:l.name||"",_type:l.type||guessType(code)});}
+          _name:l.name||"",_type:lineTypeFor(l,inv)});}
       if(!raw.length)return s;
       const prep=prepareMovements(raw,s,[],{distinctLines:true,respectCode:true});
       const now=new Date().toISOString();
