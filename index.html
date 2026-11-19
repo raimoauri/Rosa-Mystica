@@ -607,7 +607,7 @@ const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 const SCHEMA=4;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
 function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],count:{lines:{}},order:{lines:{}},
   channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
-  settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG"}};}
+  settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG",rcnPrefix:"20"}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
   s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];s.count=s.count||{lines:{}};if(!s.count.lines)s.count.lines={};
@@ -618,6 +618,8 @@ function migrate(s){if(!s||typeof s!=="object")return blankState();
   s.settings=Object.assign({shop:"Katolinen Kirjakauppa",theme:"system"},s.settings||{});
   if(!s.settings.vatRates||typeof s.settings.vatRates!=="object")s.settings.vatRates={book:13.5,goods:25.5,other:0};
   if(!s.settings.codePrefix)s.settings.codePrefix="KKG";
+  /* codePrefix is kept only so an older store is not rewritten; minting reads rcnPrefix */
+  if(!s.settings.rcnPrefix)s.settings.rcnPrefix="20";
   return s;}
 /* Loading returns {ok:true,state} or {ok:false,raw,err}. A payload we cannot read is NEVER
    replaced by a blank state — the raw bytes are handed to the recovery screen, and nothing
@@ -1739,7 +1741,7 @@ function Staging({st,act,openProduct,show}){
 function Settings({st,act,show}){
   const [newCh,setNewCh]=useState({name:"",dir:"out",mode:"",kind:"sale"});
   const sinfo=storageInfo();const lastExp=st.settings.lastExport||"";
-  const [pfx,setPfx]=useState(()=>st.settings.codePrefix||"KKG");
+  const [pfx,setPfx]=useState(()=>st.settings.rcnPrefix||"20");
   const vrs=st.settings.vatRates||{book:13.5,goods:25.5,other:0};
   const [vr,setVr]=useState(()=>({book:String(vrs.book??13.5),goods:String(vrs.goods??25.5),other:String(vrs.other??0)}));
   const fileRef=useRef();
@@ -1795,9 +1797,9 @@ function Settings({st,act,show}){
         </div>
         <div class="note" style=${{marginTop:"10px"}}>Sales are stripped to net at the rate for each product's type when computing margin; a movement's own VAT % overrides. Purchases carry their own per-line VAT %, keyed with the VAT-inclusive total.</div>
         <div class="rowbetween" style=${{marginTop:"14px",borderTop:"1px solid var(--line)",paddingTop:"13px",gap:"12px"}}>
-          <div><div class="lab">Code prefix for new products</div>
-            <div class="note">The <b>Next</b> button on a product offers the next free code in this scheme — currently <span class="code">${nextFreeCode(st)}</span>.</div></div>
-          <input class="mono" type="text" style=${{width:"110px"}} value=${pfx} onInput=${e=>setPfx(e.target.value)} onBlur=${()=>act.setCodePrefix(pfx)}/>
+          <div><div class="lab">Prefix for minted codes</div>
+            <div class="note"><b>Next</b> on a product, and <b>Give our codes</b> on an invoice, mint an EAN-13 in GS1's restricted-circulation range so it scans like any other barcode — next one is <span class="code">${nextFreeCode(st)||"—"}</span>. Digits only; confirm the range with GS1 Finland. These are not globally unique, so a minted code belongs in a SKU field and never in a GTIN field or a product feed. Codes you type yourself are never changed or checked against this.</div></div>
+          <input class="mono" type="text" style=${{width:"110px"}} value=${pfx} onInput=${e=>setPfx(e.target.value)} onBlur=${()=>act.setRcnPrefix(pfx)}/>
         </div>
       </div>
     </div>
@@ -1982,12 +1984,34 @@ function supplierIndex(st){const byPair={},byRef={},refSeen={};
       if(kp[0]===pv||(kp[0].length>=3&&pv.length>=3&&(kp[0].indexOf(pv)===0||pv.indexOf(kp[0])===0)))return byPair[k];}
     return (refSeen[r]===1)?byRef[r]:null;}};}
 /* Next free code in the shop's own scheme, e.g. KKG-142. */
-function nextFreeCode(st){const pre=((st.settings&&st.settings.codePrefix)||"KKG").toUpperCase();
-  const re=new RegExp("^"+pre.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"-(\\d+)$","i");
-  let max=0,width=3;
-  for(const p of (st.catalogue||[])){const m=re.exec(String(p.code||"").trim());if(!m)continue;
-    const n=+m[1];if(n>max)max=n;if(m[1].length>width)width=m[1].length;}
-  return pre+"-"+String(max+1).padStart(width,"0");}
+/* ---- minted codes ----
+   A code the shop invents is an EAN-13 inside GS1's restricted-circulation space — prefixes 02 and
+   20–29 are reserved for a retailer's own numbers — so a barcode printed here scans on the same
+   hardware as a publisher's and sits in the same field in Vektori and WooCommerce. The check digit
+   is the real gain: KKG-114 and KKG-141 are both plausible codes, so a typo became a silent wrong
+   product, where a mistyped EAN simply fails to resolve.
+
+   This shape is MINTED, never REQUIRED. Nothing validates it. Codes typed by hand, and every code
+   minted before this, stay exactly as they are. The restricted-circulation range is not globally
+   unique — another shop may hold the same number — so a minted code belongs in a SKU field and
+   never in a GTIN field or a product feed. */
+function eanCheck(d12){let s=0;for(let i=0;i<d12.length;i++)s+=(+d12[i])*(i%2?3:1);return String((10-s%10)%10);}
+function rcnPrefixOf(st){const p=String((st.settings&&st.settings.rcnPrefix)||"20").replace(/\D/g,"");
+  return (p&&p.length<=6)?p:"20";}
+function rcnCode(prefix,seq){const w=12-prefix.length;if(w<1)return null;
+  const s=String(seq);if(s.length>w)return null;const body=prefix+s.padStart(w,"0");
+  return body+eanCheck(body);}
+/* Counts from the highest sequence already in use, reading unposted invoice lines as well as the
+   catalogue so a draft cannot be handed a code the next draft also claims. */
+function nextFreeCode(st,taken){const pre=rcnPrefixOf(st);const w=12-pre.length;
+  const re=new RegExp("^"+pre+"(\\d{"+w+"})\\d$");
+  let max=0;const scan=c=>{const m=re.exec(normCode(c));if(m){const n=+m[1];if(n>max)max=n;}};
+  for(const p of (st.catalogue||[]))scan(p.code);
+  for(const i of (st.invoices||[]))for(const l of (i.lines||[]))scan(l.code);
+  const used=taken||new Set();
+  for(let n=max+1,guard=0;guard<10000;n++,guard++){const c=rcnCode(pre,n);
+    if(!c)return null;if(!used.has(normCode(c)))return c;}
+  return null;}
 /* Pasted supplier text: rows on newlines, columns on tabs, semicolons or runs of spaces. */
 function splitPaste(text){const rows=[];
   for(const raw of String(text||"").split(/\r?\n/)){const ln=raw.replace(/\s+$/,"");if(!ln.trim())continue;
@@ -2040,15 +2064,15 @@ function Invoices({st,act,show,openProduct}){
   /* Give every unmatched line a code in the shop's own scheme, continuing past anything already
      taken in the catalogue or sitting in another draft. The supplier's reference stays on the
      line, which is what teaches the map for their next invoice. */
-  function allocCodes(){const pre=((st.settings&&st.settings.codePrefix)||"KKG").toUpperCase();
+  function allocCodes(){
     const used=new Set((st.catalogue||[]).map(p=>normCode(p.code)));
     (st.invoices||[]).forEach(d=>(d.lines||[]).forEach(l=>{if(l.code)used.add(normCode(l.code));}));
-    const m=/^(.*)-(\d+)$/.exec(nextFreeCode(st));let n=m?+m[2]:1;const width=m?m[2].length:3;
-    let given=0;
+    let given=0,failed=0;
     const lines=inv.lines.map(l=>{if(l.code)return l;
-      let c;do{c=pre+"-"+String(n++).padStart(width,"0");}while(used.has(normCode(c)));
+      const c=nextFreeCode(st,used);if(!c){failed++;return l;}
       used.add(normCode(c));given++;return Object.assign({},l,{code:c});});
-    upd({lines});show("Gave our codes to "+given+" line"+(given>1?"s":""));}
+    upd({lines});
+    show("Gave our codes to "+given+" line"+(given===1?"":"s")+(failed?" — "+failed+" could not be minted":""));}
   const postable=inv&&inv.status==="draft"&&t&&t.ok&&inv.lines.length>0&&
     inv.lines.every(l=>(l.code||l.supplierRef)&&(parseNum(l.qty)||0)>0&&parseNum(l.lineTotal)!=null);
   const treatNote=(TREATMENTS.find(x=>x[0]===(inv&&inv.treatment))||["","",""])[2];
@@ -3201,6 +3225,9 @@ function App(){
     setChannelKind:(id,kind)=>setSt(s=>({...s,channels:s.channels.map(c=>c.id===id?{...c,kind:(kind||null)}:c)})),
     markExport:()=>setSt(s=>({...s,settings:{...s.settings,lastExport:new Date().toISOString().slice(0,10)}})),
     setCodePrefix:v=>setSt(s=>({...s,settings:{...s.settings,codePrefix:(String(v||"KKG").trim().toUpperCase()||"KKG")}})),
+    /* digits only, and short enough to leave room for a sequence and the check digit */
+    setRcnPrefix:v=>setSt(s=>{const p=String(v||"").replace(/\D/g,"").slice(0,6);
+      return {...s,settings:{...s.settings,rcnPrefix:(p||"20")}};}),
     removeChannel:id=>setSt(s=>({...s,channels:s.channels.filter(c=>c.id!==id)})),
     replaceAll:raw=>setSt(s=>{const d=readCore(raw);return migrate({...blankState(),...d});}),
     openExport:(title,text)=>setModal({type:"export",title,text}),

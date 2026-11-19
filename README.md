@@ -63,6 +63,19 @@ The product code is the unique key. Product edits are validated as a whole befor
 written (code required + unique, name required, numbers valid); nothing commits until valid, and
 renaming a code relinks its ledger movements atomically. A code with movements can't be deleted.
 
+**Minted codes are EAN-13s.** Where the app invents a code — *Next* in the product editor, *Give
+our codes* on an invoice — it mints one inside GS1's restricted-circulation space (prefixes 02 and
+20–29 are reserved for a retailer's own numbers), with a computed check digit. A shop-printed
+barcode then scans on the same hardware as a publisher's and occupies one field across Vektori and
+WooCommerce, and a mistyped code fails instead of silently resolving to a different product. The
+prefix is set in Settings; confirm the range with GS1 Finland.
+
+The shape is **minted, never required**. Nothing validates it, nothing rejects a code typed by
+hand, and codes minted under the earlier `PREFIX-NNN` scheme stay valid and are ignored by the
+sequence counter. Because restricted-circulation numbers are not globally unique, a minted code
+belongs in a SKU field and never in a GTIN field or a product feed; items that arrived with a
+manufacturer EAN keep theirs, which is a real GTIN and valid anywhere.
+
 ## Data
 Lives in this browser (localStorage). Export a portable **core file** (`.json`), optionally
 AES-256 encrypted, from Settings. Catalogue and ledger also export to CSV. No data is stored in
