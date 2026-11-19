@@ -85,14 +85,16 @@ const A=[];const chk=(c,n)=>A.push((c?"ok   ":"FAIL ")+n);
   chk(await selBy("These lines are").count()>0,"the invoice carries a “These lines are” selector");
   chk((await heads()).includes("Type"),"the Lines table has a Type column");
   chk(await lineSels().count()===2,"each line has a Type control ("+(await lineSels().count())+")");
-  chk((await lineSels().first().locator("option").first().textContent()).trim()==="Goods (invoice)",
-      "the inherit option names what it inherits");
+  /* the inherit option must not repeat a type name: "Book" beside "Book (invoice)" reads as two
+     kinds of book, which is exactly how it was first written and exactly what confused the shop */
+  const opts=async()=>p.evaluate(()=>[...document.querySelectorAll("tbody tr select")[0].options].map(o=>o.textContent.trim()));
+  chk((await opts())[0]==="Same as invoice","the inherit option says where it comes from, not a type ("+(await opts())[0]+")");
+  chk((await opts()).filter(o=>/book/i.test(o)).length===1,"only one option in the list mentions Book ("+(await opts()).join(" / ")+")");
   chk((await vatPh())==="25.5","a goods invoice defaults its lines to 25,5 ("+(await vatPh())+")");
 
   await selBy("These lines are").selectOption("book");await p.waitForTimeout(400);
   chk((await vatPh())==="13.5","switching the invoice to Books reseeds the default to 13,5 ("+(await vatPh())+")");
-  chk((await lineSels().first().locator("option").first().textContent()).trim()==="Book (invoice)",
-      "and the inherit option follows it");
+  chk((await opts())[0]==="Same as invoice","the inherit option is unchanged by the header ("+(await opts())[0]+")");
 
   await lineSels().nth(0).selectOption("goods");await p.waitForTimeout(400);
   const stored=await p.evaluate(()=>{const s=JSON.parse(localStorage.getItem("rosamystica:v1"));
