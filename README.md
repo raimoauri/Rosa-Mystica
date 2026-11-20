@@ -58,6 +58,36 @@ and last-ordered all sort; author and supplier are columns, so the obvious group
 There is no publisher field: **supplier is who you bought from**, which for a distributor is not who
 published the book.
 
+## Health
+
+Nineteen invariants over the shop's own data, split by one rule: a check is **minor** only if every
+possible hit is unambiguously wrong. Anything needing judgement is **full**. A check that cries wolf
+gets ignored, and then the real finding scrolls past unread.
+
+Minor runs on every load and surfaces as the count beside *Health* in the rail, so it is invisible
+when clean: nine structural checks — a ledger row or invoice line whose code nothing knows, two
+codes that normalise alike, one supplier reference on two products, a posted invoice with no
+movements, a staged item already catalogued, negative stock, a minted code failing its check digit,
+and storage/backup headroom.
+
+Full waits to be read: ten judgement checks — stock with no document behind it, posted invoices
+that no longer reconcile or whose quantities disagree with the ledger, catalogue cost far from
+landed, lots received at no cost, sellable with no price, priced below landed cost, one name under
+several codes, purchase VAT against the product's type, and supplier names spelled several ways.
+
+**Nothing on the page writes.** Every finding links to the tab where it can be acted on; a
+diagnostic that repairs is how one bad row becomes a hundred.
+
+**Two dispositions, not one.** *Accepted* means a document will never exist — a donation, paperwork
+that is gone. *Pending* means one is still owed: counted, but not a defect. Collapsing them would
+hide the inherited-stock backlog inside the list of exceptions.
+
+So *stock with no document* reports as a **progress meter**, not a findings list — batches
+documented against total, with the change since the last time the number moved. Inherited stock is
+converted to invoice form one batch at a time, and the meter is how that work becomes visible. It
+is the one check with no bulk-accept, because bulk-accepting it would hide the very thing it exists
+to show.
+
 ## Secure editing
 The product code is the unique key. Product edits are validated as a whole before anything is
 written (code required + unique, name required, numbers valid); nothing commits until valid, and

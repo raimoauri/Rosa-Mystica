@@ -605,7 +605,7 @@ const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 
 /* ---------- persistence ---------- */
 const SCHEMA=4;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
-function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],count:{lines:{}},order:{lines:{}},
+function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],count:{lines:{}},order:{lines:{}},diag:{disp:{},hist:[]},
   channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
   settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG",rcnPrefix:"02"}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
@@ -618,6 +618,10 @@ function migrate(s){if(!s||typeof s!=="object")return blankState();
   s.settings=Object.assign({shop:"Katolinen Kirjakauppa",theme:"system"},s.settings||{});
   if(!s.settings.vatRates||typeof s.settings.vatRates!=="object")s.settings.vatRates={book:13.5,goods:25.5,other:0};
   if(!s.settings.codePrefix)s.settings.codePrefix="KKG";
+  /* dispositions and the progress trend; absent in every store written before this */
+  s.diag=(s.diag&&typeof s.diag==="object")?s.diag:{};
+  if(!s.diag.disp||typeof s.diag.disp!=="object")s.diag.disp={};
+  if(!Array.isArray(s.diag.hist))s.diag.hist=[];
   /* codePrefix is kept only so an older store is not rewritten; minting reads rcnPrefix */
   if(!s.settings.rcnPrefix)s.settings.rcnPrefix="02";
   /* 20 shipped as the default for one version, before GS1 Finland's own allocation was read: that
@@ -3178,6 +3182,266 @@ function RecoverScreen({info,onEmpty,onLoaded}){
           <button class="btn danger" onClick=${onEmpty}>Start with an empty app</button></div>
       </div></div></div>`;}
 
+/* ---------- health checks ----------
+   Nineteen invariants over the shop's own data, split by one rule: a check is "minor" only if
+   every possible hit is unambiguously wrong. Anything needing judgement is "full", because a
+   check that cries wolf gets ignored and then the real finding scrolls past unread. Minor runs on
+   every load and shows as the count beside Health in the rail, so it is invisible when clean.
+
+   Nothing here writes. Every check returns findings; acting on one is always the shopkeeper's own
+   move, from the tab the finding links to. A diagnostic that repairs is how one bad row becomes a
+   hundred.
+
+   Two dispositions, not one. "Accepted" means this will never have a document — a donation, stock
+   whose paperwork is gone. "Pending" means it should get one eventually: still counted, not a
+   defect. Collapsing those two would hide a backlog inside a list of exceptions. */
+const CHECKS=[
+  ["M1","minor","Ledger rows with an unknown code","ledger"],
+  ["M2","minor","Invoice lines with an unknown code","invoices"],
+  ["M3","minor","Codes that collide once normalised","catalogue"],
+  ["M4","minor","One supplier reference on two products","catalogue"],
+  ["M5","minor","Posted invoices with no movements","invoices"],
+  ["M6","minor","Staged items already in the catalogue","staging"],
+  ["M7","minor","Negative stock on hand","inventory"],
+  ["M8","minor","Minted codes that fail their check digit","catalogue"],
+  ["M9","minor","Storage and backup","settings"],
+  ["F1","full","Stock with no document behind it","inventory"],
+  ["F2","full","Posted invoices that no longer reconcile","invoices"],
+  ["F3","full","Posted quantities that disagree with the ledger","invoices"],
+  ["F4","full","Catalogue cost far from landed cost","catalogue"],
+  ["F5","full","Lots received at no cost","inventory"],
+  ["F6","full","Sellable with no price","catalogue"],
+  ["F7","full","Priced below landed cost","catalogue"],
+  ["F8","full","One name under several codes","catalogue"],
+  ["F9","full","Purchase VAT against the product's type","invoices"],
+  ["F10","full","Supplier names spelled several ways","catalogue"]];
+const CHK=(()=>{const m={};for(const c of CHECKS)m[c[0]]={id:c[0],tier:c[1],title:c[2],tab:c[3]};return m;})();
+function diagOf(st){const d=st.diag||{};return {disp:d.disp||{},hist:Array.isArray(d.hist)?d.hist:[]};}
+const DIAG_COSTTOL=0.15;   /* catalogue cost within 15% of landed is not worth reporting */
+const DIAG_STORE=0.75;     /* warn once three quarters of the browser's budget is used */
+const DIAG_STALE=30;       /* days since the last core-file export */
+
+function runChecks(st){
+  const F=[];const add=(chk,key,subject,detail)=>F.push({chk,key:chk+":"+key,subject,detail});
+  const cat=st.catalogue||[],led=st.ledger||[],invs=st.invoices||[],stg=st.staging||[];
+  const byCode=indexCatalogue(cat);
+  const stgSet=new Set(stg.map(x=>normCode(x.code)));
+  const ibs=invoiceBatchSet(st);
+  const rows=computeInventory(st);
+  const vr=vatRatesOf(st);
+
+  /* M1 / M2 — a code nothing knows about. Staging counts as known: it is the queue for exactly
+     these, so reporting a staged code would report the app's own normal working state. */
+  {const n={};for(const r of led){const k=normCode(r.code);if(!k||byCode[k]||stgSet.has(k))continue;n[k]=(n[k]||0)+1;}
+   for(const k in n)add("M1",k,k,n[k]+" movement"+(n[k]===1?"":"s"));}
+  {const n={};for(const i of invs)for(const l of (i.lines||[])){const k=normCode(l.code);if(!k||byCode[k]||stgSet.has(k))continue;
+     const t=(i.invoiceNo||i.batchRef||"a draft");(n[k]=n[k]||new Set()).add(t);}
+   for(const k in n)add("M2",k,k,"on "+[...n[k]].join(", "));}
+
+  /* M3 — normCode is the universal key, so two codes normalising alike are one product to the
+     ledger and two to the catalogue. This is what left stale rows in the count sheet. */
+  {const g={};for(const p of cat){const k=normCode(p.code);if(k)(g[k]=g[k]||[]).push(p.code);}
+   for(const k in g)if(g[k].length>1)add("M3",k,k,g[k].join(" · "));}
+
+  /* M4 — provider + provider ref is how an unknown code on an invoice is resolved to a product.
+     Two products on one pair makes that resolution a coin toss; it is the class the mismapped
+     MRP references belonged to. */
+  {const g={};for(const p of cat){const pr=normProv(p.supplier||""),rf=normRef(p.supplierRef||"");
+     if(!pr||!rf)continue;const k=pr+"|"+rf;(g[k]=g[k]||[]).push(p.code);}
+   for(const k in g)if(g[k].length>1)add("M4",k,k.split("|")[1].toUpperCase(),g[k].join(" · "));}
+
+  /* M5 — posting writes the same ref to the invoice and to every movement it creates, so a posted
+     invoice with nothing under its ref means the movements were removed from under it. */
+  {const held={};for(const r of led){const b=batchKey(r.batchRef);if(b)held[b]=(held[b]||0)+1;}
+   for(const i of invs)if(i.status==="posted"){const b=batchKey(i.batchRef);
+     if(b&&!held[b])add("M5",b,(i.invoiceNo||b),"posted "+(i.postedAt||"")+", nothing in the ledger");}}
+
+  /* M6 — staging is the queue of codes not yet in the catalogue; once one is in, its entry is
+     stale and will offer to create a duplicate. */
+  for(const e of stg){const k=normCode(e.code);if(k&&byCode[k])add("M6",k,e.code,"already in the catalogue");}
+
+  /* M7 — more sold than ever received. Either a receipt was never recorded or a sale is doubled. */
+  for(const r of rows)if(r.onHand<0)add("M7",normCode(r.code),r.code,num(r.onHand)+" on hand · "+r.name);
+
+  /* M8 — only codes in the shop's own minted range: those must verify by construction. A supplier's
+     own 13-digit number is not ours to judge, which is why this does not test every long code. */
+  {const pre=rcnPrefixOf(st);const w=12-pre.length;const re=new RegExp("^"+pre+"\\d{"+w+"}\\d$");
+   for(const p of cat){const c=normCode(p.code);if(!re.test(c))continue;
+     if(eanCheck(c.slice(0,12))!==c[12])add("M8",c,p.code,"check digit should be "+eanCheck(c.slice(0,12)));}}
+
+  /* M9 — the two facts that cost data rather than accuracy: a full browser store refuses writes,
+     and an old export is the difference between a bad afternoon and a lost year. */
+  {let used=0;try{used=JSON.stringify(st).length;}catch(e){}
+   const share=used/LSBUDGET;
+   if(share>DIAG_STORE)add("M9","storage","Browser storage",Math.round(share*100)+"% of the budget used");
+   const le=st.settings&&st.settings.lastExport;
+   const days=le?Math.floor((Date.now()-Date.parse(le))/86400000):null;
+   if(days==null)add("M9","backup","Backup","no core file has ever been exported");
+   else if(days>DIAG_STALE)add("M9","backup","Backup","last core file exported "+days+" days ago");}
+
+  /* F1 — not a defect: this is the backlog. Inherited stock genuinely has no document, and the
+     plan is to give it one batch at a time, so this reports as progress and never as an error. */
+  const allB=computeBatches(st);
+  const undoc=allB.filter(b=>!ibs.has(batchKey(b.batchRef)));
+  for(const b of undoc)add("F1",batchKey(b.batchRef),b.batchRef||"(no ref)",
+    num(b.received)+" received · "+(b.provider||"no provider")+(b.date?" · "+fmtD(b.date):""));
+  const meter={docB:allB.length-undoc.length,totB:allB.length};
+
+  /* F2 / F3 — an invoice agreed with its paper when it was posted. If it no longer does, or the
+     ledger holds different quantities than its lines, something moved underneath it. */
+  for(const i of invs){if(i.status!=="posted")continue;
+    const t=invoiceTotals(i);
+    if(t.keyed!=null&&!t.ok)add("F2",i.id,(i.invoiceNo||i.batchRef||i.id),
+      "computed "+money(t.computed)+" against "+money(t.keyed)+" keyed");
+    const b=batchKey(i.batchRef);if(!b)continue;
+    let ledQ=0;for(const r of led)if(batchKey(r.batchRef)===b&&r.dir==="in")ledQ+=(+r.qty||0);
+    if(Math.abs(ledQ-t.recv)>0.001)add("F3",i.id,(i.invoiceNo||b),
+      num(t.recv)+" received on the invoice, "+num(ledQ)+" in the ledger");}
+
+  /* F4 — the catalogue's cost is a planning figure; landed cost is what the invoices say. They
+     drift apart legitimately on inherited stock, which is why this is judgement and not a defect. */
+  for(const r of rows){const p=byCode[normCode(r.code)];if(!p)continue;
+    const cc=(p.cost!=null&&p.cost!=="")?+p.cost:null;
+    if(cc==null||!(cc>0)||r.avgCost==null||!(r.avgCost>0))continue;
+    const d=Math.abs(cc-r.avgCost)/r.avgCost;
+    if(d>DIAG_COSTTOL)add("F4",normCode(r.code),r.code,
+      "catalogue "+money(cc)+" against landed "+money(r.avgCost)+" — "+pct(d)+" apart");}
+
+  /* F5 — legitimate, and worth seeing: a zero-cost lot contributes profit without cost, so it
+     pulls every ratio built on cost upward. */
+  {const z={};for(const r of led){if(r.dir!=="in")continue;if(netCostUnit(r)>0)continue;
+     const k=normCode(r.code);if(!k)continue;z[k]=(z[k]||0)+(+r.qty||0);}
+   for(const k in z)add("F5",k,(byCode[k]?byCode[k].code:k),num(z[k])+" units at no cost");}
+
+  /* F6 / F7 — the two pricing states that lose money quietly. */
+  for(const p of cat){if(p.sellable===false)continue;
+    const pr=(p.price!=null&&p.price!=="")?+p.price:null;
+    if(pr==null||!(pr>0))add("F6",normCode(p.code),p.code,p.name||"");}
+  for(const r of rows){if(!r.sellable)continue;
+    if(r.priceNet==null||!(r.priceNet>0)||r.avgCost==null||!(r.avgCost>0))continue;
+    if(r.priceNet<r.avgCost)add("F7",normCode(r.code),r.code,
+      "net "+money(r.priceNet)+" against landed "+money(r.avgCost));}
+
+  /* F8 — two codes under one name is either a fold waiting to happen or two things that need
+     telling apart. Both are worth a look; neither is wrong on its face. */
+  {const g={};for(const p of cat){const k=nameKey(p.name);if(!k)continue;(g[k]=g[k]||[]).push(p.code);}
+   for(const k in g)if(g[k].length>1)add("F8",k,(g[k].length+" codes"),k+" — "+g[k].join(" · "));}
+
+  /* F9 — on a domestic invoice the VAT a line carries should be the rate its product's type
+     attracts. A mismatch is sometimes right (a supplier's own error, faithfully recorded). */
+  for(const i of invs){if(i.treatment!=="domestic")continue;
+    for(const l of (i.lines||[])){const p=byCode[normCode(l.code)];if(!p)continue;
+      const own=parseNum(l.vatRate);if(own==null)continue;
+      const should=saleRateFor(p,st);
+      if(Math.abs(own-should)>0.001)add("F9",i.id+"|"+normCode(l.code),(l.code||""),
+        num(own)+"% keyed, "+num(should)+"% for a "+typeLabel(p.type)+" — on "+(i.invoiceNo||i.batchRef||"a draft"));}}
+
+  /* F10 — supplier matching normalises away punctuation and legal suffixes, so these already
+     behave as one supplier. Reporting them keeps the catalogue readable, nothing more. */
+  {const g={};for(const p of cat){const k=normProv(p.supplier||"");if(!k)continue;
+     (g[k]=g[k]||new Set()).add((p.supplier||"").trim());}
+   for(const k in g)if(g[k].size>1)add("F10",k,[...g[k]][0],[...g[k]].join(" · "));}
+
+  const disp=diagOf(st).disp;
+  for(const f of F){const d=disp[f.key];f.disp=(d&&d.d)||"";f.note=(d&&d.note)||"";
+    f.tier=CHK[f.chk].tier;f.title=CHK[f.chk].title;f.tab=CHK[f.chk].tab;}
+  return {findings:F,meter};
+}
+function healthCount(st){const r=runChecks(st);
+  return r.findings.filter(f=>f.tier==="minor"&&f.disp!=="accepted").length;}
+
+function Health({st,act,show}){
+  const res=useMemo(()=>runChecks(st),[st]);
+  const {findings,meter}=res;
+  const hist=diagOf(st).hist;
+  const [openFull,setOpenFull]=useState(true);
+  const [showAcc,setShowAcc]=useState(false);
+
+  /* One point a day, and only when the count moves — the trend is the whole reason the backlog
+     reports as progress, and a row per page view would bury it. */
+  useEffect(()=>{const d0=today();const last=hist[hist.length-1];
+    if(last&&last.docB===meter.docB&&last.totB===meter.totB)return;
+    act.pushHealth({d:d0,docB:meter.docB,totB:meter.totB});},[meter.docB,meter.totB]);
+
+  const open=findings.filter(f=>f.disp!=="accepted");
+  const acc=findings.filter(f=>f.disp==="accepted");
+  const minor=open.filter(f=>f.tier==="minor");
+  const full=open.filter(f=>f.tier==="full"&&f.chk!=="F1");
+  const pct0=meter.totB>0?meter.docB/meter.totB:null;
+  const prev=(()=>{for(let i=hist.length-2;i>=0;i--)if(hist[i].docB!==meter.docB)return hist[i];return null;})();
+
+  function groupsOf(list){const g={};for(const f of list)(g[f.chk]=g[f.chk]||[]).push(f);
+    return Object.keys(g).sort().map(k=>[k,g[k]]);}
+
+  function report(){
+    const L=["Rosa Mystica — health report","Generated "+new Date().toISOString().slice(0,16).replace("T"," "),
+      "","Documented stock: "+meter.docB+" of "+meter.totB+" batches"+(pct0!=null?" ("+Math.round(pct0*100)+"%)":""),""];
+    for(const [k,list] of groupsOf(open)){L.push("["+k+"] "+CHK[k].title+" — "+list.length);
+      for(const f of list)L.push("   "+f.subject+(f.detail?"  ·  "+f.detail:"")+(f.disp?"  ["+f.disp+"]":""));L.push("");}
+    if(acc.length){L.push("Accepted ("+acc.length+")");
+      for(const f of acc)L.push("   ["+f.chk+"] "+f.subject+(f.note?"  — "+f.note:""));}
+    downloadText("rosa-mystica_health_"+today()+".txt",L.join("\n"),"text/plain");
+    show("Report downloaded");}
+
+  const Row=f=>html`<tr key=${f.key}>
+    <td><span class="code">${f.subject}</span></td>
+    <td class="faint" style=${{fontSize:"12.5px"}}>${f.detail}</td>
+    <td class="num" style=${{whiteSpace:"nowrap"}}>
+      ${f.disp==="pending"?html`<span class="meta" style=${{marginRight:"6px"}}>pending</span>`:null}
+      <button class="btn sm ghost" title="This should get a document eventually — keep counting it"
+        onClick=${()=>act.setDisp(f.key,f.disp==="pending"?"":"pending")}>${f.disp==="pending"?"Un-flag":"Pending"}</button>
+      <button class="btn sm ghost" title="This will never have a document — stop reporting it"
+        onClick=${()=>act.setDisp(f.key,"accepted")}>Accept</button>
+      <button class="btn sm ghost" title="Go to ${CHK[f.chk].tab}" onClick=${()=>act.goFind(CHK[f.chk].tab,f.subject)}>→</button>
+    </td></tr>`;
+
+  const Group=([k,list])=>html`<div class="panel" key=${k} style=${{marginBottom:"12px"}}>
+    <div class="panel-h"><h3>${CHK[k].title}</h3>
+      <div class="hintrow"><span class="note">${k} · ${num(list.length)}</span>
+      ${(k!=="F1"&&list.length>1)?html`<button class="btn sm" title="Mark every one of these as never going to have a document"
+        onClick=${()=>{act.acceptMany(list.map(f=>f.key));show("Accepted "+list.length,true);}}>Accept all ${num(list.length)}</button>`:null}</div></div>
+    <div class="tablewrap"><table><tbody>${list.slice(0,200).map(Row)}</tbody></table></div>
+    ${list.length>200?html`<div class="note" style=${{padding:"10px 16px"}}>showing the first 200 of ${num(list.length)}</div>`:null}
+  </div>`;
+
+  return html`<div class="content full">
+    <div class="panel" style=${{marginBottom:"16px"}}>
+      <div class="panel-h"><h3>Documented stock</h3>
+        <div class="hintrow"><span class="note">every batch wants an invoice behind it</span>
+          <button class="btn sm" onClick=${report}><${Icon} name="download"/>Report</button></div></div>
+      <div style=${{padding:"16px"}}>
+        <div class="kpis">
+          <div class="kpi"><div class="k">Batches with a document</div>
+            <div class="v">${meter.totB?num(meter.docB)+" / "+num(meter.totB):"—"}</div>
+            <div class="f">${pct0!=null?pct(pct0):"nothing in the ledger yet"}${prev?" · "+(meter.docB>=prev.docB?"up ":"down ")+num(Math.abs(meter.docB-prev.docB))+" since "+fmtD(prev.d):""}</div></div>
+          <div class="kpi"><div class="k">Needs attention</div><div class="v">${num(minor.length)}</div>
+            <div class="f">${minor.length?"each one is a defect":"nothing structural is wrong"}</div></div>
+          <div class="kpi"><div class="k">Worth a look</div><div class="v">${num(full.length)}</div>
+            <div class="f">judgement, not errors</div></div>
+          <div class="kpi"><div class="k">Accepted</div><div class="v">${num(acc.length)}</div>
+            <div class="f">will never have a document</div></div>
+        </div>
+        ${pct0!=null?html`<div style=${{marginTop:"14px",height:"8px",borderRadius:"4px",background:"var(--line)",overflow:"hidden"}}>
+          <div style=${{width:(pct0*100).toFixed(1)+"%",height:"100%",background:"var(--good)"}}></div></div>`:null}
+        <div class="note" style=${{marginTop:"12px",maxWidth:"760px"}}>Nothing on this page changes your data. Each row links to the tab where you can act on it.${" "}<b>Pending</b> keeps a finding counted as work still to do; <b>Accept</b> means it will never have a document — a donation, or paperwork that is gone.</div>
+      </div></div>
+
+    ${minor.length?html`<h2 style=${{fontSize:"22px",marginTop:"2px"}}>Needs attention</h2>${groupsOf(minor).map(Group)}`:
+      html`<div class="panel" style=${{marginBottom:"16px"}}><div class="empty"><${Icon} name="reconcile"/>
+        <div class="big">Nothing structural is wrong</div>
+        <div class="note">No orphaned codes, no collisions, no posted invoice without its movements.</div></div></div>`}
+
+    <h2 style=${{fontSize:"22px",marginTop:"8px"}}>Worth a look <button class="btn sm ghost" onClick=${()=>setOpenFull(v=>!v)}>${openFull?"hide":"show "+num(full.length)}</button></h2>
+    ${openFull?(full.length?groupsOf(full).map(Group):html`<div class="panel" style=${{marginBottom:"16px"}}><div class="empty"><div class="note">Nothing to weigh up.</div></div></div>`):null}
+
+    ${acc.length?html`<h2 style=${{fontSize:"22px",marginTop:"8px"}}>Accepted <button class="btn sm ghost" onClick=${()=>setShowAcc(v=>!v)}>${showAcc?"hide":"show "+num(acc.length)}</button></h2>
+      ${showAcc?html`<div class="panel"><div class="tablewrap"><table><tbody>
+        ${acc.slice(0,200).map(f=>html`<tr key=${f.key}><td><span class="meta">${f.chk}</span></td>
+          <td><span class="code">${f.subject}</span></td><td class="faint" style=${{fontSize:"12.5px"}}>${f.detail}</td>
+          <td class="num"><button class="btn sm ghost" onClick=${()=>act.setDisp(f.key,"")}>Un-accept</button></td></tr>`)}
+      </tbody></table></div></div>`:null}`:null}
+  </div>`;}
+
 function App(){
   const boot=useMemo(()=>loadState(),[]);
   const [recover,setRecover]=useState(boot.ok?null:{raw:boot.raw,err:boot.err});
@@ -3190,6 +3454,8 @@ function App(){
   const undoRef=useRef(null);
   const [undoable,setUndoable]=useState(null);
   const [theme,setTheme]=useState(()=>st.settings.theme||"system");
+  /* the rail badge recounts only when the data changes, not on every render */
+  const hcount=useMemo(()=>healthCount(st),[st]);
   /* while the recovery screen is up nothing is written — the unreadable payload stays intact */
   useEffect(()=>{if(recover)return;const r=save(st);setSaveErr(r.ok?"":r.msg);},[st,recover]);
   useEffect(()=>{const el=document.documentElement;if(theme==="system")el.removeAttribute("data-theme");else el.setAttribute("data-theme",theme);setSt(s=>s.settings.theme===theme?s:{...s,settings:{...s.settings,theme}});},[theme]);
@@ -3197,7 +3463,20 @@ function App(){
   const doUndo=()=>{const prev=undoRef.current;if(!prev)return;undoRef.current=null;setSt(prev);show("Undone");};
 
   const act={
-    toast:show, go:setTab, openImport:()=>setModal({type:"ledgerimport"}), openSalesImport:()=>setModal({type:"salesimport"}), openCatImport:()=>setModal({type:"catimport"}), openFinanceImport:()=>setModal({type:"financeimport"}),
+    toast:show, go:setTab,
+    /* a finding's disposition. "" clears it; nothing else in the app reads these, so a
+       wrong click costs a click. */
+    setDisp:(key,d)=>setSt(s=>{const disp=Object.assign({},s.diag.disp);
+      if(!d)delete disp[key];else disp[key]={d,at:today()};
+      return {...s,diag:{...s.diag,disp}};}),
+    acceptMany:keys=>setSt(s=>{undoRef.current=s;const disp=Object.assign({},s.diag.disp);
+      const at=today();for(const k of keys)disp[k]={d:"accepted",at};
+      return {...s,diag:{...s.diag,disp}};}),
+    /* one point a day, capped: the trend is worth keeping, a log of page views is not */
+    pushHealth:pt=>setSt(s=>{const h=(s.diag.hist||[]).filter(x=>x.d!==pt.d);
+      h.push(pt);while(h.length>400)h.shift();
+      return {...s,diag:{...s.diag,hist:h}};}),
+    goFind:(tab,text)=>{setQ(text||"");setTab(tab);}, openImport:()=>setModal({type:"ledgerimport"}), openSalesImport:()=>setModal({type:"salesimport"}), openCatImport:()=>setModal({type:"catimport"}), openFinanceImport:()=>setModal({type:"financeimport"}),
     importFinance:add=>setSt(s=>({...s,finance:[...(s.finance||[]),...add]})),
     addPostage:e=>setSt(s=>({...s,postage:[...(s.postage||[]),{id:uid(),date:e.date,amount:e.amount,note:e.note||""}]})),
     removePostage:id=>setSt(s=>({...s,postage:(s.postage||[]).filter(x=>x.id!==id)})),
@@ -3398,11 +3677,11 @@ function App(){
   const openProduct=(p,fromStaging)=>setModal({type:"product",editing:p,fromStaging:!!fromStaging});
   const openMovement=r=>setModal({type:"movement",editing:r});
 
-  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["invoices","Invoices","invoice"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["settings","Settings","settings"]];
-  const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length,finance:(st.finance||[]).length,invoices:(st.invoices||[]).filter(i=>i.status!=="posted").length};
+  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["invoices","Invoices","invoice"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["health","Health","reconcile"],["settings","Settings","settings"]];
+  const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length,finance:(st.finance||[]).length,invoices:(st.invoices||[]).filter(i=>i.status!=="posted").length,health:hcount};
   const themeLabel={system:"◐",light:"☀",dark:"☾"}[theme];
   const cycleTheme=()=>setTheme(p=>p==="system"?"light":p==="light"?"dark":"system");
-  const where={overview:"Hub",catalogue:"Catalogue",invoices:"Invoices",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",settings:"Settings"}[tab];
+  const where={overview:"Hub",catalogue:"Catalogue",invoices:"Invoices",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",health:"Health",settings:"Settings"}[tab];
 
   if(recover)return html`<${RecoverScreen} info=${recover}
     onEmpty=${()=>{setSt(blankState());setRecover(null);}}
@@ -3429,6 +3708,7 @@ function App(){
       ${tab==="staging"?html`<${Staging} st=${st} act=${act} openProduct=${openProduct} show=${show}/>`:null}
       ${tab==="analytics"?html`<${Analytics} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="finance"?html`<${Finance} st=${st} act=${act} show=${show}/>`:null}
+      ${tab==="health"?html`<${Health} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="settings"?html`<${Settings} st=${st} act=${act} show=${show}/>`:null}
     </div>
     ${modal&&modal.type==="product"?html`<${ProductModal} st=${st} act=${act} editing=${modal.editing} fromStaging=${modal.fromStaging} onClose=${()=>setModal(null)} show=${show}/>`:null}
