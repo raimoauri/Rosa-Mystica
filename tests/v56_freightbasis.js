@@ -82,6 +82,22 @@ const INV=()=>({id:"inv1",status:"draft",provider:"Demi Art",country:"Italy",inv
   chk(near(fb.junk,10.8556,0.002),"an unparseable field falls back rather than poisoning the cost");
   chk(near(fb.none,5.30,0.002),"a batch with no freight adds nothing");
 
+  /* --------------------------------------------------------- the preview, headless */
+  const pvf=await p.evaluate(()=>{const s=JSON.parse(localStorage.getItem("rosamystica:v1"));
+    const inv=s.invoices[0];const pv=freightPreview(inv,s);
+    return {some:!!pv,rows:pv?pv.rows.length:0,
+      totals:pv?pv.totals:null,worst:pv&&pv.worst?pv.worst.r.code:null,
+      worstK:pv&&pv.worst?Math.round(pv.worst.k*100):null,
+      none:freightPreview(Object.assign({},inv,{freight:"0"}),s)===null,
+      noLines:freightPreview(Object.assign({},inv,{lines:[]}),s)===null};});
+  chk(pvf.some&&pvf.rows===5,"the preview covers every postable line");
+  chk(pvf.none,"no freight, no preview");
+  chk(pvf.noLines,"no lines, no preview");
+  chk(pvf.totals.units===50&&pvf.totals.value===50&&pvf.totals.blend===50,
+      "all three bases allocate the same 50,00");
+  chk(pvf.worst==="8219","the preview names the ornament as the line the choice turns on");
+  chk(pvf.worstK===105,"and puts its per-unit freight at 105 % of its own cost");
+
   /* ------------------------------------------------------------------ end to end */
   const openInv=async()=>{await p.getByRole("button",{name:/^Invoices/}).first().click();await p.waitForTimeout(350);
     await p.locator("tbody tr").first().click();await p.waitForTimeout(500);};
@@ -101,6 +117,33 @@ const INV=()=>({id:"inv1",status:"draft",provider:"Demi Art",country:"Italy",inv
   await openInv();
   chk(await picker().count()===1,"the draft shows one freight basis picker");
   chk(await picker().inputValue()==="units","it defaults to per unit");
+
+  const grid=()=>p.evaluate(()=>{const t=document.querySelector(".fpv table");if(!t)return null;
+    const cell=c=>c.innerText.split("\n").map(x=>x.trim());
+    return {sel:[...t.querySelectorAll("thead th.sel")].map(h=>h.textContent.trim()),
+      heads:[...t.querySelectorAll("thead th")].map(h=>h.textContent.trim()),
+      foot:[...t.querySelectorAll("tfoot th")].map(h=>h.textContent.trim()).slice(1),
+      rows:Object.fromEntries([...t.querySelectorAll("tbody tr")].map(tr=>{const td=[...tr.children];
+        return [td[0].textContent.trim(),td.slice(4).map(cell)];})),
+      warn:document.body.innerText.includes("105 %")};});
+  const g1=await grid();
+  chk(g1!==null,"the preview table is on the page");
+  chk(g1.heads.join("|").includes("Per unit|By line value|Blend"),"it shows all three bases side by side");
+  chk(g1.sel.length===1&&g1.sel[0]==="Per unit","the selected basis is the highlighted column");
+  chk(g1.foot.every(x=>x.replace(/\s/g,"")==="50,00€"),"the footer shows the same 50,00 under each");
+  chk(g1.rows["8219"][0][0].replace(/\s/g,"")==="10,86€","per unit column: the ornament at 10,86");
+  chk(g1.rows["8219"][1][0].replace(/\s/g,"")==="5,96€","by value column: the ornament at 5,96");
+  chk(g1.rows["8219"][2][0].replace(/\s/g,"")==="8,41€","blend column: the ornament at 8,41");
+  chk(g1.rows["8219"][0][1].replace(/\s/g,"")==="+5,56€","each cell shows the freight it adds");
+  chk(g1.rows["R3255"][1][0].replace(/\s/g,"")==="101,87€","by value column: Our Lady at 101,87");
+  chk(g1.warn,"the note names the line the decision turns on");
+
+  await picker().selectOption("value");await p.waitForTimeout(250);
+  const g2=await grid();
+  chk(g2.sel[0]==="By line value","the highlight follows the picker");
+  chk(g2.rows["8219"][0][0]===g1.rows["8219"][0][0],"and the figures themselves do not move");
+  await picker().selectOption("units");await p.waitForTimeout(250);
+
   await post();
   const U=await read();
   chk(U.status==="posted","posting under the default works");
