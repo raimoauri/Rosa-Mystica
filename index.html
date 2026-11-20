@@ -1938,6 +1938,16 @@ function blankInvoice(st){const c="";return {id:uid(),status:"draft",provider:""
 function blankLine(){return {id:uid(),supplierRef:"",code:"",name:"",qty:"",qtyRecv:"",lineTotal:"",vatRate:"",type:""};}
 function lineTypeFor(l,inv){return (l&&l.type)||(inv&&inv.lineType)||"goods";}
 const r2=x=>Math.round(x*100)/100;
+/* An invoice is keyed, reconciled and printed in its own currency; only the ledger is euros,
+   converted at posting. Printing a krona figure with a euro sign is how a 6 278 SEK book order
+   reads as a 6 278 euro one, so every figure that belongs to the document is labelled with the
+   document's currency and the euro equivalent is shown beside it. */
+function invCur(inv){const c=String((inv&&inv.currency)||"EUR").trim().toUpperCase();return c||"EUR";}
+function invMoney(inv,n){if(invCur(inv)==="EUR")return money(n);
+  if(n==null||isNaN(n))return "\u2014";
+  return new Intl.NumberFormat("fi-FI",{minimumFractionDigits:2,maximumFractionDigits:2}).format(n)+"\u00a0"+invCur(inv);}
+function invEur(inv,n){const r=parseNum(inv&&inv.rate);
+  if(invCur(inv)==="EUR"||r==null||!(r>0)||n==null||isNaN(n))return null;return n*r;}
 function invoiceTotals(inv){
   let lines=0,units=0,recv=0,missing=0;
   for(const l of (inv.lines||[])){
@@ -2112,8 +2122,8 @@ function Invoices({st,act,show,openProduct}){
         <td class="mono">${fmtD(d.date)}</td>
         <td><span class="note">${TREAT_LBL[d.treatment]||"—"}</span></td>
         <td class="num">${num(d.lines.length)}</td><td class="num">${num(tt.units)}</td>
-        <td class="num mono">${(tt.freight+tt.duty)?money(tt.freight+tt.duty):"—"}</td>
-        <td class="num mono">${money(tt.computed)}</td>
+        <td class="num mono">${(tt.freight+tt.duty)?invMoney(d,tt.freight+tt.duty):"—"}</td>
+        <td class="num mono">${invMoney(d,tt.computed)}${invEur(d,tt.computed)!=null?html`<div class="meta">${money(invEur(d,tt.computed))}</div>`:null}</td>
         <td>${d.status==="posted"?html`<span class="badge in">Posted</span>`:(tt.ok?html`<span class="badge type">Reconciled</span>`:html`<span class="badge out">Draft</span>`)}</td></tr>`;})}</tbody></table></div></div>`}
     </${React.Fragment}>`;}
 
@@ -2207,16 +2217,16 @@ function Invoices({st,act,show,openProduct}){
       <div class="panel-h"><h3>Reconciliation</h3><span class="note">the gate: this must agree with the invoice</span></div>
       <div style=${{padding:"16px"}}>
         <div class="kpis" style=${{marginBottom:"14px"}}>
-          <div class="kpi"><div class="k">Lines</div><div class="v">${money(t.lines)}</div><div class="f">${num(t.units)} units billed${t.recv!==t.units?" · "+num(t.recv)+" received":""}</div></div>
-          <div class="kpi"><div class="k">Freight + duty</div><div class="v">${money(t.freight+t.duty)}</div><div class="f">${t.freight!==t.freightNet?money(t.spread)+" net · ":""}${t.recv?money(t.spread/Math.max(1,t.recv))+" per unit":"spread per unit"}</div></div>
-          <div class="kpi"><div class="k">Computed total</div><div class="v">${money(t.computed)}</div><div class="f">lines + freight + duty</div></div>
-          <div class="kpi"><div class="k">Difference</div><div class="v" style=${{color:t.keyed==null?"inherit":(t.ok?"var(--good)":"var(--bad)")}}>${t.keyed==null?"—":money(t.diff)}</div><div class="f">${t.keyed==null?"key the invoice total":(t.exact?"agrees to the cent":(t.ok?"within rounding ("+money(t.tol)+" allowed on "+num(inv.lines.length)+" lines)":"does not agree"))}</div></div>
+          <div class="kpi"><div class="k">Lines</div><div class="v">${invMoney(inv,t.lines)}</div><div class="f">${num(t.units)} units billed${t.recv!==t.units?" · "+num(t.recv)+" received":""}</div></div>
+          <div class="kpi"><div class="k">Freight + duty</div><div class="v">${invMoney(inv,t.freight+t.duty)}</div><div class="f">${t.freight!==t.freightNet?invMoney(inv,t.spread)+" net · ":""}${t.recv?invMoney(inv,t.spread/Math.max(1,t.recv))+" per unit":"spread per unit"}</div></div>
+          <div class="kpi"><div class="k">Computed total</div><div class="v">${invMoney(inv,t.computed)}</div><div class="f">lines + freight + duty${invEur(inv,t.computed)!=null?" · "+money(invEur(inv,t.computed))+" at "+inv.rate:""}</div></div>
+          <div class="kpi"><div class="k">Difference</div><div class="v" style=${{color:t.keyed==null?"inherit":(t.ok?"var(--good)":"var(--bad)")}}>${t.keyed==null?"—":invMoney(inv,t.diff)}</div><div class="f">${t.keyed==null?"key the invoice total":(t.exact?"agrees to the cent":(t.ok?"within rounding ("+money(t.tol)+" allowed on "+num(inv.lines.length)+" lines)":"does not agree"))}</div></div>
         </div>
         <div class="hintrow">
           <label class="note">Total printed on the invoice</label>
           <input class="mono" type="text" disabled=${posted} style=${{width:"140px"}} placeholder="480.18" value=${inv.invoiceTotal||""} onInput=${e=>upd({invoiceTotal:e.target.value})}/>
           ${t.missing?html`<span class="err">${num(t.missing)} line${t.missing>1?"s have":" has"} no total</span>`:null}
-          ${t.keyed!=null&&!t.ok?html`<span class="err">Off by ${money(Math.abs(t.diff))}, more than the ${money(t.tol)} that line rounding can explain — a line is missing, doubled or mistyped</span>`:null}
+          ${t.keyed!=null&&!t.ok?html`<span class="err">Off by ${invMoney(inv,Math.abs(t.diff))}, more than the ${invMoney(inv,t.tol)} that line rounding can explain — a line is missing, doubled or mistyped</span>`:null}
           ${postable?html`<span class="note" style=${{color:"var(--good)"}}>✓ ready to post${t.recv!==t.units?" · "+num(t.recv)+" of "+num(t.units)+" units":""}</span>`:null}
         </div>
         ${!posted?html`<div class="note" style=${{marginTop:"10px"}}>Posting creates ${num(inv.lines.length)} in-movements under batch <span class="code">${refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)||"(auto)"}</span>. Codes not in the catalogue go to staging, as with any import.</div>`:null}
@@ -2298,7 +2308,7 @@ function InvoiceImportModal({st,act,onClose,show}){
         <tbody>${fresh.map(i=>{const t=invoiceTotals(i);return html`<tr key=${i.id}><td class="code">${i.invoiceNo}</td><td>${i.provider||"—"}${i.country?html`<div class="meta">${i.country}</div>`:null}</td>
           <td class="mono">${fmtD(i.date)}</td><td class="note">${TREAT_LBL[i.treatment]}</td><td class="num">${num(i.lines.length)}</td>
           <td class="num">${num(i.lines.reduce((a,l)=>a+(parseNum(l.qty)||0),0))}</td>
-          <td class="num mono">${t.freight?money(t.freight):"—"}</td><td class="num mono">${money(t.computed)}</td></tr>`;})}</tbody></table></div>
+          <td class="num mono">${t.freight?invMoney(i,t.freight):"—"}</td><td class="num mono">${invMoney(i,t.computed)}</td></tr>`;})}</tbody></table></div>
     </${React.Fragment}>`:null}
     ${res&&res.warnings&&res.warnings.length?html`<div class="note">${res.warnings.map((w,i)=>html`<div key=${i}>⚠ ${w}</div>`)}</div>`:null}
   </${Modal}>`;}
@@ -3292,7 +3302,7 @@ function runChecks(st){
   for(const i of invs){if(i.status!=="posted")continue;
     const t=invoiceTotals(i);
     if(t.keyed!=null&&!t.ok)add("F2",i.id,(i.invoiceNo||i.batchRef||i.id),
-      "computed "+money(t.computed)+" against "+money(t.keyed)+" keyed");
+      "computed "+invMoney(i,t.computed)+" against "+invMoney(i,t.keyed)+" keyed");
     const b=batchKey(i.batchRef);if(!b)continue;
     let ledQ=0;for(const r of led)if(batchKey(r.batchRef)===b&&r.dir==="in")ledQ+=(+r.qty||0);
     if(Math.abs(ledQ-t.recv)>0.001)add("F3",i.id,(i.invoiceNo||b),

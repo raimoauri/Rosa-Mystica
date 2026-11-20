@@ -155,6 +155,13 @@ rather than a column of identical dropdowns; the Lines table's **Type** column o
 single line that differs, and a line left on *(invoice)* follows whatever the header says. Own print
 is deliberately exempt: it is the printer's service fee, charged at the general rate whatever is
 being printed.
+**Foreign currency is the invoice's, euros are the ledger's.** An invoice is keyed and
+reconciled in the currency it was written in — the gate compares your lines against the total
+printed on the paper, in kronor or zloty — and the rate converts only at posting, when movements
+are written. So every figure on the invoice screens is labelled with the document's currency, with
+the euro equivalent and the rate beside the computed total. The rate field wants euros per unit of
+the foreign currency: for 1 EUR = 11,0668 SEK, enter 0,09036036.
+
 **Freight and duty are separate fields**: freight is keyed exactly as billed, with its own VAT rate
 beside it, so the gate compares like with like against the printed total while only its **net** part is
 spread per unit into landed cost. Duty is outside VAT; import VAT is recorded for the VAT return and
