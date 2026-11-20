@@ -834,7 +834,11 @@ function prepareMovements(raw,st,warnings0,opts){
       const hit=sidx.lookup(mv.provider,mv.providerRef);
       if(hit&&normCode(hit)!==normCode(mv.code)){mv=Object.assign({},mv,{code:hit});matchedRef++;}}
     const s=sig(mv);if(existing.has(s)||(!(opts&&opts.distinctLines)&&seen.has(s))){dup++;continue;}seen.add(s);
-    const clean={date:mv.date,channel:mv.channel,dir:mv.dir,batchRef:mv.batchRef,code:mv.code,qty:mv.qty,unitPrice:mv.unitPrice,vatRate:(mv.vatRate==null?null:mv.vatRate),transport:(mv.transport==null?null:mv.transport),note:mv.note,country:mv.country||"",provider:mv.provider||"",providerRef:mv.providerRef||""};movements.push(clean);
+    const clean={date:mv.date,channel:mv.channel,dir:mv.dir,batchRef:mv.batchRef,code:mv.code,qty:mv.qty,unitPrice:mv.unitPrice,vatRate:(mv.vatRate==null?null:mv.vatRate),transport:(mv.transport==null?null:mv.transport),note:mv.note,country:mv.country||"",provider:mv.provider||"",providerRef:mv.providerRef||""};
+    /* carried only when it exists, so a row posted under the default basis keeps the shape it has
+       always had — the read side reads its absence as "spread this batch's freight per unit" */
+    if(mv.freightUnit!=null&&mv.freightUnit!=="")clean.freightUnit=mv.freightUnit;
+    movements.push(clean);
     {const k=(mv.channel||"")+"|"+(mv.batchRef||"");incoming[k]=(incoming[k]||0)+1;}
     if(mv.channel&&!st.channels.some(c=>c.name.toLowerCase()===mv.channel.toLowerCase()))newCh[mv.channel]=mv.dir;
     const nc=normCode(mv.code);
@@ -1992,6 +1996,22 @@ function ConfirmModal({title,body,confirmLabel,onConfirm,onClose}){
    freight and duty), then its lines. Nothing touches stock until the draft reconciles to the
    total printed on the invoice and you post it — at which point the lines become ordinary
    ledger in-movements under one batch reference, exactly as a file import would. */
+/* How an invoice's freight is spread into landed cost. Weight is the real driver and no supplier
+   itemises it, so every basis here is a proxy: per unit is a proxy for parcel count, by value a
+   proxy for weight, and the blend an admission that neither is right. The choice is per invoice
+   and is baked into the rows at posting, never derived afterwards. */
+const FREIGHT_BASES=[["units","Per unit (equally)"],["value","By line value"],["blend","Half per unit, half by value"]];
+const FREIGHT_BASIS_NOTE={
+  units:"Every unit carries the same share. Right when the goods are alike; it overcharges the cheap lines when they are not \u2014 \u20ac50 of carriage over 9 pieces puts \u20ac5,56 on a \u20ac5,30 ornament.",
+  value:"Each line carries freight in proportion to what it cost, so the margin percentage comes out even across the invoice. It assumes price tracks weight \u2014 true of statuary, false of a light medal beside a heavy votive lamp.",
+  blend:"Half the freight per unit, half by line value. Since neither basis is physically right, this halves whichever error you are making."};
+function freightSpreadNote(inv,t){const fb=freightBasisOf(inv);
+  if(!t||!t.spread)return "spread per unit";
+  if(fb==="value")return t.lines>0?(String(Math.round(t.spread/t.lines*1000)/10).replace(".",",")+" % of each line"):"by line value";
+  if(fb==="blend")return "half per unit, half by value";
+  return t.recv?(invMoney(inv,t.spread/Math.max(1,t.recv))+" per unit"):"spread per unit";}
+function freightBasisOf(inv){const b=String((inv&&inv.freightBasis)||"units");
+  return (b==="value"||b==="blend")?b:"units";}
 const TREATMENTS=[
   ["domestic","Domestic (Finland)","VAT is on the invoice; net is counted back from each line total."],
   ["eu_acq","Intra-EU acquisition","0% on the invoice — you self-account the Finnish VAT and deduct it. The line total is already net."],
@@ -2013,7 +2033,7 @@ function defaultVatFor(treatment,st,lineType){const vr=vatRatesOf(st);
 function refFromInvoiceNo(s){return String(s||"").trim().toUpperCase().replace(/[^A-Z0-9]+/g,"-").replace(/^-|-$/g,"");}
 function blankInvoice(st){const c="";return {id:uid(),status:"draft",provider:"",country:c,invoiceNo:"",
   date:today(),due:"",currency:"EUR",rate:"1",treatment:treatmentForCountry(c),
-  freight:"",freightVat:"",duty:"",importVat:"",vatDefault:"",invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:"",lineType:"goods"};}
+  freight:"",freightVat:"",duty:"",importVat:"",vatDefault:"",invoiceTotal:"",note:"",lines:[],batchRef:"",postedAt:"",lineType:"goods",freightBasis:"units"};}
 /* A line's type is left empty so it follows the invoice. An older invoice has no lineType, so the
    fallback below keeps it on goods exactly as before. */
 function blankLine(){return {id:uid(),supplierRef:"",code:"",name:"",qty:"",qtyRecv:"",lineTotal:"",vatRate:"",type:""};}
@@ -2056,6 +2076,31 @@ function invoiceTotals(inv){
    resolves straight onto your codes with no staging at all. */
 /* A line's VAT: its own value, else the product's statutory rate when we know the product and
    the invoice is domestic, else the invoice default, else the treatment's. */
+/* Freight split across the rows that are actually being written, to the cent. The weights differ
+   by basis; the distribution of the remainder does not — largest fractional part first, so the
+   shares always sum to the freight total exactly and the batch's own transport figure still
+   reconciles. Returns freight per unit for each row, which is what landed cost adds. */
+function allocFreightUnits(rows,total,basis){
+  const n=(rows||[]).length;if(!n)return [];
+  const qty=rows.map(r=>+r.qty||0);const val=rows.map((r,i)=>(+r.unitPrice||0)*qty[i]);
+  const sq=qty.reduce((a,b)=>a+b,0),sv=val.reduce((a,b)=>a+b,0);
+  /* Per unit needs no remainder at all: one number goes on every unit, and it is the same
+     division the ledger has always done. Every degenerate case lands here too — an unknown
+     basis, or by-value on lines that carry no value — so a basis can never produce nothing. */
+  const flat=()=>qty.map(()=>sq>0?Math.round(((+total||0)/sq)*1e6)/1e6:0);
+  if(basis!=="value"&&basis!=="blend")return flat();
+  let w=null;
+  if(basis==="value")w=(sv>0)?val.slice():null;
+  else w=(sv>0&&sq>0)?qty.map((q,i)=>q/sq/2+val[i]/sv/2):null;
+  if(!w)return flat();
+  const sw=w.reduce((a,b)=>a+b,0);
+  if(!(sw>0))return flat();
+  const T=Math.round((+total||0)*100);
+  const raw=w.map(x=>T*x/sw);const cents=raw.map(x=>Math.floor(x));
+  let left=T-cents.reduce((a,b)=>a+b,0);
+  const ord=raw.map((x,i)=>[x-Math.floor(x),i]).sort((a,b)=>b[0]-a[0]||a[1]-b[1]);
+  for(let j=0;j<ord.length&&left>0;j++,left--)cents[ord[j][1]]++;
+  return cents.map((c,i)=>qty[i]>0?Math.round((c/100/qty[i])*1e6)/1e6:0);}
 function lineVatFor(l,inv,st,byCode){
   const own=parseNum(l&&l.vatRate);if(own!=null)return own;
   const p=byCode?byCode[normCode(l&&l.code)]:null;
@@ -2257,7 +2302,12 @@ function Invoices({st,act,show,openProduct,jump,clearJump}){
           ${F(inv.treatment==="import"?"Import VAT paid at the border":"Import VAT (not applicable)",
             html`<input class="mono" type="text" disabled=${posted||inv.treatment!=="import"} placeholder="deductible — never added to stock" value=${inv.importVat||""} onInput=${e=>upd({importVat:e.target.value})}/>`)}
         </div>
-        <div class="note" style=${{marginTop:"10px"}}>Key the freight exactly as the invoice shows it — including VAT on a domestic invoice — and give its rate beside it: the gate compares like with like, and only the <b>net</b> ${t&&t.freight!==t.freightNet?"("+money(t.freightNet)+") ":""}is spread per unit into landed cost. Duty is outside VAT. Import VAT is recorded for your return and never enters stock value.</div>
+        <div style=${{display:"flex",gap:"12px",alignItems:"flex-end",marginTop:"12px"}}>
+          <div style=${{width:"260px"}}><label class="lab">Spread freight by</label>
+            <select disabled=${posted} value=${freightBasisOf(inv)} onChange=${e=>upd({freightBasis:e.target.value})}>${FREIGHT_BASES.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select></div>
+          <div class="note" style=${{flex:1,marginTop:0}}>${FREIGHT_BASIS_NOTE[freightBasisOf(inv)]||""}</div>
+        </div>
+        <div class="note" style=${{marginTop:"10px"}}>Key the freight exactly as the invoice shows it — including VAT on a domestic invoice — and give its rate beside it: the gate compares like with like, and only the <b>net</b> ${t&&t.freight!==t.freightNet?"("+money(t.freightNet)+") ":""}is spread into landed cost, on the basis chosen above. Duty is outside VAT. Import VAT is recorded for your return and never enters stock value.</div>
       </div></div>
 
     ${!posted?html`<div class="panel" style=${{marginBottom:"16px"}}>
@@ -2304,7 +2354,7 @@ function Invoices({st,act,show,openProduct,jump,clearJump}){
       <div style=${{padding:"16px"}}>
         <div class="kpis" style=${{marginBottom:"14px"}}>
           <div class="kpi"><div class="k">Lines</div><div class="v">${invMoney(inv,t.lines)}</div><div class="f">${num(t.units)} units billed${t.recv!==t.units?" · "+num(t.recv)+" received":""}</div></div>
-          <div class="kpi"><div class="k">Freight + duty</div><div class="v">${invMoney(inv,t.freight+t.duty)}</div><div class="f">${t.freight!==t.freightNet?invMoney(inv,t.spread)+" net · ":""}${t.recv?invMoney(inv,t.spread/Math.max(1,t.recv))+" per unit":"spread per unit"}</div></div>
+          <div class="kpi"><div class="k">Freight + duty</div><div class="v">${invMoney(inv,t.freight+t.duty)}</div><div class="f">${t.freight!==t.freightNet?invMoney(inv,t.spread)+" net · ":""}${freightSpreadNote(inv,t)}</div></div>
           <div class="kpi"><div class="k">Computed total</div><div class="v">${invMoney(inv,t.computed)}</div><div class="f">lines + freight + duty${invEur(inv,t.computed)!=null?" · "+money(invEur(inv,t.computed))+" at "+inv.rate:""}</div></div>
           <div class="kpi"><div class="k">Difference</div><div class="v" style=${{color:t.keyed==null?"inherit":(t.ok?"var(--good)":"var(--bad)")}}>${t.keyed==null?"—":invMoney(inv,t.diff)}</div><div class="f">${t.keyed==null?"key the invoice total":(t.exact?"agrees to the cent":(t.ok?"within rounding ("+money(t.tol)+" allowed on "+num(inv.lines.length)+" lines)":"does not agree"))}</div></div>
         </div>
@@ -2319,11 +2369,11 @@ function Invoices({st,act,show,openProduct,jump,clearJump}){
       </div></div>
 
     ${confirmPost?html`<${ConfirmModal} title="Post this invoice to the ledger?" confirmLabel=${"Post "+num(inv.lines.length)+" lines"}
-      body=${html`<span>This writes <b>${num(inv.lines.length)}</b> in-movements totalling <b>${money(t.landed)}</b> landed, under batch <span class="code">${refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)}</span>. Stock rises by ${num(t.recv)} units. The invoice stays here as a record, and can be unposted.</span>`}
+      body=${html`<span>This writes <b>${num(inv.lines.length)}</b> in-movements totalling <b>${money(t.landed)}</b> landed, under batch <span class="code">${refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)}</span>. Stock rises by ${num(t.recv)} units.${freightBasisOf(inv)!=="units"&&t.spread>0?" Freight is spread "+(freightBasisOf(inv)==="value"?"by line value":"half per unit, half by value")+".":""} The invoice stays here as a record, and can be unposted.</span>`}
       onConfirm=${()=>{const res=act.postInvoice(inv.id);setConfirmPost(false);show("Posted "+num(inv.lines.length)+" lines to the ledger",true);}}
       onClose=${()=>setConfirmPost(false)}/>`:null}
     ${confirmUnpost?html`<${ConfirmModal} title="Unpost this invoice?" confirmLabel="Remove from the ledger"
-      body=${html`<span>Every movement under batch <span class="code">${inv.batchRef}</span> is removed and the invoice returns to draft. Stock, margins and the Batches view recompute from what is left.</span>`}
+      body=${html`<span>Every <b>in</b>-movement under batch <span class="code">${inv.batchRef}</span> is removed and the invoice returns to draft; sales are left alone. Stock, margins and the Batches view recompute from what is left.</span>`}
       onConfirm=${()=>{act.unpostInvoice(inv.id);setConfirmUnpost(null);show("Unposted — back to draft",true);}}
       onClose=${()=>setConfirmUnpost(null)}/>`:null}
     </${React.Fragment}>`;}
@@ -2951,6 +3001,13 @@ function batchTransportInfo(st){const q={},t={};
   for(const r of (st.ledger||[])){if(r.dir!=="in")continue;const b=r.batchRef||"";if(!b)continue;q[b]=(q[b]||0)+(+r.qty||0);const tv=r.transport==null?0:(+r.transport||0);if(tv>(t[b]||0))t[b]=tv;}
   const per={},total={};for(const b in t){total[b]=t[b];if(q[b]>0&&t[b]>0)per[b]=t[b]/q[b];}
   return {per,total};}
+/* One unit's landed cost. A row posted under a chosen freight basis carries its own allocated
+   share in freightUnit; a row from any other origin falls back to the batch's freight divided by
+   its received quantity, which is what every row in the ledger did until this existed. Absence of
+   the field is therefore the old behaviour exactly, which is why no stored data moves. */
+function landedUnit(m,tperU){const f=m&&m.freightUnit;
+  const own=(f==null||f==="")?null:(isNaN(+f)?null:+f);
+  return netCostUnit(m)+(own!=null?own:((tperU&&tperU[(m&&m.batchRef)||""])||0));}
 function computeInventory(st){
   const byCode=indexCatalogue(st.catalogue);const groups={};const tperU=batchTransportInfo(st).per;const km=kindMap(st);
   for(const r of st.ledger){const k=normCode(r.code);if(!k)continue;(groups[k]=groups[k]||[]).push(r);}
@@ -2958,7 +3015,7 @@ function computeInventory(st){
   for(const k in groups){const mvs=groups[k];const p=byCode[k];const saleRate=saleRateFor(p,st);
     const ins=mvs.filter(m=>m.dir==="in").sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const outs=mvs.filter(m=>m.dir==="out").sort((a,b)=>(a.date||"").localeCompare(b.date||""));
-    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0)}));
+    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:landedUnit(m,tperU)}));
     const received=lots.reduce((a,l)=>a+l.qty,0);
     let sold=0,shrink=0,cogs=0,shrinkCost=0,revenue=0,revenueNet=0,matchedNetRev=0,unmatched=0;
     /* every out line consumes stock in FIFO order; only a sale line books takings and COGS */
@@ -2997,7 +3054,7 @@ function computeBatches(st){
   for(const k in insBy){const p=byCode[k];const saleRate=saleRateFor(p,st);
     const ins=insBy[k].slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
     const outs=(outsBy[k]||[]).slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
-    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:netCostUnit(m)+(tperU[m.batchRef||""]||0),batchRef:m.batchRef||"(no batch)",date:m.date||"",provider:m.provider||"",country:m.country||"",code:m.code||"",providerRef:m.providerRef||""}));
+    const lots=ins.map(m=>({qty:+m.qty||0,left:+m.qty||0,cost:landedUnit(m,tperU),batchRef:m.batchRef||"(no batch)",date:m.date||"",provider:m.provider||"",country:m.country||"",code:m.code||"",providerRef:m.providerRef||""}));
     for(const l of lots){const b=l.batchRef;(agg[b]=agg[b]||{received:0,investedNet:0,sold:0,shrink:0,cogsNet:0,shrinkCost:0,netRev:0,lines:{}});
       agg[b].received+=l.qty;agg[b].investedNet+=l.qty*l.cost;
       /* the same roll-up again, per product, so a batch can be opened and read line by line */
@@ -3752,6 +3809,12 @@ function App(){
           note:l.name||"",country:inv.country||"",provider:inv.provider||"",providerRef:l.supplierRef||"",
           _name:l.name||"",_type:lineTypeFor(l,inv)});}
       if(!raw.length)return s;
+      /* The basis is decided on the draft and baked in here, so the ledger records the allocation
+         that was chosen at the time rather than deriving it later from an invoice that may be
+         edited or deleted. "units" writes nothing at all, which is the old path untouched. */
+      const fbasis=freightBasisOf(inv);
+      if(fbasis!=="units"&&transport>0){const fu=allocFreightUnits(raw,transport,fbasis);
+        for(let i=0;i<raw.length;i++)if(fu[i])raw[i].freightUnit=fu[i];}
       const prep=prepareMovements(raw,s,[],{distinctLines:true,respectCode:true});
       const now=new Date().toISOString();
       const ledger=[...s.ledger,...prep.movements.map(m=>({...m,id:uid(),createdAt:now}))];
@@ -3762,7 +3825,7 @@ function App(){
       undoRef.current=s;
       /* the same rule as any other deletion: staged entries are a readout of the ledger, so taking
          the movements away recounts them and drops the ones with nothing left behind them */
-      const led=s.ledger.filter(r=>(r.batchRef||"")!==inv.batchRef);
+      const led=s.ledger.filter(r=>!(r.dir==="in"&&(r.batchRef||"")===inv.batchRef));
       return {...s,ledger:led,staging:restage(led,s.staging),
         invoices:s.invoices.map(x=>x.id===id?Object.assign({},x,{status:"draft",postedAt:""}):x)};}),
     importLedger:parsed=>setSt(s=>{const now=new Date().toISOString();
