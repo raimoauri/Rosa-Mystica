@@ -607,7 +607,7 @@ const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 const SCHEMA=4;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
 function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],count:{lines:{}},order:{lines:{}},
   channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
-  settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG",rcnPrefix:"20"}};}
+  settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG",rcnPrefix:"02"}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
   s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];s.count=s.count||{lines:{}};if(!s.count.lines)s.count.lines={};
@@ -619,7 +619,16 @@ function migrate(s){if(!s||typeof s!=="object")return blankState();
   if(!s.settings.vatRates||typeof s.settings.vatRates!=="object")s.settings.vatRates={book:13.5,goods:25.5,other:0};
   if(!s.settings.codePrefix)s.settings.codePrefix="KKG";
   /* codePrefix is kept only so an older store is not rewritten; minting reads rcnPrefix */
-  if(!s.settings.rcnPrefix)s.settings.rcnPrefix="20";
+  if(!s.settings.rcnPrefix)s.settings.rcnPrefix="02";
+  /* 20 shipped as the default for one version, before GS1 Finland's own allocation was read: that
+     range is Finland's price-embedded PLU space, so a plain sequence does not belong in it. The
+     correction applies ONLY where nothing was ever minted into 20 — a shop that already printed
+     such a code keeps its setting and decides for itself, and a supplier EAN that happens to start
+     20 holds the setting too. No stored code is rewritten either way. */
+  if(s.settings.rcnPrefix==="20"){const re=/^20\d{11}$/;let seen=false;
+    for(const p of s.catalogue){if(re.test(normCode(p.code))){seen=true;break;}}
+    if(!seen)for(const i of s.invoices){for(const l of (i.lines||[])){if(re.test(normCode(l.code))){seen=true;break;}}if(seen)break;}
+    if(!seen)s.settings.rcnPrefix="02";}
   return s;}
 /* Loading returns {ok:true,state} or {ok:false,raw,err}. A payload we cannot read is NEVER
    replaced by a blank state — the raw bytes are handed to the recovery screen, and nothing
@@ -1741,7 +1750,7 @@ function Staging({st,act,openProduct,show}){
 function Settings({st,act,show}){
   const [newCh,setNewCh]=useState({name:"",dir:"out",mode:"",kind:"sale"});
   const sinfo=storageInfo();const lastExp=st.settings.lastExport||"";
-  const [pfx,setPfx]=useState(()=>st.settings.rcnPrefix||"20");
+  const [pfx,setPfx]=useState(()=>st.settings.rcnPrefix||"02");
   const vrs=st.settings.vatRates||{book:13.5,goods:25.5,other:0};
   const [vr,setVr]=useState(()=>({book:String(vrs.book??13.5),goods:String(vrs.goods??25.5),other:String(vrs.other??0)}));
   const fileRef=useRef();
@@ -1798,7 +1807,7 @@ function Settings({st,act,show}){
         <div class="note" style=${{marginTop:"10px"}}>Sales are stripped to net at the rate for each product's type when computing margin; a movement's own VAT % overrides. Purchases carry their own per-line VAT %, keyed with the VAT-inclusive total.</div>
         <div class="rowbetween" style=${{marginTop:"14px",borderTop:"1px solid var(--line)",paddingTop:"13px",gap:"12px"}}>
           <div><div class="lab">Prefix for minted codes</div>
-            <div class="note"><b>Next</b> on a product, and <b>Give our codes</b> on an invoice, mint an EAN-13 in GS1's restricted-circulation range so it scans like any other barcode — next one is <span class="code">${nextFreeCode(st)||"—"}</span>. Digits only; confirm the range with GS1 Finland. These are not globally unique, so a minted code belongs in a SKU field and never in a GTIN field or a product feed. Codes you type yourself are never changed or checked against this.</div></div>
+            <div class="note"><b>Next</b> on a product, and <b>Give our codes</b> on an invoice, mint an EAN-13 in GS1's restricted-circulation range so it scans like any other barcode — next one is <span class="code">${nextFreeCode(st)||"—"}</span>. Leave this at <span class="code">02</span> unless GS1 Finland tells you otherwise: 02 is the range Finland leaves wholly to the retailer, while 20 is its price-embedded PLU space and 23–25 and 28 carry weight or price. These numbers are not globally unique, so a minted code belongs in a SKU field and never in a GTIN field or a product feed. Codes you type yourself are never changed or checked against this.</div></div>
           <input class="mono" type="text" style=${{width:"110px"}} value=${pfx} onInput=${e=>setPfx(e.target.value)} onBlur=${()=>act.setRcnPrefix(pfx)}/>
         </div>
       </div>
@@ -1985,19 +1994,26 @@ function supplierIndex(st){const byPair={},byRef={},refSeen={};
     return (refSeen[r]===1)?byRef[r]:null;}};}
 /* Next free code in the shop's own scheme, e.g. KKG-142. */
 /* ---- minted codes ----
-   A code the shop invents is an EAN-13 inside GS1's restricted-circulation space — prefixes 02 and
-   20–29 are reserved for a retailer's own numbers — so a barcode printed here scans on the same
-   hardware as a publisher's and sits in the same field in Vektori and WooCommerce. The check digit
-   is the real gain: KKG-114 and KKG-141 are both plausible codes, so a typo became a silent wrong
-   product, where a mistyped EAN simply fails to resolve.
+   A code the shop invents is an EAN-13 inside GS1's restricted-circulation space, so a barcode
+   printed here scans on the same hardware as a publisher's and sits in the same field in Vektori
+   and WooCommerce. The check digit is the real gain: KKG-114 and KKG-141 are both plausible codes,
+   so a typo became a silent wrong product, where a mistyped EAN simply fails to resolve.
+
+   The prefix is 02, which is the one GS1 Finland leaves wholly to the retailer — its published
+   structure for 02 is ten retailer digits and a check digit, with no field reserved for anything
+   else. Finland has given the rest of the 2x range to price- and weight-embedded schemes: 20 is
+   "a special case for PLU type numbers", 23–25 carry weight, 28 carries price. Minting a plain
+   sequence into 20 would hand a scale-aware till a number it is entitled to read as a price, so
+   the default must not sit there. (Summary of GS1 Prefixes 20-29 by GS1 Member Organisation,
+   release 5.1.4, section 2.25.)
 
    This shape is MINTED, never REQUIRED. Nothing validates it. Codes typed by hand, and every code
    minted before this, stay exactly as they are. The restricted-circulation range is not globally
    unique — another shop may hold the same number — so a minted code belongs in a SKU field and
    never in a GTIN field or a product feed. */
 function eanCheck(d12){let s=0;for(let i=0;i<d12.length;i++)s+=(+d12[i])*(i%2?3:1);return String((10-s%10)%10);}
-function rcnPrefixOf(st){const p=String((st.settings&&st.settings.rcnPrefix)||"20").replace(/\D/g,"");
-  return (p&&p.length<=6)?p:"20";}
+function rcnPrefixOf(st){const p=String((st.settings&&st.settings.rcnPrefix)||"02").replace(/\D/g,"");
+  return (p&&p.length<=6)?p:"02";}
 function rcnCode(prefix,seq){const w=12-prefix.length;if(w<1)return null;
   const s=String(seq);if(s.length>w)return null;const body=prefix+s.padStart(w,"0");
   return body+eanCheck(body);}
@@ -3227,7 +3243,7 @@ function App(){
     setCodePrefix:v=>setSt(s=>({...s,settings:{...s.settings,codePrefix:(String(v||"KKG").trim().toUpperCase()||"KKG")}})),
     /* digits only, and short enough to leave room for a sequence and the check digit */
     setRcnPrefix:v=>setSt(s=>{const p=String(v||"").replace(/\D/g,"").slice(0,6);
-      return {...s,settings:{...s.settings,rcnPrefix:(p||"20")}};}),
+      return {...s,settings:{...s.settings,rcnPrefix:(p||"02")}};}),
     removeChannel:id=>setSt(s=>({...s,channels:s.channels.filter(c=>c.id!==id)})),
     replaceAll:raw=>setSt(s=>{const d=readCore(raw);return migrate({...blankState(),...d});}),
     openExport:(title,text)=>setModal({type:"export",title,text}),

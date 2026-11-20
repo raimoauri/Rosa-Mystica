@@ -64,11 +64,18 @@ written (code required + unique, name required, numbers valid); nothing commits 
 renaming a code relinks its ledger movements atomically. A code with movements can't be deleted.
 
 **Minted codes are EAN-13s.** Where the app invents a code — *Next* in the product editor, *Give
-our codes* on an invoice — it mints one inside GS1's restricted-circulation space (prefixes 02 and
-20–29 are reserved for a retailer's own numbers), with a computed check digit. A shop-printed
-barcode then scans on the same hardware as a publisher's and occupies one field across Vektori and
-WooCommerce, and a mistyped code fails instead of silently resolving to a different product. The
-prefix is set in Settings; confirm the range with GS1 Finland.
+our codes* on an invoice — it mints one inside GS1's restricted-circulation space, with a computed
+check digit. A shop-printed barcode then scans on the same hardware as a publisher's and occupies
+one field across Vektori and WooCommerce, and a mistyped code fails instead of silently resolving
+to a different product.
+
+The prefix is **02**, set in Settings. 02 is the range GS1 Finland leaves wholly to the retailer —
+its published structure is ten retailer digits and a check digit, with no field reserved for
+anything else. The rest of Finland's 2x range is spoken for: 20 is "a special case for PLU type
+numbers", 23–25 carry weight, 28 carries price ([Summary of GS1 Prefixes 20-29 by GS1 Member
+Organisation](https://www.gs1.org/docs/barcodes/SummaryOfGS1MOPrefixes20-29.pdf), release 5.1.4,
+§2.25). A plain sequence minted into 20 would hand a scale-aware till a number it is entitled to
+read as a price, which is why 20 is not the default.
 
 The shape is **minted, never required**. Nothing validates it, nothing rejects a code typed by
 hand, and codes minted under the earlier `PREFIX-NNN` scheme stay valid and are ignored by the

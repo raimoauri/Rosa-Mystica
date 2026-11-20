@@ -17,43 +17,43 @@ const ean13=s=>/^\d{13}$/.test(String(s));
 
   /* ---- the arithmetic ---- */
   const M=await p.evaluate(()=>{
-    const S=(cat,inv,pre)=>({settings:{rcnPrefix:pre||"20"},catalogue:cat||[],invoices:inv||[]});
+    const S=(cat,inv,pre)=>({settings:{rcnPrefix:pre||"02"},catalogue:cat||[],invoices:inv||[]});
     const valid=c=>{let s=0;for(let i=0;i<12;i++)s+=(+c[i])*(i%2?3:1);
       return c.length===13&&String((10-s%10)%10)===c[12];};
     return {
       /* a real EAN must reproduce its own check digit */
       knownEan:eanCheck("400638133393")==="1",
-      seq1:rcnCode("20",1), seq114:rcnCode("20",114),
-      longPrefix:rcnCode("020",1),
-      tooLong:rcnCode("20",12345678901),
-      allValid:[1,2,114,115,999999].every(n=>valid(rcnCode("20",n))),
+      seq1:rcnCode("02",1), seq114:rcnCode("02",114),
+      longPrefix:rcnCode("040",1),
+      tooLong:rcnCode("02",12345678901),
+      allValid:[1,2,114,115,999999].every(n=>valid(rcnCode("02",n))),
       prefixJunk:rcnPrefixOf({settings:{rcnPrefix:"kkg"}}),
-      prefixStrip:rcnPrefixOf({settings:{rcnPrefix:"2-0"}}),
+      prefixStrip:rcnPrefixOf({settings:{rcnPrefix:"0-2"}}),
       prefixMissing:rcnPrefixOf({settings:{}}),
       emptyCat:nextFreeCode(S()),
-      after114:nextFreeCode(S([{code:"2000000001142"}])),
+      after114:nextFreeCode(S([{code:"0200000001148"}])),
       /* the old scheme is invisible to the counter, not broken by it */
       ignoresKkg:nextFreeCode(S([{code:"KKG-114"},{code:"KKG-900"}])),
       /* a supplier EAN in the same range must not be handed out again */
-      skipsTaken:nextFreeCode(S([{code:"2000000000015"}])),
+      skipsTaken:nextFreeCode(S([{code:"0200000000011"}])),
       /* an unposted draft's codes are counted too */
-      readsDrafts:nextFreeCode(S([],[{lines:[{code:"2000000001142"}]}])),
+      readsDrafts:nextFreeCode(S([],[{lines:[{code:"0200000001148"}]}])),
     };});
 
   chk(M.knownEan,"eanCheck reproduces a real EAN-13's own check digit");
-  chk(M.seq1==="2000000000015","sequence 1 mints 2000000000015 ("+M.seq1+")");
-  chk(M.seq114==="2000000001142","sequence 114 mints 2000000001142 ("+M.seq114+")");
-  chk(M.longPrefix==="0200000000011"&&ean13(M.longPrefix),"a 3-digit prefix still yields 13 digits ("+M.longPrefix+")");
+  chk(M.seq1==="0200000000011","sequence 1 mints 0200000000011 ("+M.seq1+")");
+  chk(M.seq114==="0200000001148","sequence 114 mints 0200000001148 ("+M.seq114+")");
+  chk(M.longPrefix==="0400000000015"&&ean13(M.longPrefix),"a 3-digit prefix still yields 13 digits ("+M.longPrefix+")");
   chk(M.tooLong===null,"a sequence too long for the prefix mints nothing rather than a bad code");
   chk(M.allValid,"every minted code carries a correct check digit");
-  chk(M.prefixJunk==="20","a non-numeric prefix falls back to 20 ("+M.prefixJunk+")");
-  chk(M.prefixStrip==="20","punctuation is stripped from the prefix ("+M.prefixStrip+")");
-  chk(M.prefixMissing==="20","an unset prefix defaults to 20 ("+M.prefixMissing+")");
-  chk(M.emptyCat==="2000000000015","an empty catalogue starts at sequence 1 ("+M.emptyCat+")");
-  chk(M.after114==="2000000001159","it counts on from the highest in use ("+M.after114+")");
-  chk(M.ignoresKkg==="2000000000015","old prefix codes do not move the sequence ("+M.ignoresKkg+")");
-  chk(M.skipsTaken==="2000000000022","a number already held is skipped ("+M.skipsTaken+")");
-  chk(M.readsDrafts==="2000000001159","an unposted draft's codes are counted ("+M.readsDrafts+")");
+  chk(M.prefixJunk==="02","a non-numeric prefix falls back to 02 ("+M.prefixJunk+")");
+  chk(M.prefixStrip==="02","punctuation is stripped from the prefix ("+M.prefixStrip+")");
+  chk(M.prefixMissing==="02","an unset prefix defaults to 02 ("+M.prefixMissing+")");
+  chk(M.emptyCat==="0200000000011","an empty catalogue starts at sequence 1 ("+M.emptyCat+")");
+  chk(M.after114==="0200000001155","it counts on from the highest in use ("+M.after114+")");
+  chk(M.ignoresKkg==="0200000000011","old prefix codes do not move the sequence ("+M.ignoresKkg+")");
+  chk(M.skipsTaken==="0200000000028","a number already held is skipped ("+M.skipsTaken+")");
+  chk(M.readsDrafts==="0200000001155","an unposted draft's codes are counted ("+M.readsDrafts+")");
 
   /* ---- nothing is required, nothing is rejected ---- */
   await p.evaluate(()=>{const s=JSON.parse(localStorage.getItem("rosamystica:v1"));
@@ -92,6 +92,24 @@ const ean13=s=>/^\d{13}$/.test(String(s));
   chk(codes[0]!==codes[1],"the two minted codes differ");
   chk(codes[2]==="KKG-114","a line that already had a code was left alone ("+codes[2]+")");
   chk(!codes.includes("KKG-115"),"nothing was minted in the old scheme");
+
+  /* ---- the one-version-only correction of the 20 default ----
+     20 is Finland's price-embedded PLU range, so it was the wrong default. Correcting it must not
+     disturb a shop that already minted into it. */
+  const afterLoad=async seed=>{
+    await p.evaluate(s=>{const st=JSON.parse(localStorage.getItem("rosamystica:v1"));
+      st.settings.rcnPrefix=s.pre;st.catalogue=s.cat||[];st.invoices=s.inv||[];st.ledger=[];st.staging=[];
+      localStorage.setItem("rosamystica:v1",JSON.stringify(st));},seed);
+    await p.reload({waitUntil:"domcontentloaded"});await p.waitForTimeout(600);
+    return p.evaluate(()=>JSON.parse(localStorage.getItem("rosamystica:v1")).settings.rcnPrefix);};
+
+  chk(await afterLoad({pre:"20",cat:[]})==="02","an unused 20 default is corrected to 02");
+  chk(await afterLoad({pre:"20",cat:[{code:"2000000001142",name:"Minted",type:"goods"}]})==="20",
+      "a 20 already minted into holds the setting — the shop decides");
+  chk(await afterLoad({pre:"20",cat:[],inv:[{id:"x",status:"draft",lines:[{id:"y",code:"2000000001142"}]}]})==="20",
+      "a 20 code on an unposted draft holds it too");
+  chk(await afterLoad({pre:"040",cat:[]})==="040","a prefix chosen deliberately is left alone");
+  chk(await afterLoad({pre:"02",cat:[]})==="02","02 stays 02");
 
   chk(errs.length===0,"no page errors"+(errs.length?" — "+errs[0]:""));
   A.forEach(l=>console.log(l));
