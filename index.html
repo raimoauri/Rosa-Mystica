@@ -150,6 +150,8 @@ button{font-family:inherit}
 .fpv th.sel{color:var(--accent)}
 .fpv td .f{font-size:11px;color:var(--faint)}
 .fpv tfoot th{border-top:1px solid var(--line-strong);font-weight:600}
+.fpv tr.fpvmore td{background:var(--surface-2)}
+.fpv tr.fpvmore .note{margin:0;display:inline}
 .tablewrap{overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--line-strong) var(--surface-2)}
 .tablewrap::-webkit-scrollbar{height:9px}
 .tablewrap::-webkit-scrollbar-track{background:var(--surface-2)}
@@ -2007,13 +2009,14 @@ function ConfirmModal({title,body,confirmLabel,onConfirm,onClose}){
    and is baked into the rows at posting, never derived afterwards. */
 const FREIGHT_BASES=[["units","Per unit (equally)"],["value","By line value"],["blend","Half per unit, half by value"]];
 const FREIGHT_BASIS_NOTE={
-  units:"Every unit carries the same share. Right when the goods are alike; it overcharges the cheap lines when they are not \u2014 \u20ac50 of carriage over 9 pieces puts \u20ac5,56 on a \u20ac5,30 ornament.",
+  units:"Every unit carries the same share, whatever it cost. Right when the goods are alike; when they are not, it overcharges the cheap lines \u2014 sometimes by more than the item is worth.",
   value:"Each line carries freight in proportion to what it cost, so the margin percentage comes out even across the invoice. It assumes price tracks weight \u2014 true of statuary, false of a light medal beside a heavy votive lamp.",
   blend:"Half the freight per unit, half by line value. Since neither basis is physically right, this halves whichever error you are making."};
 /* What each basis would do to this invoice, before anything is written. The three columns are
    the same money arranged three ways, which is the point the footer makes: the choice moves the
    cost between lines and never changes the total. Computed in the invoice's own currency, on the
    received quantities, through the same allocator that posting uses. */
+const FPV_FULL=8;
 function freightPreview(inv,st,t0){
   const t=t0||invoiceTotals(inv);const spread=t.spread;
   if(!(spread>0))return null;
@@ -2024,7 +2027,7 @@ function freightPreview(inv,st,t0){
     const code=String(l.code||l.supplierRef||"").trim();
     if(!code||!q||!rq||lt==null)continue;
     const gross=lt/q;const vr=parseNum(lineVatFor(l,inv,st,byCode))||0;
-    rows.push({code,name:l.name||"",qty:rq,unitPrice:gross,net:vr>0?gross/(1+vr/100):gross});}
+    rows.push({code,name:l.name||"",qty:rq,unitPrice:gross,vr,net:vr>0?gross/(1+vr/100):gross});}
   if(!rows.length)return null;
   const KEYS=["units","value","blend"];const a={};
   for(const b of KEYS)a[b]=allocFreightUnits(rows,spread,b);
@@ -2036,7 +2039,27 @@ function freightPreview(inv,st,t0){
   let worst=null;
   for(const r of out){const k=r.net>0?r.share.units/r.net:null;
     if(k!=null&&(!worst||k>worst.k))worst={k,r};}
-  return {rows:out,spread,totals,worst,keys:KEYS};}
+  /* Where the two bases agree. Per unit gives every unit F/Q; by value gives it gross\u00b7F/V; the
+     two are equal at gross = V/Q, the invoice's average unit value, and the difference is strictly
+     decreasing in unit value either side of it. So one number says which way every line moves.
+     It only holds where one VAT rate runs through the invoice, because the allocator weights on
+     gross while landed cost adds to net; with rates mixed there is no single crossing to name. */
+  const Q=out.reduce((x,r)=>x+r.qty,0);
+  const V=out.reduce((x,r)=>x+r.unitPrice*r.qty,0);
+  const rset=new Set(out.map(r=>r.vr||0));
+  const pivot=(rset.size===1&&Q>0)?(V/Q)/(1+([...rset][0]||0)/100):null;
+  /* On a long invoice the table stops being a bird's-eye view. The effect is monotonic in unit
+     value, so the two cheapest and the two dearest bracket every line between them; the largest
+     line by money is added because it is rarely at either end and is where a wrong basis costs
+     most. The footer keeps totalling every line, shown or not. */
+  let focus=null;
+  if(out.length>FPV_FULL){const byCost=out.slice().sort((x,y)=>x.net-y.net);const keep=new Set();
+    for(const r of byCost.slice(0,2))keep.add(r.code);
+    for(const r of byCost.slice(-2))keep.add(r.code);
+    let big=null;for(const r of out){const v=r.net*r.qty;if(!big||v>big.v)big={v,code:r.code};}
+    if(big)keep.add(big.code);
+    focus=keep;}
+  return {rows:out,spread,totals,worst,keys:KEYS,pivot,focus};}
 function freightSpreadNote(inv,t){const fb=freightBasisOf(inv);
   if(!t||!t.spread)return "spread per unit";
   if(fb==="value")return t.lines>0?(String(Math.round(t.spread/t.lines*1000)/10).replace(".",",")+" % of each line"):"by line value";
@@ -2225,6 +2248,7 @@ function Invoices({st,act,show,openProduct,jump,clearJump}){
   const [sel,setSel]=useState(null);
   const [paste,setPaste]=useState("");const [pasteRows,setPasteRows]=useState(null);const [pmap,setPmap]=useState([]);
   const [confirmPost,setConfirmPost]=useState(false);const [confirmUnpost,setConfirmUnpost]=useState(null);
+  const [fpvAll,setFpvAll]=useState(false);
   const inv=sel?drafts.find(d=>d.id===sel):null;
   /* the Overview hands over a batch reference; a posted invoice carries its own, a draft has
      not been given one yet, so fall back to what its number would become. */
@@ -2343,16 +2367,23 @@ function Invoices({st,act,show,openProduct,jump,clearJump}){
           const cur=freightBasisOf(inv);const C=k=>(k===cur?"num mono sel":"num mono");
           const H=k=>(k===cur?"num sel":"num");
           const LBL={units:"Per unit",value:"By line value",blend:"Blend"};
+          const folded=!!pv.focus&&!fpvAll;
+          const shown=folded?pv.rows.filter(r=>pv.focus.has(r.code)):pv.rows;
+          const hidden=pv.rows.length-shown.length;
           return html`<${React.Fragment}>
           <div class="tablewrap fpv" style=${{marginTop:"10px"}}><table>
             <thead><tr><th>Code</th><th>Description</th><th class="num">Units</th><th class="num">Net unit</th>
               ${pv.keys.map(k=>html`<th key=${k} class=${H(k)}>${LBL[k]}</th>`)}</tr></thead>
-            <tbody>${pv.rows.map(r=>html`<tr key=${r.code}>
+            <tbody>${shown.map(r=>html`<tr key=${r.code}>
               <td class="mono">${r.code}</td><td>${r.name}</td>
               <td class="num">${num(r.qty)}</td><td class="num mono">${invMoney(inv,r.net)}</td>
-              ${pv.keys.map(k=>html`<td key=${k} class=${C(k)}>${invMoney(inv,r.landed[k])}<div class="f">+${invMoney(inv,r.share[k])}</div></td>`)}</tr>`)}</tbody>
-            <tfoot><tr><th colspan="4">Freight allocated \u2014 the same money, arranged three ways</th>
+              ${pv.keys.map(k=>html`<td key=${k} class=${C(k)}>${invMoney(inv,r.landed[k])}<div class="f">+${invMoney(inv,r.share[k])}</div></td>`)}</tr>`)}
+              ${pv.focus?html`<tr class="fpvmore"><td colspan="7">
+                <button class="btn sm ghost" onClick=${()=>setFpvAll(v=>!v)}>${fpvAll?"Show the extremes only":"Show all "+num(pv.rows.length)+" lines"}</button>
+                ${hidden>0?html`<span class="note" style=${{marginLeft:"8px"}}>${num(hidden)} not shown \u2014 the cheapest and dearest lines are here, and every other line sits between them in unit cost, so the basis moves it less.</span>`:null}</td></tr>`:null}</tbody>
+            <tfoot><tr><th colspan="4">Freight allocated across all ${num(pv.rows.length)} lines \u2014 the same money, arranged three ways</th>
               ${pv.keys.map(k=>html`<th key=${k} class=${H(k)}>${invMoney(inv,pv.totals[k])}</th>`)}</tr></tfoot></table></div>
+          ${pv.pivot!=null?html`<div class="note" style=${{marginTop:"6px"}}>Per unit and by line value agree at <b>${invMoney(inv,pv.pivot)}</b> a unit. Below that a per-unit split overcharges the line; above it, undercharges.</div>`:null}
           ${pv.worst&&pv.worst.k>0.35?html`<div class="note" style=${{marginTop:"6px"}}>Spread per unit, <span class="code">${pv.worst.r.code}</span> carries <b>${String(Math.round(pv.worst.k*100))} %</b> of its own cost in freight \u2014 ${invMoney(inv,pv.worst.r.share.units)} on top of ${invMoney(inv,pv.worst.r.net)}. By line value it carries ${invMoney(inv,pv.worst.r.share.value)}. Price that line off its landed cost, not off what the invoice charges for it.</div>`:null}
           </${React.Fragment}>`;})()}
         <div class="note" style=${{marginTop:"10px"}}>Key the freight exactly as the invoice shows it — including VAT on a domestic invoice — and give its rate beside it: the gate compares like with like, and only the <b>net</b> ${t&&t.freight!==t.freightNet?"("+money(t.freightNet)+") ":""}is spread into landed cost, on the basis chosen above. Duty is outside VAT. Import VAT is recorded for your return and never enters stock value.</div>

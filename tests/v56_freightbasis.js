@@ -98,6 +98,47 @@ const INV=()=>({id:"inv1",status:"draft",provider:"Demi Art",country:"Italy",inv
   chk(pvf.worst==="8219","the preview names the ornament as the line the choice turns on");
   chk(pvf.worstK===105,"and puts its per-unit freight at 105 % of its own cost");
 
+  /* the pivot: where a per-unit split and a by-value split agree, = goods / units on one rate */
+  const piv=await p.evaluate(()=>{const s=JSON.parse(localStorage.getItem("rosamystica:v1"));
+    const inv=s.invoices[0];const pv=freightPreview(inv,s);
+    /* the same invoice with one line moved to a different rate has no single crossing */
+    const mixed=JSON.parse(JSON.stringify(inv));mixed.treatment="domestic";
+    mixed.lines[0].vatRate="25.5";mixed.lines[1].vatRate="13.5";
+    const row=pv.rows.find(r=>r.code==="6610");
+    return {pivot:Math.round(pv.pivot*100)/100,
+      mixed:freightPreview(mixed,s).pivot,
+      above:row.share.value>row.share.units,
+      below:(()=>{const r=pv.rows.find(x=>x.code==="8516");return r.share.value<r.share.units;})()};});
+  chk(piv.pivot===45.01,"the pivot is 45,01 — goods 405,09 over 9 units");
+  chk(piv.below,"a line below the pivot carries less by value than per unit");
+  chk(piv.above,"a line above it carries more");
+  chk(piv.mixed===null,"with VAT rates mixed there is no single crossing, so none is claimed");
+
+  /* folding: an invoice long enough to need it keeps the extremes and the biggest line */
+  const fold=await p.evaluate(()=>{const s=JSON.parse(localStorage.getItem("rosamystica:v1"));
+    const base=s.invoices[0];const long=JSON.parse(JSON.stringify(base));
+    long.lines=[];let total=0;
+    /* twelve lines: a cheap one, a dear one, ten in between, and one holding most of the money */
+    const mk=(code,qty,unit)=>{const lt=Math.round(qty*unit*100)/100;total+=lt;
+      long.lines.push({id:code,supplierRef:code,code,name:code,qty:String(qty),qtyRecv:"",
+        lineTotal:lt.toFixed(2),vatRate:"0",type:""});};
+    mk("CHEAP1",2,1.00);mk("CHEAP2",2,1.50);
+    for(let i=0;i<8;i++)mk("MID"+i,2,20+i);
+    mk("BULK",40,25.00);mk("DEAR",1,300.00);
+    long.freight="50.00";long.invoiceTotal=(total+50).toFixed(2);
+    const pv=freightPreview(long,s);
+    const short=freightPreview(base,s);
+    return {n:pv.rows.length,focus:pv.focus?[...pv.focus].sort():null,
+      shortFocus:short.focus,
+      totalAll:pv.totals.units,spread:pv.spread};});
+  chk(fold.shortFocus===null,"a five-line invoice is shown whole");
+  chk(fold.n===12,"the long fixture has twelve lines");
+  chk(fold.focus&&fold.focus.length===5,"a twelve-line invoice folds to five rows");
+  chk(fold.focus.includes("CHEAP1")&&fold.focus.includes("CHEAP2"),"the two cheapest are kept");
+  chk(fold.focus.includes("DEAR"),"the dearest is kept");
+  chk(fold.focus.includes("BULK"),"so is the line holding the most money, which is at neither end");
+  chk(fold.totalAll===fold.spread,"the footer still totals every line, folded or not");
+
   /* ------------------------------------------------------------------ end to end */
   const openInv=async()=>{await p.getByRole("button",{name:/^Invoices/}).first().click();await p.waitForTimeout(350);
     await p.locator("tbody tr").first().click();await p.waitForTimeout(500);};
