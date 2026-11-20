@@ -88,6 +88,19 @@ converted to invoice form one batch at a time, and the meter is how that work be
 is the one check with no bulk-accept, because bulk-accepting it would hide the very thing it exists
 to show.
 
+## Overview: filtering by supplier
+
+The Overview reports posted invoices only, which grows long once several suppliers are in play.
+A list beside the chart ticks suppliers in and out; the chart shows the ticked ones, grouped by
+`normProv` so two spellings of one supplier are one entry and one filter.
+
+When anything is excluded, a **second row of tiles** appears carrying the same five figures over
+the ticked suppliers alone. A filtered chart above unfiltered totals is worse than no filter —
+the eye reads them as one population. The row is hidden while everything is ticked, because a
+tile that always repeats its neighbour teaches you to stop reading both.
+
+Clicking a bar opens the invoice behind it.
+
 ## Secure editing
 The product code is the unique key. Product edits are validated as a whole before anything is
 written (code required + unique, name required, numbers valid); nothing commits until valid, and

@@ -115,6 +115,20 @@ button{font-family:inherit}
 .kpi .k{font-size:11.5px;color:var(--muted);font-weight:500}
 .kpi .v{font-size:25px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;line-height:1.05}
 .kpi .f{font-size:11px;color:var(--faint)}
+/* the second tile row describes only the ticked suppliers, so it is marked off from the first */
+.kpi.sel{background:var(--surface-2)}
+.kpi.sel .k{color:var(--accent)}
+.kpi.sel .v{font-size:21px}
+/* chart and its supplier list; the list wraps under the chart when there is no room beside it */
+.ovsplit{display:grid;grid-template-columns:minmax(0,1fr) 208px;gap:0}
+.suppick{border-left:1px solid var(--line);padding:12px 12px 10px;max-height:272px;overflow:auto}
+.supitem{display:flex;align-items:center;gap:7px;padding:4px 2px;cursor:pointer;border-radius:5px;font-size:12.5px}
+.supitem:hover{background:var(--surface-2)}
+.supitem input{margin:0;flex:none}
+.supitem .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.supitem .meta{font-size:11px;flex:none}
+@media (max-width:1180px){.ovsplit{grid-template-columns:minmax(0,1fr)}
+  .suppick{border-left:0;border-top:1px solid var(--line);max-height:none}}
 
 /* panel + table */
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
@@ -1185,7 +1199,34 @@ function Badge({dir}){return html`<span class=${"badge "+(dir==="in"?"in":"out")
 function MiniBar({frac,tone}){
   const f=Math.max(0,Math.min(1,frac||0));
   return html`<div class="minibar"><span style=${{width:(f*100).toFixed(1)+"%",background:"var(--"+(tone||"accent")+")"}}></span></div>`;}
-function Overview({st,go}){
+/* The Overview's figures, over whichever invoices are being shown. Run once over every posted
+   invoice and again over the ticked suppliers, so the second row of tiles describes exactly the
+   bars on screen rather than something larger standing behind them. */
+function overviewTotals(bl){
+  const m={};
+  for(const b of bl)for(const l of (b.lines||[])){const k=normCode(l.code);
+    const t=m[k]||(m[k]={code:l.code,name:l.name,inCat:l.inCat,sellable:l.sellable,
+      received:0,sold:0,profit:0,netRev:0,cogsNet:0,valueNet:0});
+    t.received+=l.received;t.sold+=l.sold;t.profit+=l.profit;t.netRev+=l.netRev;
+    t.cogsNet+=l.cogsNet;t.valueNet+=l.valueNet;}
+  const prod=Object.values(m);
+  let stockVal=0,onHand=0,inStock=0,profit=0,cogs=0,netRev=0,recvT=0,soldT=0,deadVal=0,deadU=0;
+  for(const r of prod){profit+=r.profit;cogs+=r.cogsNet;netRev+=r.netRev;
+    stockVal+=r.valueNet;const oh=r.received-r.sold;if(oh>0){onHand+=oh;inStock++;}
+    recvT+=r.received;soldT+=r.sold;
+    if(r.sold===0&&r.valueNet>0){deadVal+=r.valueNet;deadU+=oh;}}
+  /* capital still out: what each invoice cost, less what its sales have brought back, counting
+     only the invoices still in the red — a recouped batch does not offset an unrecouped one */
+  let out=0,outN=0,invT=0,recT=0,surplus=0,paidN=0;
+  for(const b of bl){const left=b.investedNet-b.recoupedNet;if(left>0){out+=left;outN++;}
+    /* money returned beyond what an invoice cost, counted per invoice: a batch still in the red
+       does not cancel one that is ahead, because the shelf stock of the first is not cash */
+    else if(b.investedNet>0){surplus+=-left;paidN++;}
+    invT+=b.investedNet;recT+=b.recoupedNet;}
+  return {prod,stockVal,onHand,inStock,profit,cogs,netRev,recvT,soldT,deadVal,deadU,
+    roi:cogs>0?profit/cogs:null,sellThrough:recvT>0?soldT/recvT:null,
+    out,outN,invT,recT,surplus,paidN,backShare:invT>0?recT/invT:null,n:bl.length};}
+function Overview({st,go,act}){
   const [tip,setTip]=useState(null);
   const tp=label=>({onMouseEnter:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseMove:e=>setTip({x:e.clientX,y:e.clientY,label}),onMouseLeave:()=>setTip(null)});
   /* The Overview is the invoice view. Stock that arrived some other way — inherited, an opening
@@ -1201,32 +1242,31 @@ function Overview({st,go}){
   const inv=useMemo(()=>computeInventory(st),[st]);
 
   /* per product, across invoice batches only */
-  const prod=useMemo(()=>{const m={};
-    for(const b of batches)for(const l of (b.lines||[])){const k=normCode(l.code);
-      const t=m[k]||(m[k]={code:l.code,name:l.name,inCat:l.inCat,sellable:l.sellable,
-        received:0,sold:0,profit:0,netRev:0,cogsNet:0,valueNet:0});
-      t.received+=l.received;t.sold+=l.sold;t.profit+=l.profit;t.netRev+=l.netRev;
-      t.cogsNet+=l.cogsNet;t.valueNet+=l.valueNet;}
-    return Object.values(m);},[batches]);
+  /* Suppliers the invoices name, one entry per supplier however it is spelled — normProv is what
+     the rest of the app matches on, so a filter that split "Lellostore Oy" from "lellostore" would
+     disagree with every other screen. */
+  const sups=useMemo(()=>{const m={};
+    for(const b of batches){const k=normProv(b.provider||"");if(!k)continue;
+      const nm=(b.provider||"").trim();
+      const e=m[k]||(m[k]={key:k,name:nm,n:0,invested:0,spell:{}});
+      e.n++;e.invested+=b.investedNet;e.spell[nm]=(e.spell[nm]||0)+1;}
+    const out=Object.values(m);
+    for(const e of out)e.name=Object.keys(e.spell).sort((a,b)=>e.spell[b]-e.spell[a])[0]||e.name;
+    return out.sort((a,b)=>b.invested-a.invested);},[batches]);
+  /* null means every supplier, including one that first appears after this screen was opened */
+  const [pick,setPick]=useState(null);
+  const picked=useMemo(()=>pick||new Set(sups.map(x=>x.key)),[pick,sups]);
+  const fb=useMemo(()=>batches.filter(b=>picked.has(normProv(b.provider||""))),[batches,picked]);
+  const narrowed=fb.length!==batches.length;
+  const toggle=k=>setPick(()=>{const n=new Set(picked);if(n.has(k))n.delete(k);else n.add(k);return n;});
 
-  let stockVal=0,onHand=0,inStock=0,profit=0,cogs=0,netRev=0,recvT=0,soldT=0,deadVal=0,deadU=0;
-  for(const r of prod){profit+=r.profit;cogs+=r.cogsNet;netRev+=r.netRev;
-    stockVal+=r.valueNet;const oh=r.received-r.sold;if(oh>0){onHand+=oh;inStock++;}
-    recvT+=r.received;soldT+=r.sold;
-    if(r.sold===0&&r.valueNet>0){deadVal+=r.valueNet;deadU+=oh;}}
-  const roi=cogs>0?profit/cogs:null;const sellThrough=recvT>0?soldT/recvT:null;
-  /* capital still out: what each invoice cost, less what its sales have brought back, counting
-     only the invoices still in the red — a recouped batch does not offset an unrecouped one */
-  let out=0,outN=0,invT=0,recT=0,surplus=0,paidN=0;
-  for(const b of batches){const left=b.investedNet-b.recoupedNet;if(left>0){out+=left;outN++;}
-    /* money returned beyond what an invoice cost, counted per invoice: a batch still in the red
-       does not cancel one that is ahead, because the shelf stock of the first is not cash */
-    else if(b.investedNet>0){surplus+=-left;paidN++;}
-    invT+=b.investedNet;recT+=b.recoupedNet;}
-  const backShare=invT>0?recT/invT:null;
+  const T=useMemo(()=>overviewTotals(batches),[batches]);
+  const S=useMemo(()=>narrowed?overviewTotals(fb):T,[fb,T,narrowed]);
+  const {prod,stockVal,onHand,inStock,profit,cogs,netRev,recvT,soldT,deadVal,deadU,
+    roi,sellThrough,out,outN,invT,recT,surplus,paidN,backShare}=T;
 
   /* ---- ROI by invoice, oldest first, read against the shop's own average ---- */
-  const chartB=batches.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).slice(-24);
+  const chartB=fb.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).slice(-24);
   function roiChart(){
     if(!chartB.length)return html`<div class="empty"><${Icon} name="ledger"/><div class="big">No invoices yet</div><div class="note">Post a purchase invoice and each one's return builds here.</div></div>`;
     /* Each bar is the whole return on what the invoice cost, because recouped and profit share
@@ -1265,7 +1305,7 @@ function Overview({st,go}){
           return html`<path d=${d} style=${{fill,fillOpacity:op==null?1:op}}/>`;};
         const nothing=s.back<=0.001&&s.roi<=0.001;
         const hasProfit=s.back>s.cost+0.0001;
-        return html`<g key=${b.batchRef} style=${{cursor:"pointer"}} onClick=${()=>go("inventory")}
+        return html`<g key=${b.batchRef} style=${{cursor:"pointer"}} onClick=${()=>act.openInvoiceByBatch(b.batchRef)}
           ${/* the tooltip reads bottom-up, in the order the bar stacks */""}
           ...${tp([b.batchRef+(b.provider?" · "+b.provider:""),fmtD(b.date),
             "invested "+money(b.investedNet)+" · sold "+num(b.sold)+" of "+num(b.received),
@@ -1323,9 +1363,32 @@ function Overview({st,go}){
         <div class="v" style=${{color:surplus>0?"var(--good)":"inherit"}}>${money(surplus)}</div>
         <div class="f">${paidN?"from "+num(paidN)+" invoice"+(paidN===1?"":"s")+" past "+(paidN===1?"its":"their")+" own cost":"no invoice has passed its cost yet"}</div></div>
     </div>
+    ${narrowed?html`<div class="kpis five" style=${{marginBottom:"20px"}}>
+      <div class="kpi sel"><div class="k">Stock value · selected</div><div class="v">${money(S.stockVal)}</div><div class="f">${num(S.onHand)} units · ${num(S.inStock)} codes</div></div>
+      <div class="kpi sel"><div class="k">Capital still out</div><div class="v">${money(S.out)}</div><div class="f">${S.outN?num(S.outN)+" invoice"+(S.outN===1?"":"s")+" not yet recouped":"all recouped"}</div></div>
+      <div class="kpi sel"><div class="k">Profit realised</div><div class="v" style=${{color:S.profit>0?"var(--good)":S.profit<0?"var(--bad)":"inherit"}}>${money(S.profit)}</div><div class="f">on ${money(S.netRev)} of sales</div></div>
+      <div class="kpi sel"><div class="k">Return on cost</div><div class="v">${S.roi==null?"—":pct(S.roi)}</div><div class="f">${S.sellThrough==null?"nothing received yet":pct(S.sellThrough)+" sold through"}</div></div>
+      <div class="kpi sel"><div class="k">Returned beyond cost</div>
+        <div class="v" style=${{color:S.surplus>0?"var(--good)":"inherit"}}>${money(S.surplus)}</div>
+        <div class="f">${S.paidN?"from "+num(S.paidN)+" of "+num(S.n):"none past cost"}</div></div>
+    </div>`:null}
     <div class="panel" style=${{marginBottom:"13px"}}>
-      <div class="panel-h"><h3>What each invoice has returned</h3><button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div>
-      <div style=${{padding:"12px 14px 6px"}}>${roiChart()}</div>
+      <div class="panel-h"><h3>What each invoice has returned</h3>
+        <div class="hintrow"><span class="note">${narrowed?num(fb.length)+" of "+num(batches.length)+" invoices":num(batches.length)+" invoice"+(batches.length===1?"":"s")}</span>
+          <button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div></div>
+      <div class="ovsplit">
+        <div style=${{padding:"12px 14px 6px",minWidth:0}}>${roiChart()}</div>
+        ${sups.length>1?html`<div class="suppick">
+          <div class="hintrow" style=${{marginBottom:"8px"}}><span class="lab" style=${{margin:0}}>Suppliers</span><span class="sp"></span>
+            <button class="btn sm ghost" onClick=${()=>setPick(null)}>All</button>
+            <button class="btn sm ghost" onClick=${()=>setPick(new Set())}>None</button></div>
+          ${sups.map(x=>html`<label key=${x.key} class="supitem" title=${x.name}>
+            <input type="checkbox" checked=${picked.has(x.key)} onChange=${()=>toggle(x.key)}/>
+            <span class="nm">${x.name}</span>
+            <span class="mono meta">${money(x.invested)}</span></label>`)}
+          ${!picked.size?html`<div class="note" style=${{marginTop:"8px"}}>Nothing ticked — the chart is empty.</div>`:null}
+        </div>`:null}
+      </div>
       ${chartB.length?html`<div class="chartkey">
         <span><i style=${{background:"var(--good)",opacity:".3"}}></i>stock sold, at cost</span>
         <span><i style=${{background:"var(--good)"}}></i>profit on it</span>
@@ -2062,12 +2125,17 @@ function guessPasteMap(rows){
   else if(nums.length===1)map[nums[0]]="qty";
   return map;}
 
-function Invoices({st,act,show,openProduct}){
+function Invoices({st,act,show,openProduct,jump,clearJump}){
   const drafts=(st.invoices||[]);
   const [sel,setSel]=useState(null);
   const [paste,setPaste]=useState("");const [pasteRows,setPasteRows]=useState(null);const [pmap,setPmap]=useState([]);
   const [confirmPost,setConfirmPost]=useState(false);const [confirmUnpost,setConfirmUnpost]=useState(null);
   const inv=sel?drafts.find(d=>d.id===sel):null;
+  /* the Overview hands over a batch reference; a posted invoice carries its own, a draft has
+     not been given one yet, so fall back to what its number would become. */
+  useEffect(()=>{if(!jump)return;
+    const hit=drafts.find(d=>batchKey(d.batchRef)===jump)||drafts.find(d=>batchKey(refFromInvoiceNo(d.invoiceNo))===jump);
+    if(hit)setSel(hit.id);clearJump&&clearJump();},[jump]);
   const idx=useMemo(()=>supplierIndex(st),[st.catalogue]);
   const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
   const t=inv?invoiceTotals(inv):null;
@@ -3463,6 +3531,8 @@ function App(){
   const [saveErr,setSaveErr]=useState("");
   const undoRef=useRef(null);
   const [undoable,setUndoable]=useState(null);
+  /* a batch reference handed from the Overview chart, so a bar opens the invoice behind it */
+  const [jumpInv,setJumpInv]=useState(null);
   const [theme,setTheme]=useState(()=>st.settings.theme||"system");
   /* the rail badge recounts only when the data changes, not on every render */
   const hcount=useMemo(()=>healthCount(st),[st]);
@@ -3486,7 +3556,8 @@ function App(){
     pushHealth:pt=>setSt(s=>{const h=(s.diag.hist||[]).filter(x=>x.d!==pt.d);
       h.push(pt);while(h.length>400)h.shift();
       return {...s,diag:{...s.diag,hist:h}};}),
-    goFind:(tab,text)=>{setQ(text||"");setTab(tab);}, openImport:()=>setModal({type:"ledgerimport"}), openSalesImport:()=>setModal({type:"salesimport"}), openCatImport:()=>setModal({type:"catimport"}), openFinanceImport:()=>setModal({type:"financeimport"}),
+    goFind:(tab,text)=>{setQ(text||"");setTab(tab);},
+    openInvoiceByBatch:ref=>{setJumpInv(batchKey(ref));setTab("invoices");}, openImport:()=>setModal({type:"ledgerimport"}), openSalesImport:()=>setModal({type:"salesimport"}), openCatImport:()=>setModal({type:"catimport"}), openFinanceImport:()=>setModal({type:"financeimport"}),
     importFinance:add=>setSt(s=>({...s,finance:[...(s.finance||[]),...add]})),
     addPostage:e=>setSt(s=>({...s,postage:[...(s.postage||[]),{id:uid(),date:e.date,amount:e.amount,note:e.note||""}]})),
     removePostage:id=>setSt(s=>({...s,postage:(s.postage||[]).filter(x=>x.id!==id)})),
@@ -3710,9 +3781,9 @@ function App(){
         <button class="btn sm" onClick=${()=>{const r=save(st);setSaveErr(r.ok?"":r.msg);if(r.ok)show("Saved");}}>Try again</button>
         <button class="btn sm primary" onClick=${()=>{setTab("settings");}}>Export a backup</button></div>`:null}
       <div class="topbar"><div><div class="where">${where}</div><h1>${where==="Hub"?"Rosa Mystica":where}</h1></div><div class="sp"></div></div>
-      ${tab==="overview"?html`<${Overview} st=${st} go=${setTab}/>`:null}
+      ${tab==="overview"?html`<${Overview} st=${st} go=${setTab} act=${act}/>`:null}
       ${tab==="catalogue"?html`<${Catalogue} st=${st} act=${act} openProduct=${openProduct} q=${q} setQ=${setQ}/>`:null}
-      ${tab==="invoices"?html`<${Invoices} st=${st} act=${act} show=${show} openProduct=${openProduct}/>`:null}
+      ${tab==="invoices"?html`<${Invoices} st=${st} act=${act} show=${show} openProduct=${openProduct} jump=${jumpInv} clearJump=${()=>setJumpInv(null)}/>`:null}
       ${tab==="ledger"?html`<${Ledger} st=${st} act=${act} openMovement=${openMovement} openProduct=${openProduct}/>`:null}
       ${tab==="inventory"?html`<${Inventory} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="staging"?html`<${Staging} st=${st} act=${act} openProduct=${openProduct} show=${show}/>`:null}
