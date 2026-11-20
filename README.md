@@ -99,6 +99,11 @@ the ticked suppliers alone. A filtered chart above unfiltered totals is worse th
 the eye reads them as one population. The row is hidden while everything is ticked, because a
 tile that always repeats its neighbour teaches you to stop reading both.
 
+Four gestures: **All**, **None**, **Invert**, and **only** — which appears in place of a
+supplier's amount on hover and isolates it in one click, instead of unticking every other. The
+list itself hides, giving the chart the width back; the control that hides it reports what is
+ticked while it is away, so a narrowed chart can never look like the whole picture.
+
 Clicking a bar opens the invoice behind it.
 
 ## Secure editing

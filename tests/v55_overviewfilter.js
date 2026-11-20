@@ -73,6 +73,37 @@ const asNum=s=>parseFloat(String(s).replace(/[^0-9,.-]/g,"").replace(/\s/g,"").r
   chk(where==="Invoices","clicking a bar goes to Invoices ("+where+")");
   chk(open==="MRP-1","and opens that invoice, not the list ("+open+")");
 
+  /* ---- bulk gestures, and getting the list out of the way ---- */
+  /* the bar click above left us on Invoices */
+  await p.getByRole("button",{name:/^Overview/}).first().click();await p.waitForTimeout(500);
+  const ticked=()=>p.evaluate(()=>[...document.querySelectorAll(".supitem input")].filter(x=>x.checked).length);
+  const listed=()=>p.evaluate(()=>document.querySelectorAll(".supitem").length);
+
+  /* "only" is the gesture you reach for constantly: isolate one supplier in one click rather
+     than unticking every other */
+  await p.locator(".supitem").nth(1).hover();await p.waitForTimeout(200);
+  await p.locator(".supitem").nth(1).locator(".supsolo").click();await p.waitForTimeout(400);
+  chk(await ticked()===1,"only isolates a single supplier ("+(await ticked())+" ticked)");
+  chk(await bars()===1,"and the chart shows just its invoices ("+(await bars())+")");
+
+  await p.getByRole("button",{name:/^Invert$/}).click();await p.waitForTimeout(400);
+  chk(await ticked()===2,"Invert swaps the selection ("+(await ticked())+" ticked)");
+  chk(await bars()===3,"leaving the other three invoices ("+(await bars())+")");
+  await p.getByRole("button",{name:/^Invert$/}).click();await p.waitForTimeout(400);
+  chk(await ticked()===1,"and inverting again returns to where it was ("+(await ticked())+")");
+
+  await p.getByRole("button",{name:/^Hide suppliers$/}).click();await p.waitForTimeout(400);
+  const wide=await p.evaluate(()=>document.querySelector(".ovsplit svg").getBoundingClientRect().width);
+  chk(await listed()===0,"hiding the list removes it ("+(await listed())+")");
+  chk(await bars()===1,"without disturbing the selection it was showing ("+(await bars())+")");
+  const reopen=await p.evaluate(()=>{for(const x of document.querySelectorAll("button"))
+    if(/^Suppliers /.test(x.textContent))return x.textContent.trim();return null;});
+  chk(reopen==="Suppliers 1/3","the reopen control reports what is ticked while hidden ("+reopen+")");
+  await p.getByRole("button",{name:/^Suppliers /}).click();await p.waitForTimeout(400);
+  const narrow=await p.evaluate(()=>document.querySelector(".ovsplit svg").getBoundingClientRect().width);
+  chk(await listed()===3,"and brings it back ("+(await listed())+")");
+  chk(wide>narrow+150,"the chart takes the freed width while hidden ("+Math.round(wide)+" vs "+Math.round(narrow)+")");
+
   chk(errs.length===0,"no page errors"+(errs.length?" — "+errs[0]:""));
   A.forEach(l=>console.log(l));
   await b.close();

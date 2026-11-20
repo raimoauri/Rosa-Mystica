@@ -120,13 +120,22 @@ button{font-family:inherit}
 .kpi.sel .k{color:var(--accent)}
 .kpi.sel .v{font-size:21px}
 /* chart and its supplier list; the list wraps under the chart when there is no room beside it */
-.ovsplit{display:grid;grid-template-columns:minmax(0,1fr) 208px;gap:0}
+.ovsplit{display:grid;grid-template-columns:minmax(0,1fr) 214px;gap:0}
+.ovsplit.one{grid-template-columns:minmax(0,1fr)}
 .suppick{border-left:1px solid var(--line);padding:12px 12px 10px;max-height:272px;overflow:auto}
-.supitem{display:flex;align-items:center;gap:7px;padding:4px 2px;cursor:pointer;border-radius:5px;font-size:12.5px}
+.supbulk{display:flex;gap:4px;margin-bottom:8px}
+.supbulk .btn{flex:1;justify-content:center;padding-left:0;padding-right:0}
+.supitem{display:flex;align-items:center;gap:7px;padding:4px 2px;border-radius:5px;font-size:12.5px;position:relative}
 .supitem:hover{background:var(--surface-2)}
+.supmain{display:flex;align-items:center;gap:7px;flex:1;min-width:0;cursor:pointer}
 .supitem input{margin:0;flex:none}
 .supitem .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .supitem .meta{font-size:11px;flex:none}
+/* the amount is information, "only" is the action — one takes the other's place on hover */
+.supsolo{display:none;flex:none;border:0;background:none;color:var(--accent);font:inherit;font-size:11px;
+  cursor:pointer;padding:0 1px;text-decoration:underline}
+.supitem:hover .meta{display:none}
+.supitem:hover .supsolo{display:inline}
 @media (max-width:1180px){.ovsplit{grid-template-columns:minmax(0,1fr)}
   .suppick{border-left:0;border-top:1px solid var(--line);max-height:none}}
 
@@ -1259,6 +1268,9 @@ function Overview({st,go,act}){
   const fb=useMemo(()=>batches.filter(b=>picked.has(normProv(b.provider||""))),[batches,picked]);
   const narrowed=fb.length!==batches.length;
   const toggle=k=>setPick(()=>{const n=new Set(picked);if(n.has(k))n.delete(k);else n.add(k);return n;});
+  const only=k=>setPick(new Set([k]));
+  const invert=()=>setPick(new Set(sups.filter(x=>!picked.has(x.key)).map(x=>x.key)));
+  const [showSup,setShowSup]=useState(true);
 
   const T=useMemo(()=>overviewTotals(batches),[batches]);
   const S=useMemo(()=>narrowed?overviewTotals(fb):T,[fb,T,narrowed]);
@@ -1375,17 +1387,23 @@ function Overview({st,go,act}){
     <div class="panel" style=${{marginBottom:"13px"}}>
       <div class="panel-h"><h3>What each invoice has returned</h3>
         <div class="hintrow"><span class="note">${narrowed?num(fb.length)+" of "+num(batches.length)+" invoices":num(batches.length)+" invoice"+(batches.length===1?"":"s")}</span>
+          ${sups.length>1?html`<button class="btn sm ghost" onClick=${()=>setShowSup(v=>!v)}>${showSup?"Hide suppliers":"Suppliers "+num(picked.size)+"/"+num(sups.length)}</button>`:null}
           <button class="btn sm ghost" onClick=${()=>go("inventory")}>Open batches →</button></div></div>
-      <div class="ovsplit">
+      <div class=${"ovsplit"+((sups.length>1&&showSup)?"":" one")}>
         <div style=${{padding:"12px 14px 6px",minWidth:0}}>${roiChart()}</div>
-        ${sups.length>1?html`<div class="suppick">
-          <div class="hintrow" style=${{marginBottom:"8px"}}><span class="lab" style=${{margin:0}}>Suppliers</span><span class="sp"></span>
-            <button class="btn sm ghost" onClick=${()=>setPick(null)}>All</button>
-            <button class="btn sm ghost" onClick=${()=>setPick(new Set())}>None</button></div>
-          ${sups.map(x=>html`<label key=${x.key} class="supitem" title=${x.name}>
-            <input type="checkbox" checked=${picked.has(x.key)} onChange=${()=>toggle(x.key)}/>
-            <span class="nm">${x.name}</span>
-            <span class="mono meta">${money(x.invested)}</span></label>`)}
+        ${(sups.length>1&&showSup)?html`<div class="suppick">
+          <div class="supbulk">
+            <button class="btn sm ghost" disabled=${picked.size===sups.length} onClick=${()=>setPick(null)}>All</button>
+            <button class="btn sm ghost" disabled=${!picked.size} onClick=${()=>setPick(new Set())}>None</button>
+            <button class="btn sm ghost" title="Tick what is unticked and untick what is ticked" onClick=${invert}>Invert</button></div>
+          ${sups.map(x=>html`<div key=${x.key} class="supitem">
+            <label class="supmain" title=${x.name}>
+              <input type="checkbox" checked=${picked.has(x.key)} onChange=${()=>toggle(x.key)}/>
+              <span class="nm">${x.name}</span></label>
+            <span class="mono meta">${money(x.invested)}</span>
+            ${/* takes the amount's place on hover: the figure is information, this is the action */""}
+            <button class="supsolo" title=${"Show only "+x.name}
+              onClick=${e=>{e.preventDefault();e.stopPropagation();only(x.key);}}>only</button></div>`)}
           ${!picked.size?html`<div class="note" style=${{marginTop:"8px"}}>Nothing ticked — the chart is empty.</div>`:null}
         </div>`:null}
       </div>
