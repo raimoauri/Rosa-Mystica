@@ -145,6 +145,10 @@ button{font-family:inherit}
 .panel-h h3{font-size:14.5px}
 /* A wide table scrolls rather than squashing, and says so: overlay scrollbars vanish on most
    systems, so a table running past the edge simply looked cut off. */
+.logrow td{vertical-align:top}
+.logrow .when{white-space:nowrap;font-variant-numeric:tabular-nums}
+.logd{display:flex;flex-wrap:wrap;gap:4px 10px}
+.logd b{font-weight:500;color:var(--ink)}
 .fpv table{font-size:12px}
 .fpv th.sel,.fpv td.sel{background:var(--accent-bg)}
 .fpv th.sel{color:var(--accent)}
@@ -635,12 +639,12 @@ const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 
 /* ---------- persistence ---------- */
 const SCHEMA=4;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
-function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],suppliers:[],count:{lines:{}},order:{lines:{}},diag:{disp:{},hist:[]},
+function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],suppliers:[],log:[],count:{lines:{}},order:{lines:{}},diag:{disp:{},hist:[]},
   channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
   settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG",rcnPrefix:"02"}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
-  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];s.suppliers=s.suppliers||[];s.count=s.count||{lines:{}};if(!s.count.lines)s.count.lines={};
+  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];s.suppliers=s.suppliers||[];s.log=Array.isArray(s.log)?s.log:[];s.count=s.count||{lines:{}};if(!s.count.lines)s.count.lines={};
   s.order=s.order||{lines:{}};if(!s.order.lines)s.order.lines={};
   if(!s.channels||!s.channels.length)s.channels=[{id:uid(),name:"Purchase",dir:"in",mode:null}];
   s.channels=s.channels.map(c=>{const o=("mode" in c)?c:Object.assign({},c,{mode:(c.dir==="out"?inferMode(c.name):null)});
@@ -1196,6 +1200,7 @@ function Icon({name}){const P={
   upload:"M12 21V9M7 14l5-5 5 5M5 3h14",
   finance:"M2 6h20v12H2zM12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6M6 9v6M18 9v6",
   reconcile:"M4 7h11M4 7l3-3M4 7l3 3M20 17H9m11 0l-3-3m3 3l-3 3",
+  history:"M12 3a9 9 0 1 0 9 9M12 3v4M12 7 8.5 4.5M12 8v4l3 2",
   supplier:"M1 7h11v10H1zM12 10h4l3 3v4h-7zM5 17a2 2 0 1 0 4 0 2 2 0 1 0-4 0M15 17a2 2 0 1 0 4 0 2 2 0 1 0-4 0",
   invoice:"M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h3"
 };return html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d=${P[name]||""}/></svg>`;}
@@ -1223,6 +1228,34 @@ function MiniBar({frac,tone}){
 /* The Overview's figures, over whichever invoices are being shown. Run once over every posted
    invoice and again over the ticked suppliers, so the second row of tiles describes exactly the
    bars on screen rather than something larger standing behind them. */
+/* The Overview asks one question of every invoice: did it pay for itself. A till button or a
+   product marked not for sale can never answer yes \u2014 it carries no price and makes no sale, so
+   it sits in the cost side of every ratio with nothing on the other, dragging the return down
+   for a reason no decision of yours could change.
+
+   Set aside, each batch is re-aggregated from the lines that remain. The freight those lines
+   carried stays with them, because it was spread line by line at posting and lives in each
+   line's own cost. A batch with nothing sellable in it drops out of the view entirely. */
+function batchesSellable(bl){
+  const out=[];
+  for(const b of bl){
+    const ls=(b.lines||[]).filter(l=>l.sellable!==false);
+    if(!ls.length)continue;
+    if(ls.length===(b.lines||[]).length){out.push(b);continue;}
+    let received=0,sold=0,shrink=0,shrinkCost=0,investedNet=0,cogsNet=0,netRev=0;
+    for(const l of ls){received+=l.received;sold+=l.sold;shrink+=l.shrink;
+      shrinkCost+=l.shrink*(+l.cost||0);investedNet+=l.investedNet;cogsNet+=l.cogsNet;netRev+=l.netRev;}
+    const profit=netRev-cogsNet;
+    out.push(Object.assign({},b,{lines:ls,codes:ls.length,received,sold,shrink,shrinkCost,
+      onHand:received-sold-shrink,sellThrough:received>0?sold/received:null,
+      investedNet,recoupedNet:netRev,cogsNet,profit,
+      roi:investedNet>0?profit/investedNet:null}));}
+  return out;}
+/* what setting them aside costs, so the switch can say what it is hiding */
+function sellableAside(bl){let n=0,val=0;const codes=new Set();
+  for(const b of bl)for(const l of (b.lines||[]))if(l.sellable===false){
+    const k=normCode(l.code);if(!codes.has(k)){codes.add(k);n++;}val+=l.investedNet;}
+  return {n,val};}
 function overviewTotals(bl){
   const m={};
   for(const b of bl)for(const l of (b.lines||[])){const k=normCode(l.code);
@@ -1258,8 +1291,13 @@ function Overview({st,go,act}){
      the whole shelf. */
   const allB=useMemo(()=>computeBatches(st),[st]);
   const ibs=useMemo(()=>invoiceBatchSet(st),[st.invoices]);
-  const batches=useMemo(()=>allB.filter(b=>ibs.has(batchKey(b.batchRef))),[allB,ibs]);
-  const hiddenB=allB.length-batches.length;
+  const invB=useMemo(()=>allB.filter(b=>ibs.has(batchKey(b.batchRef))),[allB,ibs]);
+  const hiddenB=allB.length-invB.length;
+  /* on by default: the question this screen asks cannot be answered about something you never
+     intended to sell, so counting it in is the surprising behaviour, not leaving it out */
+  const [sellOnly,setSellOnly]=useState(true);
+  const aside=useMemo(()=>sellableAside(invB),[invB]);
+  const batches=useMemo(()=>sellOnly?batchesSellable(invB):invB,[invB,sellOnly]);
   const inv=useMemo(()=>computeInventory(st),[st]);
 
   /* per product, across invoice batches only */
@@ -1283,6 +1321,12 @@ function Overview({st,go,act}){
   const only=k=>setPick(new Set([k]));
   const invert=()=>setPick(new Set(sups.filter(x=>!picked.has(x.key)).map(x=>x.key)));
   const [showSup,setShowSup]=useState(true);
+  const sellSwitch=html`<div class="hintrow" style=${{marginBottom:"12px"}}>
+    <button class=${"btn sm"+(sellOnly?" primary":"")} onClick=${()=>setSellOnly(v=>!v)}>${sellOnly?"Sellable only":"Everything"}</button>
+    <span class="note">${sellOnly
+      ? (aside.n?num(aside.n)+" product"+(aside.n===1?"":"s")+" not for sale set aside, "+money(aside.val)+" of cost with them \u2014 they carry no price, so counting them in only ever lowers a return."
+         :"Every product on these invoices is for sale, so nothing is being set aside.")
+      : "Till buttons and anything marked not for sale are counted in, costs and all."}</span></div>`;
 
   const T=useMemo(()=>overviewTotals(batches),[batches]);
   const S=useMemo(()=>narrowed?overviewTotals(fb):T,[fb,T,narrowed]);
@@ -1375,6 +1419,7 @@ function Overview({st,go,act}){
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"18px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>The hub at a glance</h2>
       <div class="note">Everything here is read from your posted invoices — landed, net of VAT. ${hiddenB?html`<b>${num(hiddenB)} batch${hiddenB===1?"":"es"}</b> in the ledger came from somewhere else and ${hiddenB===1?"is":"are"} left out; Inventory shows the whole shelf.`:"Every batch in the ledger came from one."}</div></div></div>
+    ${sellSwitch}
     <div class="kpis five" style=${{marginBottom:"20px"}}>
       <div class="kpi"><div class="k">Stock value</div><div class="v">${money(stockVal)}</div><div class="f">${num(onHand)} units · ${num(inStock)} codes in stock</div></div>
       <div class="kpi"><div class="k">Capital still out</div><div class="v">${money(out)}</div>
@@ -2223,6 +2268,50 @@ function catalogueSheets(st){
    record does not replace those strings \u2014 every one of them stays exactly where it is, and
    matching still goes through normProv. It gives the supplier somewhere to keep what is true of
    it between invoices: how it is spelled elsewhere, what it bills in, how it ships. */
+/* The log. Not event sourcing \u2014 the ledger already is that, in the one place it matters: a
+   list of movements that every figure in the app is a fold over. This is the other thing, an
+   audit record over the commands that change state, and its whole job is to answer "why does the
+   data look like this".
+
+   Four rules, and they are what keep it cheap and safe:
+     \u00b7 append only. A correction is a new entry, never an edit; the past does not change.
+     \u00b7 past tense. "invoice.posted", never "postInvoice" \u2014 a command can be refused, a fact
+       cannot, and the naming is what keeps the two from blurring.
+     \u00b7 nothing in the app reads it. No figure derives from it, so capping it, truncating it or
+       losing it costs you the explanation and never the data. That is the opposite of event
+       sourcing, where losing the log loses everything.
+     \u00b7 bounded by construction. Identifiers and a few scalars, never a before/after snapshot.
+   Entries are short keys because 2000 of them have to fit in a corner of the storage budget:
+   t epoch seconds, v verb, s subject, n scale, d a few scalars, c the piece of work it belonged
+   to. A verb this build has never heard of still displays \u2014 which is what lets the next one add
+   to the list without migrating anything. */
+const LOG_CAP=2000;
+const LOG_VERBS={
+  "invoice.posted":"Invoice posted","invoice.unposted":"Invoice unposted",
+  "invoice.deleted":"Draft deleted","invoice.added":"Invoices drafted",
+  "ledger.imported":"Ledger imported","movement.deleted":"Movement deleted",
+  "stock.counted":"Stock count applied",
+  "product.confirmed":"Staged items confirmed","product.saved":"Product saved",
+  "product.deleted":"Product deleted","product.recoded":"Products re-coded",
+  "catalogue.imported":"Catalogue imported",
+  "supplier.recorded":"Suppliers recorded","supplier.saved":"Supplier saved",
+  "supplier.deleted":"Supplier removed",
+  "data.restored":"Core data restored","data.wiped":"Data wiped"};
+function logVerb(v){return LOG_VERBS[v]||String(v||"").replace(/\./g," ").replace(/^./,c=>c.toUpperCase());}
+function cid(){return Math.random().toString(36).slice(2,7);}
+function logEntry(v,subject,n,d,c){
+  const e={t:Math.floor(Date.now()/1000),v:v,s:String(subject==null?"":subject)};
+  if(n!=null&&!isNaN(n))e.n=+n;
+  if(d){const keep={};for(const k in d){const x=d[k];if(x!=null&&x!==""&&!(typeof x==="number"&&isNaN(x)))keep[k]=x;}
+    if(Object.keys(keep).length)e.d=keep;}
+  e.c=c||cid();return e;}
+/* appends inside the same state update the command is already making, so the log can never
+   disagree with what it describes */
+function withLog(st,...entries){const es=entries.filter(Boolean);if(!es.length)return st;
+  const list=(st.log||[]).concat(es);
+  return Object.assign({},st,{log:list.length>LOG_CAP?list.slice(list.length-LOG_CAP):list});}
+function logFor(st,subject){const k=String(subject||"").trim().toUpperCase();if(!k)return [];
+  return (st.log||[]).filter(e=>String(e.s||"").trim().toUpperCase()===k).slice().reverse();}
 function blankSupplier(){return {id:uid(),name:"",aliases:[],country:"",vatNo:"",currency:"",
   treatment:"",freightBasis:"",leadDays:"",notes:"",createdAt:"",updatedAt:""};}
 /* every spelling a supplier answers to, normalised, pointing at the one record */
@@ -2548,6 +2637,18 @@ function Invoices({st,act,show,openProduct,jump,clearJump}){
         ${!posted?html`<div class="note" style=${{marginTop:"10px"}}>Posting creates ${num(inv.lines.length)} in-movements under batch <span class="code">${refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)||"(auto)"}</span>. Codes not in the catalogue go to staging, as with any import.</div>`:null}
       </div></div>
 
+    ${(()=>{const hist=logFor(st,inv.batchRef).concat(logFor(st,inv.invoiceNo))
+        .filter((e,i,a)=>a.indexOf(e)===i).sort((a,b)=>b.t-a.t);
+      if(!hist.length)return null;
+      return html`<div class="panel" style=${{marginBottom:"16px"}}>
+        <div class="panel-h"><h3>What has happened to this invoice</h3><span class="note">${num(hist.length)} entr${hist.length===1?"y":"ies"}</span></div>
+        <div class="tablewrap"><table><tbody>
+          ${hist.map((e,i)=>html`<tr class="logrow" key=${(e.c||"")+i}>
+            <td class="muted when" style=${{width:"130px"}}>${logWhen(e.t)}</td>
+            <td style=${{width:"190px"}}><span class="name">${logVerb(e.v)}</span></td>
+            <td class="num mono" style=${{width:"70px"}}>${e.n==null?html`<span class="faint">\u2014</span>`:num(e.n)}</td>
+            <td><${LogDetail} e=${e}/></td></tr>`)}
+        </tbody></table></div></div>`;})()}
     ${confirmPost?html`<${ConfirmModal} title="Post this invoice to the ledger?" confirmLabel=${"Post "+num(inv.lines.length)+" lines"}
       body=${html`<span>This writes <b>${num(inv.lines.length)}</b> in-movements totalling <b>${money(t.landed)}</b> landed, under batch <span class="code">${refFromInvoiceNo(inv.invoiceNo)||genBatchRef(inv.country,inv.date,inv.provider)}</span>. Stock rises by ${num(t.recv)} units.${freightBasisOf(inv)!=="units"&&t.spread>0?" Freight is spread "+(freightBasisOf(inv)==="value"?"by line value":"half per unit, half by value")+".":""} The invoice stays here as a record, and can be unposted.</span>`}
       onConfirm=${()=>{const res=act.postInvoice(inv.id);setConfirmPost(false);show("Posted "+num(inv.lines.length)+" lines to the ledger",true);}}
@@ -3784,6 +3885,52 @@ function Suppliers({st,act,show}){
     ${edit?html`<${SupplierEditor} st=${st} act=${act} show=${show} editing=${edit.id?edit:null} onClose=${()=>setEdit(null)}/>`:null}
   </div>`;}
 
+/* The log, read. Grouped nowhere and sorted newest first, because the question it answers is
+   almost always "what did I just do" or "what happened to this batch", and both are answered by
+   looking at the top or by typing a reference into the box. */
+function logWhen(t){const d=new Date((+t||0)*1000);
+  const p=n=>String(n).padStart(2,"0");
+  return fmtD(d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate()))+"\u00a0"+p(d.getHours())+":"+p(d.getMinutes());}
+function LogDetail({e}){const d=e.d||{};const ks=Object.keys(d);
+  if(!ks.length)return null;
+  return html`<div class="logd">${ks.map(k=>html`<span key=${k} class="meta">${k} <b>${typeof d[k]==="number"?(Math.abs(d[k])>=1000||d[k]%1?money(d[k]):num(d[k])):String(d[k])}</b></span>`)}</div>`;}
+function History({st,act,show}){
+  const [q,setQ]=useState("");const [v,setV]=useState("");
+  const log=(st.log||[]);
+  const verbs=useMemo(()=>[...new Set(log.map(e=>e.v))].sort((a,b)=>logVerb(a).localeCompare(logVerb(b))),[log]);
+  const rows=useMemo(()=>{const needle=q.trim().toUpperCase();
+    return log.slice().reverse().filter(e=>{
+      if(v&&e.v!==v)return false;
+      if(!needle)return true;
+      return String(e.s||"").toUpperCase().indexOf(needle)>=0
+        || logVerb(e.v).toUpperCase().indexOf(needle)>=0
+        || JSON.stringify(e.d||{}).toUpperCase().indexOf(needle)>=0;});},[log,q,v]);
+  const pct=LOG_CAP?Math.round(log.length/LOG_CAP*100):0;
+  return html`<div class="content">
+    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>History</h2>
+      <span class="note">${num(log.length)} of ${num(LOG_CAP)} entries kept\u00a0\u00b7\u00a0oldest drop off</span></div>
+    <div class="panel">
+      <div class="panel-h"><h3>What has happened</h3>
+        <div class="hintrow">
+          <input type="search" placeholder="a batch, an invoice, a code\u2026" value=${q} onInput=${e=>setQ(e.target.value)} style=${{width:"220px"}}/>
+          <select value=${v} onChange=${e=>setV(e.target.value)}><option value="">Everything</option>
+            ${verbs.map(x=>html`<option key=${x} value=${x}>${logVerb(x)}</option>`)}</select></div></div>
+      ${rows.length?html`<div class="tablewrap"><table>
+        <thead><tr><th style=${{width:"130px"}}>When</th><th style=${{width:"190px"}}>What</th><th style=${{width:"130px"}}>Subject</th><th class="num" style=${{width:"70px"}}>Count</th><th>Detail</th></tr></thead>
+        <tbody>${rows.map((e,i)=>html`<tr class="logrow" key=${(e.c||"")+i}>
+          <td class="muted when">${logWhen(e.t)}</td>
+          <td><span class="name">${logVerb(e.v)}</span></td>
+          <td class="mono">${e.s?html`<span class="code">${e.s}</span>`:html`<span class="faint">\u2014</span>`}</td>
+          <td class="num mono">${e.n==null?html`<span class="faint">\u2014</span>`:num(e.n)}</td>
+          <td><${LogDetail} e=${e}/></td></tr>`)}</tbody></table></div>`
+        :html`<div class="empty"><${Icon} name="history"/>
+          <div class="big">${log.length?"Nothing matches":"Nothing recorded yet"}</div>
+          <div class="note">${log.length?"Clear the search to see all "+num(log.length)+" entries."
+            :"Posting, unposting, importing, confirming and deleting are written here from now on. It can say nothing about anything that happened before it existed."}</div></div>`}
+    </div>
+    <div class="note" style=${{marginTop:"10px"}}>Nothing in the app reads this \u2014 no stock figure, cost or margin comes from it. It is here to explain how the data got the way it is, which means it can be capped, searched or ignored without any number moving.</div>
+  </div>`;}
+
 function Health({st,act,show}){
   const res=useMemo(()=>runChecks(st),[st]);
   const {findings,meter}=res;
@@ -3941,17 +4088,27 @@ function App(){
         staging=staging.map(x=>normCode(x.code)===oc?Object.assign({},x,{code:clean.code}):x);}
       if(fromStaging)staging=staging.filter(x=>normCode(x.code)!==nc&&normCode(x.code)!==oc);
       return {...s,catalogue,ledger,invoices,staging};}),
-    deleteProduct:code=>setSt(s=>{undoRef.current=s;return {...s,catalogue:s.catalogue.filter(p=>normCode(p.code)!==normCode(code))};}),
+    deleteProduct:code=>setSt(s=>{undoRef.current=s;const _p=s.catalogue.find(p=>normCode(p.code)===normCode(code));
+      return withLog({...s,catalogue:s.catalogue.filter(p=>normCode(p.code)!==normCode(code))},
+        logEntry("product.deleted",code,1,{name:(_p&&_p.name)||""}));}),
     saveMovement:rec=>setSt(s=>{const now=new Date().toISOString();
       if(rec.id&&s.ledger.some(r=>r.id===rec.id))return {...s,ledger:s.ledger.map(r=>r.id===rec.id?{...r,...rec}:r)};
       return {...s,ledger:[...s.ledger,{...rec,id:rec.id||uid(),createdAt:now}]};}),
-    deleteMovement:id=>setSt(s=>{undoRef.current=s;const led=s.ledger.filter(r=>r.id!==id);
-      return {...s,ledger:led,staging:restage(led,s.staging)};}),
+    deleteMovement:id=>setSt(s=>{undoRef.current=s;const m=s.ledger.find(r=>r.id===id);
+      const led=s.ledger.filter(r=>r.id!==id);
+      return withLog({...s,ledger:led,staging:restage(led,s.staging)},
+        logEntry("movement.deleted",(m&&m.batchRef)||"",1,
+          {code:(m&&m.code)||"",qty:(m&&m.qty)||null,dir:(m&&m.dir)||""}));}),
     /* WooCommerce gives every order its own batch reference, so clearing a month of web sales one
        batch at a time would be a hundred confirmations. This removes whatever the filter selected. */
     deleteMovements:ids=>setSt(s=>{undoRef.current=s;const k={};for(const i of ids)k[i]=1;
+      const gone=s.ledger.filter(r=>k[r.id]);
       const led=s.ledger.filter(r=>!k[r.id]);
-      return {...s,ledger:led,staging:restage(led,s.staging)};}),
+      const refs=[...new Set(gone.map(r=>r.batchRef||"").filter(Boolean))];
+      return withLog({...s,ledger:led,staging:restage(led,s.staging)},
+        logEntry("movement.deleted",refs.length===1?refs[0]:"",gone.length,
+          {batches:refs.length>1?refs.length:null,
+           codes:[...new Set(gone.map(r=>r.code))].slice(0,4).join(", ")}));}),
     discardStaging:code=>setSt(s=>{undoRef.current=s;return {...s,staging:s.staging.filter(x=>normCode(x.code)!==normCode(code))};}),
     addChannel:(name,dir,mode,kind)=>setSt(s=>s.channels.some(c=>c.name===name)?s:{...s,channels:[...s.channels,{id:uid(),name,dir,mode:(mode!==undefined?(mode||null):(dir==="out"?inferMode(name):null)),kind:(kind!==undefined?(kind||null):(dir==="out"?"sale":null))}]}),
     setChannelKind:(id,kind)=>setSt(s=>({...s,channels:s.channels.map(c=>c.id===id?{...c,kind:(kind||null)}:c)})),
@@ -3961,7 +4118,10 @@ function App(){
     setRcnPrefix:v=>setSt(s=>{const p=String(v||"").replace(/\D/g,"").slice(0,6);
       return {...s,settings:{...s.settings,rcnPrefix:(p||"02")}};}),
     removeChannel:id=>setSt(s=>({...s,channels:s.channels.filter(c=>c.id!==id)})),
-    replaceAll:raw=>setSt(s=>{const d=readCore(raw);return migrate({...blankState(),...d});}),
+    replaceAll:raw=>setSt(s=>{const d=readCore(raw);const next=migrate({...blankState(),...d});
+      /* the restored file brings its own log; this entry joins the end of it so the seam shows */
+      return withLog(next,logEntry("data.restored","",null,
+        {movements:(next.ledger||[]).length,products:(next.catalogue||[]).length}));}),
     openExport:(title,text)=>setModal({type:"export",title,text}),
     openEncrypt:()=>setModal({type:"encsave"}),
     openDecrypt:obj=>setModal({type:"encopen",payload:obj}),
@@ -4003,7 +4163,12 @@ function App(){
     openWipe:()=>setModal({type:"wipe"}),
     /* a wipe clears stock data; the settlement history and the setup survive unless asked for */
     wipe:all=>setSt(s=>{undoRef.current=s;const b=blankState();
-      return all?b:{...b,finance:s.finance||[],postage:s.postage||[],channels:s.channels,settings:s.settings};}),
+      /* the log survives a partial wipe on purpose: it is the only thing left that says what was
+         there. A full wipe takes it too, because a full wipe is meant to leave nothing. */
+      const kept=all?b:{...b,finance:s.finance||[],postage:s.postage||[],channels:s.channels,settings:s.settings,log:s.log||[]};
+      return all?kept:withLog(kept,logEntry("data.wiped","",null,
+        {kept:"finance, postage, channels, settings",
+         lost:(s.ledger||[]).length+" movements, "+(s.catalogue||[]).length+" products"}));}),
     importCatalogue:items=>setSt(s=>{const now=new Date().toISOString();const cat=s.catalogue.slice();const idx={};cat.forEach((p,i)=>idx[normCode(p.code)]=i);
       const DEF={type:"goods",name:"",author:"",year:"",category:"",supplier:"",supplierRef:"",cost:null,price:null,sellable:true,online:false,reorderPoint:null,notes:""};
       for(const it of items){const nc=normCode(it.code);
@@ -4025,7 +4190,9 @@ function App(){
           sellable:r.sellable!==false,stocked:r.stocked!==false,online:!!r.online,
           reorderPoint:null,notes:"",createdAt:now,updatedAt:now});
         have.add(nc);done[nc]=1;}
-      return {...s,catalogue:cat,staging:s.staging.filter(x=>!done[normCode(x.code)])};}),
+      return withLog({...s,catalogue:cat,staging:s.staging.filter(x=>!done[normCode(x.code)])},
+        logEntry("product.confirmed","",Object.keys(done).length,
+          {codes:rows.slice(0,4).map(r=>r.code).join(", ")}));}),
     confirmAllStaging:()=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();const cat=s.catalogue.slice();const have=new Set(cat.map(p=>normCode(p.code)));
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
         cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:!TILLCODE.test(String(e.code||"")),stocked:!TILLCODE.test(String(e.code||"")),online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
@@ -4038,9 +4205,10 @@ function App(){
     deleteSupplier:id=>setSt(s=>{undoRef.current=s;
       return {...s,suppliers:(s.suppliers||[]).filter(x=>x.id!==id)};}),
     addSuppliers:list=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();
-      return {...s,suppliers:(s.suppliers||[]).concat(list.map(x=>Object.assign({},blankSupplier(),
+      return withLog({...s,suppliers:(s.suppliers||[]).concat(list.map(x=>Object.assign({},blankSupplier(),
         {name:x.name,aliases:x.aliases||[],country:x.country||"",currency:x.currency||""},
-        {id:uid(),createdAt:now,updatedAt:now})))};}),
+        {id:uid(),createdAt:now,updatedAt:now})))},
+        logEntry("supplier.recorded","",list.length,{names:list.slice(0,4).map(x=>x.name).join(", ")}));}),
     addInvoices:list=>setSt(s=>{undoRef.current=s;return {...s,invoices:(s.invoices||[]).concat(list)};}),
     /* Renaming carries history: the code is the anchor, so every movement, staged entry and
        draft line that points at the old code is moved to the new one in the same write. */
@@ -4080,7 +4248,10 @@ function App(){
     openInvoiceImport:()=>setModal({type:"invimport"}),
     saveInvoice:v=>setSt(s=>{const list=(s.invoices||[]).slice();const i=list.findIndex(x=>x.id===v.id);
       if(i>=0)list[i]=v;else list.push(v);return {...s,invoices:list};}),
-    deleteInvoice:id=>setSt(s=>{undoRef.current=s;return {...s,invoices:(s.invoices||[]).filter(x=>x.id!==id)};}),
+    deleteInvoice:id=>setSt(s=>{const _d=(s.invoices||[]).find(x=>x.id===id);undoRef.current=s;
+      return withLog({...s,invoices:(s.invoices||[]).filter(x=>x.id!==id)},
+        logEntry("invoice.deleted",(_d&&_d.invoiceNo)||"",(_d&&(_d.lines||[]).length)||null,
+          {prov:(_d&&_d.provider)||""}));}),
     /* Posting turns a reconciled draft into ordinary ledger in-movements under one batch
        reference, through the same preparation a file import goes through — so duplicate
        detection, staging and the re-import guard all behave identically. */
@@ -4112,30 +4283,42 @@ function App(){
       const ledger=[...s.ledger,...prep.movements.map(m=>({...m,id:uid(),createdAt:now}))];
       const staging=mergeStaging(s.staging,prep.staging,new Set(s.catalogue.map(p=>normCode(p.code))));
       const invoices=(s.invoices||[]).map(x=>x.id===id?Object.assign({},x,{status:"posted",batchRef:bref,postedAt:today()}):x);
-      return {...s,ledger,staging,invoices};}),
+      /* n is what was actually written, not what the invoice holds \u2014 the two differ when
+         preparation discards a line as a duplicate, and that difference is the whole reason
+         to have a log at all */
+      return withLog({...s,ledger,staging,invoices},
+        logEntry("invoice.posted",bref,prep.movements.length,
+          {no:inv.invoiceNo||"",prov:inv.provider||"",lines:inv.lines.length,
+           total:r2(t.landed*rate),basis:fbasis,cur:invCur(inv)}));}),
     unpostInvoice:id=>setSt(s=>{const inv=(s.invoices||[]).find(x=>x.id===id);if(!inv||inv.status!=="posted")return s;
       undoRef.current=s;
       /* the same rule as any other deletion: staged entries are a readout of the ledger, so taking
          the movements away recounts them and drops the ones with nothing left behind them */
       const led=s.ledger.filter(r=>!(r.dir==="in"&&(r.batchRef||"")===inv.batchRef));
-      return {...s,ledger:led,staging:restage(led,s.staging),
-        invoices:s.invoices.map(x=>x.id===id?Object.assign({},x,{status:"draft",postedAt:""}):x)};}),
+      return withLog({...s,ledger:led,staging:restage(led,s.staging),
+        invoices:s.invoices.map(x=>x.id===id?Object.assign({},x,{status:"draft",postedAt:""}):x)},
+        logEntry("invoice.unposted",inv.batchRef,s.ledger.length-led.length,
+          {no:inv.invoiceNo||"",prov:inv.provider||""}));}),
     importLedger:parsed=>setSt(s=>{const now=new Date().toISOString();
       const channels=s.channels.slice();
       undoRef.current=s;
       for(const nc of parsed.newChannels)if(!channels.some(c=>c.name.toLowerCase()===nc.name.toLowerCase()))channels.push({id:uid(),name:nc.name,dir:nc.dir,mode:(nc.dir==="out"?inferMode(nc.name):null),kind:(nc.dir==="out"?"sale":null)});
       const ledger=[...s.ledger,...parsed.movements.map(m=>({...m,id:uid(),createdAt:now}))];
       const staging=mergeStaging(s.staging,parsed.staging,new Set(s.catalogue.map(p=>normCode(p.code))));
-      return {...s,channels,ledger,staging};}),
+      const refs=[...new Set(parsed.movements.map(m=>m.batchRef||"").filter(Boolean))];
+      return withLog({...s,channels,ledger,staging},
+        logEntry("ledger.imported",refs.length===1?refs[0]:"",parsed.movements.length,
+          {batches:refs.length>1?refs.length:null,staged:parsed.staging.length||null,
+           chans:parsed.newChannels.length||null}));}),
   };
   const openProduct=(p,fromStaging)=>setModal({type:"product",editing:p,fromStaging:!!fromStaging});
   const openMovement=r=>setModal({type:"movement",editing:r});
 
-  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["invoices","Invoices","invoice"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["suppliers","Suppliers","supplier"],["health","Health","reconcile"],["settings","Settings","settings"]];
+  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["invoices","Invoices","invoice"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["suppliers","Suppliers","supplier"],["history","History","history"],["health","Health","reconcile"],["settings","Settings","settings"]];
   const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length,finance:(st.finance||[]).length,suppliers:(st.suppliers||[]).length,invoices:(st.invoices||[]).filter(i=>i.status!=="posted").length,health:hcount};
   const themeLabel={system:"◐",light:"☀",dark:"☾"}[theme];
   const cycleTheme=()=>setTheme(p=>p==="system"?"light":p==="light"?"dark":"system");
-  const where={overview:"Hub",catalogue:"Catalogue",invoices:"Invoices",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",suppliers:"Suppliers",health:"Health",settings:"Settings"}[tab];
+  const where={overview:"Hub",catalogue:"Catalogue",invoices:"Invoices",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",suppliers:"Suppliers",history:"History",health:"Health",settings:"Settings"}[tab];
 
   if(recover)return html`<${RecoverScreen} info=${recover}
     onEmpty=${()=>{setSt(blankState());setRecover(null);}}
@@ -4163,6 +4346,7 @@ function App(){
       ${tab==="analytics"?html`<${Analytics} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="finance"?html`<${Finance} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="suppliers"?html`<${Suppliers} st=${st} act=${act} show=${show}/>`:null}
+      ${tab==="history"?html`<${History} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="health"?html`<${Health} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="settings"?html`<${Settings} st=${st} act=${act} show=${show}/>`:null}
     </div>
