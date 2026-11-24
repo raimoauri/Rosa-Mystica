@@ -1807,7 +1807,9 @@ function Staging({st,act,openProduct,show}){
   /* one row's working state: what is staged, plus whatever has been typed over it */
   const rowOf=(e)=>{const k=normCode(e.code);const o=Object.assign({},e.ui||{},edit[k]||{});const iv=inv[k];
     const type=o.type!==undefined?o.type:(e.type||guessType(e.code));
-    const cost=o.cost!==undefined?parseNum(o.cost):(iv&&iv.avgCost!=null?iv.avgCost:null);
+    /* the same reading of cost the catalogue uses, so confirming a row cannot move its own
+       number: the lots still on hand, falling back to everything received once it is sold out */
+    const cost=o.cost!==undefined?parseNum(o.cost):costOf({cost:null},iv).value;
     const rate=vatRatesOf(st)[type]!=null?vatRatesOf(st)[type]:vatRatesOf(st).goods;
     const mult=o.mult!==undefined?parseNum(o.mult):null;
     let price=o.price!==undefined?parseNum(o.price):null;
