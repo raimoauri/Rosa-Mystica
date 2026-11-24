@@ -145,6 +145,8 @@ button{font-family:inherit}
 .panel-h h3{font-size:14.5px}
 /* A wide table scrolls rather than squashing, and says so: overlay scrollbars vanish on most
    systems, so a table running past the edge simply looked cut off. */
+.quietx{opacity:.3;transition:opacity .12s}
+.quietx:hover,.quietx:focus-visible{opacity:1}
 .logrow td{vertical-align:top}
 .logrow .when{white-space:nowrap;font-variant-numeric:tabular-nums}
 .logd{display:flex;flex-wrap:wrap;gap:4px 10px}
@@ -2279,6 +2281,34 @@ function provKey(st,name){const sp=(st&&st.suppliers&&st.suppliers.length)?provi
 /* The catalogue as a sheet. Shared, because export-edit-import is one round trip and the export
    belongs next to the import rather than filed under Settings. The column names match what the
    catalogue import reads, and an import only touches the columns the file carries. */
+/* One opened batch, as a spreadsheet. The same columns the panel shows, plus the two a sheet
+   wants and a screen does not — the supplier's own article number and the product type — and
+   every figure written as a number rather than a formatted string, so it can be sorted and
+   totalled on arrival instead of being retyped. The header block repeats the batch's own
+   totals, because a line list with no idea what it belongs to is a worse document than no
+   document. */
+function batchSheets(b){
+  const L=(b&&b.lines)||[];
+  const top=[
+    ["Batch",b.batchRef||""],["Provider",b.provider||""],["Date",b.date||""],
+    ["Country",b.country||""],[],
+    ["Products",L.length],["Units received",b.received||0],["Sold",b.sold||0],
+    ["Not sold",b.shrink||0],["On hand",b.onHand||0],[],
+    ["Freight",r2(b.transport||0)],["Invested, net",r2(b.investedNet||0)],
+    ["Recouped, net",r2(b.recoupedNet||0)],["Profit",r2(b.profit||0)],
+    ["Return on cost %",b.roi==null?"":Math.round(b.roi*1000)/10],
+    ["Sell-through %",b.sellThrough==null?"":Math.round(b.sellThrough*1000)/10],[],
+    ["Exported",today()],["","All figures net of VAT. Unit cost is landed \u2014 freight included."],[]];
+  const head=["Code","Provider ref","Product","Type","Received","Sold","Not sold","On hand",
+              "Unit cost","Price","Margin %","Sold for, net","Profit","Stock left, net",
+              "Sellable","Stock-tracked"];
+  const body=L.map(l=>[l.code||"",l.providerRef||"",l.name||"",l.type||"",
+    +l.received||0,+l.sold||0,+l.shrink||0,+l.onHand||0,
+    r2(l.cost||0), (l.price==null||l.price==="")?"":+l.price,
+    l.margin==null?"":Math.round(l.margin*1000)/10,
+    r2(l.netRev||0), r2(l.profit||0), r2(l.valueNet||0),
+    l.sellable?"yes":"no", l.stocked?"yes":"no"]);
+  return [{name:(b.batchRef||"Batch"),rows:top.concat([head]).concat(body)}];}
 function catalogueSheets(st){
   const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost override","Landed now","Price","Sellable","Stock-tracked","Online","Reorder point","Notes"];
   const ivr=invByCode(st);
@@ -3553,7 +3583,10 @@ function Inventory({st,act,show}){
             <${MiniBar} frac=${Math.min(1,f)} tone=${f>=1?"good":"accent"}/></div>`;})()}</td><td class="num mono" style=${{color:b.profit>0?"var(--good)":b.profit<0?"var(--bad)":"inherit"}}>${money(b.profit)}</td><td class="num">${b.roi==null?"\u2014":pct(b.roi)}</td></tr>
         ${isOpen?html`<tr><td class="openpanel" colSpan="14" style=${{padding:"0 0 14px 0"}}>
           <div style=${{padding:"10px 14px 0 42px"}}>
-            <div class="note" style=${{marginBottom:"8px"}}>${num((b.lines||[]).length)} product${(b.lines||[]).length===1?"":"s"} in ${b.batchRef}${b.transport?" \u00b7 freight "+money(b.transport)+" spread over "+num(b.received)+" units, "+money(b.transport/Math.max(1,b.received))+" each":""}${noSale.length?" \u00b7 "+num(noSale.length)+" not for sale, so no price or margin is shown for "+(noSale.length===1?"it":"them"):""}</div>
+            <div class="rowbetween" style=${{marginBottom:"8px",alignItems:"baseline",gap:"12px"}}>
+            <div class="note">${num((b.lines||[]).length)} product${(b.lines||[]).length===1?"":"s"} in ${b.batchRef}${b.transport?" \u00b7 freight "+money(b.transport)+" spread over "+num(b.received)+" units, "+money(b.transport/Math.max(1,b.received))+" each":""}${noSale.length?" \u00b7 "+num(noSale.length)+" not for sale, so no price or margin is shown for "+(noSale.length===1?"it":"them"):""}</div>
+            <button class="btn sm ghost quietx" title=${"Download "+(b.batchRef||"this batch")+" as an Excel file"}
+              onClick=${e=>{e.stopPropagation();downloadXlsx("Rosa-Mystica_"+String(b.batchRef||"batch").replace(/[^A-Za-z0-9_-]+/g,"-")+".xlsx",batchSheets(b),show);}}>xlsx</button></div>
             <table class="sub"><thead><tr>
               <th>Code</th><th>Product</th><th class="num">Recv</th><th class="num">Sold</th><th class="num">On hand</th>
               <th class="num">Unit cost</th><th class="num">Price</th><th class="num">Margin</th>
