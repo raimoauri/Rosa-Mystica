@@ -1324,7 +1324,7 @@ function Overview({st,go,act}){
   const sellSwitch=html`<div class="hintrow" style=${{marginBottom:"12px"}}>
     <button class=${"btn sm"+(sellOnly?" primary":"")} onClick=${()=>setSellOnly(v=>!v)}>${sellOnly?"Sellable only":"Everything"}</button>
     <span class="note">${sellOnly
-      ? (aside.n?num(aside.n)+" product"+(aside.n===1?"":"s")+" not for sale set aside, "+money(aside.val)+" of cost with them \u2014 they carry no price, so counting them in only ever lowers a return."
+      ? (aside.n?num(aside.n)+" product"+(aside.n===1?"":"s")+" not for sale set aside, "+money(aside.val)+" of cost with them."
          :"Every product on these invoices is for sale, so nothing is being set aside.")
       : "Till buttons and anything marked not for sale are counted in, costs and all."}</span></div>`;
 
