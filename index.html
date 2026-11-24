@@ -1451,11 +1451,13 @@ function Catalogue({st,act,openProduct,q,setQ}){
   /* the values actually present, so the lists only ever offer what exists */
   const suppliers=useMemo(()=>[...new Set((st.catalogue||[]).map(p=>(p.supplier||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[st.catalogue]);
   const cats=useMemo(()=>[...new Set((st.catalogue||[]).map(p=>(p.category||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[st.catalogue]);
+  const ivrows=useMemo(()=>invByCode(st),[st.ledger,st.catalogue]);
   /* what a record is missing, so the gaps can be worked through instead of hunted for */
   const MISSING=[["price","no price"],["cost","no cost"],["name","no name"],["author","no author"],
                  ["category","no category"],["supplier","no supplier"],["reorderPoint","no reorder point"]];
   const lacks=(p,k)=>{const v=p[k];
-    if(k==="price"||k==="cost"||k==="reorderPoint")return v==null||v===""||!(+v>0);
+    if(k==="cost")return costOf(p,ivrows[normCode(p.code)]).value==null;
+    if(k==="price"||k==="reorderPoint")return v==null||v===""||!(+v>0);
     return String(v==null?"":v).trim()==="";};
   const missCount=useMemo(()=>{const m={};for(const [k] of MISSING)m[k]=(st.catalogue||[]).filter(p=>lacks(p,k)).length;return m;},[st.catalogue]);
   const stock=useMemo(()=>stockByCode(st),[st]);const lastOrd=useMemo(()=>lastOrderedByCode(st),[st]);
@@ -1503,7 +1505,9 @@ function Catalogue({st,act,openProduct,q,setQ}){
         <td><span class="badge type">${typeLabel(p.type)}</span></td>
         <td class="muted">${p.category||html`<span class="faint">\u2014</span>`}</td>
         <td class="muted">${p.supplier||html`<span class="faint">\u2014</span>`}${p.supplierRef?html`<div class="meta code">${p.supplierRef}</div>`:null}</td>
-        <td class="num mono">${p.cost==null||p.cost===""?"—":money(+p.cost)}</td><td class="num mono">${p.price==null||p.price===""?"—":money(+p.price)}</td>
+        <td class="num mono">${(()=>{const c=costOf(p,ivrows[k]);
+          if(c.value==null)return html`<span class="faint">—</span>`;
+          return html`<${React.Fragment}>${money(c.value)}<div class="meta">${COST_SRC[c.source]}</div></${React.Fragment}>`;})()}</td><td class="num mono">${p.price==null||p.price===""?"—":money(+p.price)}</td>
         <td class="num">${num(stock[k]||0)}</td><td class="mono muted">${lastOrd[k]?fmtD(lastOrd[k]):"—"}</td>
         <td><span class="pill"><span class=${"dot "+(p.sellable!==false?"on":"no")} title=${p.sellable!==false?"Sellable":"Not sellable"}></span>${p.online?html`<span class="badge" style=${{padding:"1px 6px"}}>online</span>`:null}</span></td></tr>`;})}
       ${rows.length===0?html`<tr><td colSpan="12"><div class="empty"><${Icon} name="catalogue"/><div class="big">${st.catalogue.length===0?"The catalogue is empty":"Nothing matches"}</div><div class="note">${st.catalogue.length===0?"Add a product, or confirm items from staging after a ledger import.":"Adjust the filters or search."}</div>${st.catalogue.length===0?html`<button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button>`:null}</div></td></tr>`:null}
@@ -1523,6 +1527,11 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
   const byCode=useMemo(()=>indexCatalogue(st.catalogue),[st.catalogue]);
   const nc=normCode(f.code);
   const stockHere=editing?(stockByCode(st)[normCode(origCode)]||0):0;
+  /* what the ledger says this product costs with any override set aside \u2014 the placeholder on
+     the Cost field, and what clearing that field falls back to */
+  const landedHint=useMemo(()=>{if(!origCode)return null;
+    const r=invByCode(st)[normCode(origCode)];if(!r)return null;
+    const c=costOf({cost:null},r);return c.value==null?null:c.value;},[st.ledger,origCode]);
   // validation (whole-form, before any commit)
   const errs=[];
   if(!nc)errs.push("A product code is required — it is the unique anchor.");
@@ -1563,7 +1572,12 @@ function ProductModal({st,act,editing,fromStaging,onClose,show}){
       <${Field} label="Year">${html`<input type="text" value=${f.year} onInput=${e=>up("year",e.target.value)}/>`}</${Field}>
     </div>`:null}
     <div class="grid2">
-      <${Field} label="Cost (net) €">${html`<input class="mono" type="text" inputmode="decimal" value=${f.cost} onInput=${e=>up("cost",e.target.value)}/>`}</${Field}>
+      <${Field} label="Cost (net) €">${html`<${React.Fragment}>
+        <input class="mono" type="text" inputmode="decimal" placeholder=${landedHint==null?"from the ledger":money(landedHint)} value=${f.cost} onInput=${e=>up("cost",e.target.value)}/>
+        <div class="note" style=${{marginTop:"4px"}}>${landedHint==null
+          ? "Nothing received yet, so there is no landed cost to read. Anything keyed here is an override."
+          : html`<${React.Fragment}>Leave this empty and the catalogue reads <b>${money(landedHint)}</b> from the lots you hold, freight included, and keeps following them. A number here overrides that and never moves again.${f.cost!==""?html` <button class="btn sm ghost" onClick=${()=>up("cost","")}>Use landed</button>`:null}</${React.Fragment}>`}</div>
+        </${React.Fragment}>`}</${Field}>
       <${Field} label="Price (incl VAT) €">${html`<input class="mono" type="text" inputmode="decimal" value=${f.price} onInput=${e=>up("price",e.target.value)}/>`}</${Field}>
     </div>
     <div class="grid2">
@@ -1704,10 +1718,29 @@ function MovementModal({st,act,editing,onClose,show}){
    what it cost, what to multiply by, what to charge. Nothing is invented. The cost is read from
    the ledger, the suggested multiplier is the one the rest of the catalogue already uses, and the
    price it works out stays a suggestion in its own column until it is taken. */
-function houseMultiplier(st){
+/* A product's cost is the ledger's answer, not a number parked beside it. The lots still on
+   hand, weighted, is what the stock you are holding actually cost \u2014 freight included, at
+   whichever basis each batch was posted under. Only when nothing is on hand does it fall back to
+   everything ever received, so a product you have sold out of still reports what it cost.
+   A stored cost is an OVERRIDE and nothing else: set one deliberately and it wins; clear it and
+   the ledger speaks again. This is the only direction the dependency runs \u2014 no ledger figure
+   has ever read p.cost, and none does now. */
+function costOverride(p){const v=(p&&p.cost!=null&&p.cost!=="")?+p.cost:null;
+  return (v!=null&&!isNaN(v))?v:null;}
+function costOf(p,ivRow){
+  const own=costOverride(p);
+  if(own!=null)return {value:own,source:"set",landed:ivRow?(ivRow.unitCost!=null&&ivRow.unitCost>0?ivRow.unitCost:(ivRow.avgCost!=null&&ivRow.avgCost>0?ivRow.avgCost:null)):null};
+  if(ivRow){
+    if(ivRow.unitCost!=null&&ivRow.unitCost>0)return {value:ivRow.unitCost,source:"onhand",landed:ivRow.unitCost};
+    if(ivRow.avgCost!=null&&ivRow.avgCost>0)return {value:ivRow.avgCost,source:"received",landed:ivRow.avgCost};}
+  return {value:null,source:"none",landed:null};}
+const COST_SRC={set:"set by hand",onhand:"lots on hand",received:"all received",none:""};
+/* a map of code \u2192 inventory row, for the places that need costOf over the whole catalogue */
+function invByCode(st){const m={};for(const r of computeInventory(st))m[normCode(r.code)]=r;return m;}
+function houseMultiplier(st,iv){
   const m=[];
   for(const p of st.catalogue||[]){
-    const c=+p.cost,g=+p.price;if(!(c>0)||!(g>0))continue;
+    const c=costOf(p,iv?iv[normCode(p.code)]:null).value,g=+p.price;if(!(c>0)||!(g>0))continue;
     const rate=saleRateFor(p,st);const net=rate>0?g/(1+rate/100):g;
     const k=net/c;if(k>0.2&&k<20)m.push(k);}
   if(!m.length)return null;
@@ -1723,7 +1756,7 @@ function Staging({st,act,openProduct,show}){
   const [bulkType,setBulkType]=useState("");
   const [fq,setFq]=useState("");const [fprov,setFprov]=useState("");const [ftype,setFtype]=useState("");
   const inv=useMemo(()=>{const m={};for(const r of computeInventory(st))m[normCode(r.code)]=r;return m;},[st.ledger,st.catalogue]);
-  const house=useMemo(()=>houseMultiplier(st),[st.catalogue,st.settings]);
+  const house=useMemo(()=>houseMultiplier(st,inv),[st.catalogue,st.settings,inv]);
   useEffect(()=>{if(house&&!bulkMult)setBulkMult(String(Math.round(house.k*100)/100));},[house]);
   /* one row's working state: what is staged, plus whatever has been typed over it */
   const rowOf=(e)=>{const k=normCode(e.code);const o=Object.assign({},e.ui||{},edit[k]||{});const iv=inv[k];
@@ -1737,7 +1770,7 @@ function Staging({st,act,openProduct,show}){
     const net=price!=null&&price>0?(rate>0?price/(1+rate/100):price):null;
     const margin=(net!=null&&cost!=null&&net>0)?(net-cost)/net:null;
     const effMult=(net!=null&&cost!=null&&cost>0)?net/cost:null;
-    return {k,code:e.code,name:o.name!==undefined?o.name:(e.name||""),type,cost,rate,mult,price,sugg,margin,effMult,
+    return {k,code:e.code,name:o.name!==undefined?o.name:(e.name||""),type,cost,costSet:o.cost!==undefined,rate,mult,price,sugg,margin,effMult,
       qty:e.qty||0,supplier:e.provider||"",supplierRef:e.providerRef||"",
       sellable:o.sellable!==undefined?o.sellable:!TILLCODE.test(String(e.code||"")),
       online:o.online!==undefined?o.online:false,
@@ -1783,7 +1816,9 @@ function Staging({st,act,openProduct,show}){
   const missingPrice=rows.filter(r=>r.sellable&&(r.price==null||!(r.price>0))).length;
   function confirm(list){
     if(!list.length)return;
-    act.confirmStagingRows(list.map(r=>({code:r.code,name:r.name,type:r.type,cost:r.cost,price:r.price,
+    /* the cost on this grid is read from the ledger; only a figure typed over it is an override
+       worth storing, so an untouched row confirms with none and goes on following the lots */
+    act.confirmStagingRows(list.map(r=>({code:r.code,name:r.name,type:r.type,cost:r.costSet?r.cost:null,price:r.price,
       sellable:r.sellable,online:r.online,stocked:r.stocked,supplier:r.supplier,supplierRef:r.supplierRef})));
     setSel({});show("Confirmed "+list.length+" into the catalogue",true);}
   const TH=(t,c)=>html`<th class=${c||""}>${t}</th>`;
@@ -1853,8 +1888,11 @@ function Settings({st,act,show}){
   function exportCore(){const txt=JSON.stringify(makeCore(st),null,2);const name="rosa-mystica_core_"+today()+".json";
     act.markExport();
     if(IN_FRAME||!downloadText(name,txt)){act.openExport("Core data — copy and keep safe",txt);}else show("Saved "+name);}
-  function exportCatalogueCSV(){const head=["code","type","name","author","year","category","supplier","supplierRef","cost","price","sellable","stocked","online","reorderPoint","notes"];
-    const rows=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost,p.price,p.sellable!==false,p.stocked!==false,!!p.online,p.reorderPoint==null?"":p.reorderPoint,p.notes]);
+  function exportCatalogueCSV(){const head=["code","type","name","author","year","category","supplier","supplierRef","cost","price","sellable","stocked","online","reorderPoint","notes","landedNow"];
+    /* "cost" stays the stored override so the file round-trips without turning every derived cost
+       into a frozen one; landedNow is a read-out and matches no import pattern. */
+    const ivr=invByCode(st);
+    const rows=st.catalogue.map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",p.cost,p.price,p.sellable!==false,p.stocked!==false,!!p.online,p.reorderPoint==null?"":p.reorderPoint,p.notes,(()=>{const c=costOf(Object.assign({},p,{cost:null}),ivr[normCode(p.code)]);return c.value==null?"":r2(c.value);})()]);
     const csv=toCSV(head,rows);if(IN_FRAME||!downloadText("rosa-mystica_catalogue_"+today()+".csv",csv,"text/csv"))act.openExport("Catalogue — CSV",csv);else show("Saved CSV");}
   function exportLedgerCSV(){const head=["date","channel","dir","batchRef","code","qty","unitPrice","vatRate","lineTotal","transport","note"];
     const rows=st.ledger.map(r=>[r.date,r.channel,r.dir,r.batchRef,r.code,r.qty,r.unitPrice,r.vatRate==null?"":r.vatRate,(r.unitPrice==null?"":Math.round((+r.qty||0)*(+r.unitPrice||0)*100)/100),r.transport==null?"":r.transport,r.note]);
@@ -2172,9 +2210,11 @@ function normProv(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"")
    belongs next to the import rather than filed under Settings. The column names match what the
    catalogue import reads, and an import only touches the columns the file carries. */
 function catalogueSheets(st){
-  const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost","Price","Sellable","Stock-tracked","Online","Reorder point","Notes"];
+  const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost override","Landed now","Price","Sellable","Stock-tracked","Online","Reorder point","Notes"];
+  const ivr=invByCode(st);
   const body=(st.catalogue||[]).map(p=>[p.code,p.type,p.name,p.author,p.year,p.category,p.supplier,p.supplierRef||"",
-    p.cost==null?"":+p.cost,p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.stocked!==false?"yes":"no",
+    p.cost==null?"":+p.cost,(()=>{const c=costOf(Object.assign({},p,{cost:null}),ivr[normCode(p.code)]);return c.value==null?"":r2(c.value);})(),
+    p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.stocked!==false?"yes":"no",
     p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
   return [{name:"Catalogue",rows:[head].concat(body)}];}
 function supplierIndex(st){const byPair={},byRef={},refSeen={};
@@ -3440,7 +3480,7 @@ const CHECKS=[
   ["F1","full","Stock with no document behind it","inventory"],
   ["F2","full","Posted invoices that no longer reconcile","invoices"],
   ["F3","full","Posted quantities that disagree with the ledger","invoices"],
-  ["F4","full","Catalogue cost far from landed cost","catalogue"],
+  ["F4","full","Cost overrides that have drifted","catalogue"],
   ["F5","full","Lots received at no cost","inventory"],
   ["F6","full","Sellable with no price","catalogue"],
   ["F7","full","Priced below landed cost","catalogue"],
@@ -3530,14 +3570,15 @@ function runChecks(st){
     if(Math.abs(ledQ-t.recv)>0.001)add("F3",i.id,(i.invoiceNo||b),
       num(t.recv)+" received on the invoice, "+num(ledQ)+" in the ledger");}
 
-  /* F4 — the catalogue's cost is a planning figure; landed cost is what the invoices say. They
-     drift apart legitimately on inherited stock, which is why this is judgement and not a defect. */
+  /* F4 — a product with no override follows the ledger and can never drift, so this now asks
+     only about costs someone keyed by hand: the ledger has moved under them and they have not
+     followed. Clearing the field is the fix, which is why the finding says so. */
   for(const r of rows){const p=byCode[normCode(r.code)];if(!p)continue;
-    const cc=(p.cost!=null&&p.cost!=="")?+p.cost:null;
-    if(cc==null||!(cc>0)||r.avgCost==null||!(r.avgCost>0))continue;
-    const d=Math.abs(cc-r.avgCost)/r.avgCost;
+    const cc=costOverride(p);const land=(r.unitCost!=null&&r.unitCost>0)?r.unitCost:r.avgCost;
+    if(cc==null||!(cc>0)||land==null||!(land>0))continue;
+    const d=Math.abs(cc-land)/land;
     if(d>DIAG_COSTTOL)add("F4",normCode(r.code),r.code,
-      "catalogue "+money(cc)+" against landed "+money(r.avgCost)+" — "+pct(d)+" apart");}
+      "override "+money(cc)+" against landed "+money(land)+" — "+pct(d)+" apart; clearing it follows the ledger");}
 
   /* F5 — legitimate, and worth seeing: a zero-cost lot contributes profit without cost, so it
      pulls every ratio built on cost upward. */
