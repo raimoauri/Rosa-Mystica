@@ -635,12 +635,12 @@ const typeLabel=t=>{const f=TYPES.find(x=>x[0]===t);return f?f[1]:(t||"—");};
 
 /* ---------- persistence ---------- */
 const SCHEMA=4;const LSKEY="rosamystica:v1";const LSBUDGET=5000000;
-function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],count:{lines:{}},order:{lines:{}},diag:{disp:{},hist:[]},
+function blankState(){return {schema:SCHEMA,catalogue:[],ledger:[],staging:[],finance:[],postage:[],invoices:[],suppliers:[],count:{lines:{}},order:{lines:{}},diag:{disp:{},hist:[]},
   channels:[{id:uid(),name:"Purchase",dir:"in",mode:null,kind:null}],
   settings:{shop:"Katolinen Kirjakauppa",theme:"system",vatRates:{book:13.5,goods:25.5,other:0},lastExport:"",codePrefix:"KKG",rcnPrefix:"02"}};}
 function inferMode(name){const n=String(name||"").toLowerCase();if(/woo|online|verkko|webshop|nettikaup|internet/.test(n))return "online";if(/vektori|shop|myym|kassa|till|counter|store|pos|liike/.test(n))return "in_person";return null;}
 function migrate(s){if(!s||typeof s!=="object")return blankState();
-  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];s.count=s.count||{lines:{}};if(!s.count.lines)s.count.lines={};
+  s.schema=SCHEMA;s.catalogue=s.catalogue||[];s.ledger=s.ledger||[];s.staging=s.staging||[];s.finance=s.finance||[];s.postage=s.postage||[];s.invoices=s.invoices||[];s.suppliers=s.suppliers||[];s.count=s.count||{lines:{}};if(!s.count.lines)s.count.lines={};
   s.order=s.order||{lines:{}};if(!s.order.lines)s.order.lines={};
   if(!s.channels||!s.channels.length)s.channels=[{id:uid(),name:"Purchase",dir:"in",mode:null}];
   s.channels=s.channels.map(c=>{const o=("mode" in c)?c:Object.assign({},c,{mode:(c.dir==="out"?inferMode(c.name):null)});
@@ -1196,6 +1196,7 @@ function Icon({name}){const P={
   upload:"M12 21V9M7 14l5-5 5 5M5 3h14",
   finance:"M2 6h20v12H2zM12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6M6 9v6M18 9v6",
   reconcile:"M4 7h11M4 7l3-3M4 7l3 3M20 17H9m11 0l-3-3m3 3l-3 3",
+  supplier:"M1 7h11v10H1zM12 10h4l3 3v4h-7zM5 17a2 2 0 1 0 4 0 2 2 0 1 0-4 0M15 17a2 2 0 1 0 4 0 2 2 0 1 0-4 0",
   invoice:"M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h3"
 };return html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d=${P[name]||""}/></svg>`;}
 
@@ -2217,6 +2218,49 @@ function catalogueSheets(st){
     p.price==null?"":+p.price,p.sellable!==false?"yes":"no",p.stocked!==false?"yes":"no",
     p.online?"yes":"no",p.reorderPoint==null?"":+p.reorderPoint,p.notes]);
   return [{name:"Catalogue",rows:[head].concat(body)}];}
+/* A supplier is the one thing that recurs across invoices, movements and products and had
+   nowhere to live: it was a string, retyped each time, matched at read time by normProv. The
+   record does not replace those strings \u2014 every one of them stays exactly where it is, and
+   matching still goes through normProv. It gives the supplier somewhere to keep what is true of
+   it between invoices: how it is spelled elsewhere, what it bills in, how it ships. */
+function blankSupplier(){return {id:uid(),name:"",aliases:[],country:"",vatNo:"",currency:"",
+  treatment:"",freightBasis:"",leadDays:"",notes:"",createdAt:"",updatedAt:""};}
+/* every spelling a supplier answers to, normalised, pointing at the one record */
+function providerIndex(st){const m={};
+  for(const sp of (st.suppliers||[])){
+    for(const k of [sp.name].concat(sp.aliases||[])){const n=normProv(k);if(n&&!m[n])m[n]=sp;}}
+  return m;}
+function supplierFor(st,name){const n=normProv(name);return n?(providerIndex(st)[n]||null):null;}
+function supplierUse(st){const c={};
+  const bump=k=>{if(k)c[k]=(c[k]||0)+1;};
+  for(const i of (st.invoices||[]))bump(normProv(i.provider));
+  for(const p of (st.catalogue||[]))bump(normProv(p.supplier));
+  return c;}
+/* Providers the data already names, grouped the way the app matches them. The spelling used most
+   often leads and the rest become aliases \u2014 which is exactly what stops F10 reporting them,
+   because once you have said these are one supplier there is nothing left to report. */
+function discoverSuppliers(st){
+  const have=providerIndex(st);const g={};
+  const bump=(name,country,cur)=>{const n=normProv(name);if(!n)return;
+    const e=g[n]||(g[n]={spell:{},n:0,country:"",currency:""});
+    const t=String(name||"").trim();if(!t)return;
+    e.spell[t]=(e.spell[t]||0)+1;e.n++;
+    if(!e.country&&country)e.country=String(country).trim();
+    if(!e.currency&&cur)e.currency=String(cur).trim().toUpperCase();};
+  for(const i of (st.invoices||[]))bump(i.provider,i.country,i.currency);
+  for(const r of (st.ledger||[]))bump(r.provider,r.country,"");
+  for(const p of (st.catalogue||[]))bump(p.supplier,"","");
+  const out=[];
+  for(const k in g){if(have[k])continue;const e=g[k];
+    /* On a tie, the fullest-looking spelling leads: a capitalised, longer form carries more of
+       the supplier's actual name than a lowercase stub typed in a hurry. It is only a default
+       — the record is editable the moment it exists. */
+    const cap=x=>/^[\p{Lu}]/u.test(x)?1:0;
+    const sp=Object.keys(e.spell).sort((a,b)=>e.spell[b]-e.spell[a]||cap(b)-cap(a)||b.length-a.length||a.localeCompare(b));
+    out.push({key:k,name:sp[0],aliases:sp.slice(1),count:e.n,
+      country:e.country,currency:(e.currency&&e.currency!=="EUR")?e.currency:""});}
+  out.sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
+  return out;}
 function supplierIndex(st){const byPair={},byRef={},refSeen={};
   for(const p of (st.catalogue||[])){const r=normRef(p.supplierRef);if(!r)continue;
     const pv=normProv(p.supplier);if(pv)byPair[pv+"|"+r]=p.code;
@@ -2371,7 +2415,24 @@ function Invoices({st,act,show,openProduct,jump,clearJump}){
       <div class="panel-h"><h3>Invoice</h3><span class="note">${posted?"posted "+fmtD(inv.postedAt)+" as batch "+inv.batchRef:"nothing is written to the ledger yet"}</span></div>
       <div style=${{padding:"16px"}}>
         <div class="grid3" style=${{marginBottom:"12px"}}>
-          ${F("Provider",inp("provider","e.g. MRP Unipessoal, Lda"))}
+          ${F("Provider",html`<${React.Fragment}>
+            <input type="text" list="rm-sups" disabled=${posted} placeholder="e.g. MRP Unipessoal, Lda" value=${inv.provider||""}
+              onInput=${e=>{const v=e.target.value;const sp=supplierFor(st,v);
+                /* a recorded supplier fills what it knows, and only what you have left empty \u2014
+                   nothing typed on this invoice is ever overwritten by the record */
+                const patch={provider:v};
+                if(sp){
+                  if(!String(inv.country||"").trim()&&sp.country)patch.country=sp.country;
+                  if(!String(inv.currency||"").trim()||String(inv.currency).toUpperCase()==="EUR"){
+                    if(sp.currency&&sp.currency!=="EUR")patch.currency=sp.currency;}
+                  if(sp.freightBasis)patch.freightBasis=sp.freightBasis;
+                  const tr=sp.treatment||(patch.country?treatmentForCountry(patch.country):"");
+                  if(tr){patch.treatment=tr;patch.vatDefault=String(defaultVatFor(tr,st,inv.lineType));
+                    patch.freightVat=String(defaultVatFor(tr,st));}}
+                upd(patch);}}/>
+            <datalist id="rm-sups">${(st.suppliers||[]).map(x=>html`<option key=${x.id} value=${x.name}></option>`)}</datalist>
+            ${(()=>{const sp=supplierFor(st,inv.provider);return sp?html`<div class="meta">recorded supplier\u00a0\u00b7\u00a0${sp.country||"no country"}${sp.currency?"\u00a0\u00b7\u00a0"+sp.currency:""}${sp.leadDays?"\u00a0\u00b7\u00a0"+sp.leadDays+"\u00a0days":""}</div>`:null;})()}
+            </${React.Fragment}>`)}
           ${F("Country",html`<input type="text" disabled=${posted} placeholder="Portugal" value=${inv.country||""} onInput=${e=>{const v=e.target.value;const auto=treatmentForCountry(v);upd({country:v,treatment:auto,vatDefault:defaultVatFor(auto,st,inv.lineType)});}}/>`)}
           ${F("Invoice number",inp("invoiceNo","FAT 90SED26/2654","mono"))}
         </div>
@@ -3610,10 +3671,14 @@ function runChecks(st){
         num(own)+"% keyed, "+num(should)+"% for a "+typeLabel(p.type)+" — on "+(i.invoiceNo||i.batchRef||"a draft"));}}
 
   /* F10 — supplier matching normalises away punctuation and legal suffixes, so these already
-     behave as one supplier. Reporting them keeps the catalogue readable, nothing more. */
-  {const g={};for(const p of cat){const k=normProv(p.supplier||"");if(!k)continue;
+     behave as one supplier. Reporting them keeps the catalogue readable, nothing more — and once
+     a supplier record carries the spellings as aliases, you have said so and there is nothing to
+     report. Recording the supplier is the fix, which is why the finding points there. */
+  {const known=providerIndex(st);
+   const g={};for(const p of cat){const k=normProv(p.supplier||"");if(!k||known[k])continue;
      (g[k]=g[k]||new Set()).add((p.supplier||"").trim());}
-   for(const k in g)if(g[k].size>1)add("F10",k,[...g[k]][0],[...g[k]].join(" · "));}
+   for(const k in g)if(g[k].size>1)add("F10",k,[...g[k]][0],
+     [...g[k]].join(" · ")+" — recording the supplier settles it");}
 
   const disp=diagOf(st).disp;
   for(const f of F){const d=disp[f.key];f.disp=(d&&d.d)||"";f.note=(d&&d.note)||"";
@@ -3622,6 +3687,102 @@ function runChecks(st){
 }
 function healthCount(st){const r=runChecks(st);
   return r.findings.filter(f=>f.tier==="minor"&&f.disp!=="accepted").length;}
+
+/* Suppliers. Nothing here changes how a supplier is matched \u2014 that is still normProv over the
+   strings already on invoices, movements and products. This is where a supplier keeps what is
+   true of it between invoices, so the next one from Demi Art does not need Italy, EUR and
+   intra-EU typed in again. Records are proposed from the data you already have and confirmed,
+   the same way staging works for products: nothing is invented behind your back. */
+function SupplierEditor({st,act,show,editing,onClose}){
+  const isNew=!editing||!editing.id;
+  const [f,setF]=useState(()=>Object.assign({},blankSupplier(),editing||{},
+    {aliases:((editing&&editing.aliases)||[]).join(", "),
+     leadDays:(editing&&editing.leadDays!=null)?String(editing.leadDays):""}));
+  const up=(k,v)=>setF(o=>({...o,[k]:v}));
+  const clash=(st.suppliers||[]).find(x=>x.id!==f.id&&normProv(x.name)===normProv(f.name));
+  const valid=String(f.name||"").trim()!==""&&!clash;
+  function commit(){
+    const aliases=String(f.aliases||"").split(",").map(x=>x.trim()).filter(Boolean);
+    act.saveSupplier({id:f.id,name:String(f.name).trim(),aliases,country:f.country.trim(),
+      vatNo:f.vatNo.trim(),currency:f.currency.trim().toUpperCase(),treatment:f.treatment,
+      freightBasis:f.freightBasis,leadDays:f.leadDays===""?"":(parseNum(f.leadDays)||""),notes:f.notes});
+    show(isNew?"Supplier recorded":"Supplier saved",true);onClose();}
+  const footer=html`<${React.Fragment}>
+    ${!isNew?html`<button class="btn danger" onClick=${()=>{act.deleteSupplier(f.id);show("Supplier removed",true);onClose();}}>Delete</button>`:null}
+    <span class="sp"></span><button class="btn" onClick=${onClose}>Cancel</button>
+    <button class="btn primary" disabled=${!valid} onClick=${commit}>${isNew?"Record":"Save"}</button></${React.Fragment}>`;
+  return html`<${Modal} title=${isNew?"New supplier":f.name} onClose=${onClose} footer=${footer}>
+    <div class="grid2">
+      <${Field} label="Name">${html`<input type="text" value=${f.name} onInput=${e=>up("name",e.target.value)}/>`}</${Field}>
+      <${Field} label="Country">${html`<input type="text" placeholder="Italy" value=${f.country} onInput=${e=>up("country",e.target.value)}/>`}</${Field}>
+    </div>
+    <${Field} label="Also spelled">${html`<${React.Fragment}>
+      <input type="text" placeholder="Demi Art srl, demi-art" value=${f.aliases} onInput=${e=>up("aliases",e.target.value)}/>
+      <div class="note" style=${{marginTop:"4px"}}>Separated by commas. Any spelling listed here resolves to this supplier, and stops the catalogue reporting the variants as different suppliers.</div></${React.Fragment}>`}</${Field}>
+    <div class="grid2">
+      <${Field} label="VAT number">${html`<input class="mono" type="text" placeholder="IT0123456789" value=${f.vatNo} onInput=${e=>up("vatNo",e.target.value)}/>`}</${Field}>
+      <${Field} label="Bills in">${html`<input class="mono" type="text" placeholder="EUR" value=${f.currency} onInput=${e=>up("currency",e.target.value)}/>`}</${Field}>
+    </div>
+    <div class="grid2">
+      <${Field} label="Usual tax treatment">${html`<select value=${f.treatment} onChange=${e=>up("treatment",e.target.value)}>
+        <option value="">\u2014 work it out from the country</option>
+        ${TREATMENTS.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select>`}</${Field}>
+      <${Field} label="Usual freight basis">${html`<select value=${f.freightBasis} onChange=${e=>up("freightBasis",e.target.value)}>
+        <option value="">\u2014 ask each time</option>
+        ${FREIGHT_BASES.map(x=>html`<option key=${x[0]} value=${x[0]}>${x[1]}</option>`)}</select>`}</${Field}>
+    </div>
+    <${Field} label="Lead time, days">${html`<input class="mono" type="text" inputmode="numeric" placeholder="21" value=${f.leadDays} onInput=${e=>up("leadDays",e.target.value)}/>`}</${Field}>
+    <${Field} label="Notes">${html`<textarea rows="3" value=${f.notes} onInput=${e=>up("notes",e.target.value)}></textarea>`}</${Field}>
+    ${clash?html`<div class="err">A supplier called ${clash.name} already answers to that name.</div>`:null}
+  </${Modal}>`;}
+
+function Suppliers({st,act,show}){
+  const [edit,setEdit]=useState(null);
+  const [drop,setDrop]=useState({});
+  const list=useMemo(()=>(st.suppliers||[]).slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"")),[st.suppliers]);
+  const found=useMemo(()=>discoverSuppliers(st),[st.suppliers,st.invoices,st.ledger,st.catalogue]);
+  const use=useMemo(()=>supplierUse(st),[st.invoices,st.catalogue]);
+  const take=found.filter(f=>!drop[f.key]);
+  const TR=(t)=>{const h=TREATMENTS.find(x=>x[0]===t);return h?h[1]:"";};
+  const FB=(b)=>{const h=FREIGHT_BASES.find(x=>x[0]===b);return h?h[1]:"";};
+  return html`<div class="content">
+    <div class="rowbetween" style=${{marginBottom:"16px"}}><h2 style=${{fontSize:"22px"}}>Suppliers</h2>
+      <button class="btn primary" onClick=${()=>setEdit({})}><${Icon} name="plus"/>New supplier</button></div>
+
+    ${found.length?html`<div class="panel" style=${{marginBottom:"16px"}}>
+      <div class="panel-h"><h3>Found in your data</h3><span class="note">${num(found.length)} provider${found.length===1?"":"s"} named on invoices, movements or products with no record yet</span></div>
+      <div style=${{padding:"12px 16px"}}>
+        <div class="tablewrap"><table><thead><tr><th style=${{width:"34px"}}></th><th>Name</th><th>Also spelled</th><th class="num">Seen</th><th>Country</th><th>Bills in</th></tr></thead>
+          <tbody>${found.map(f=>html`<tr key=${f.key} onClick=${()=>setDrop(d=>({...d,[f.key]:!d[f.key]}))} style=${{cursor:"pointer"}}>
+            <td><input type="checkbox" readOnly checked=${!drop[f.key]}/></td>
+            <td><span class="name">${f.name}</span></td>
+            <td class="muted">${f.aliases.length?f.aliases.join(" \u00b7 "):html`<span class="faint">\u2014</span>`}</td>
+            <td class="num">${num(f.count)}</td>
+            <td class="muted">${f.country||html`<span class="faint">\u2014</span>`}</td>
+            <td class="mono muted">${f.currency||"EUR"}</td></tr>`)}</tbody></table></div>
+        <div class="hintrow" style=${{marginTop:"10px"}}>
+          <button class="btn primary" disabled=${!take.length} onClick=${()=>{act.addSuppliers(take);setDrop({});show("Recorded "+take.length+" supplier"+(take.length===1?"":"s"),true);}}>Record ${num(take.length)} of ${num(found.length)}</button>
+          <span class="note">The spelling used most often leads; the rest are kept as aliases. Nothing on your invoices or products is rewritten \u2014 the record only gives those names somewhere to point.</span></div>
+      </div></div>`:null}
+
+    <div class="panel">
+      <div class="panel-h"><h3>Recorded</h3><span class="note">${num(list.length)} supplier${list.length===1?"":"s"}</span></div>
+      ${list.length?html`<div class="tablewrap"><table>
+        <thead><tr><th>Name</th><th>Also spelled</th><th>Country</th><th>Bills in</th><th>Treatment</th><th>Freight</th><th class="num">Lead</th><th class="num">Used</th></tr></thead>
+        <tbody>${list.map(x=>html`<tr key=${x.id} onClick=${()=>setEdit(x)} style=${{cursor:"pointer"}}>
+          <td><span class="name">${x.name}</span>${x.vatNo?html`<div class="meta code">${x.vatNo}</div>`:null}</td>
+          <td class="muted">${(x.aliases&&x.aliases.length)?x.aliases.join(" \u00b7 "):html`<span class="faint">\u2014</span>`}</td>
+          <td class="muted">${x.country||html`<span class="faint">\u2014</span>`}</td>
+          <td class="mono muted">${x.currency||"EUR"}</td>
+          <td class="muted">${TR(x.treatment)||html`<span class="faint">by country</span>`}</td>
+          <td class="muted">${FB(x.freightBasis)||html`<span class="faint">ask</span>`}</td>
+          <td class="num mono">${x.leadDays===""||x.leadDays==null?html`<span class="faint">\u2014</span>`:num(x.leadDays)}</td>
+          <td class="num">${num(use[normProv(x.name)]||0)}</td></tr>`)}</tbody></table></div>`
+        :html`<div class="empty"><${Icon} name="supplier"/><div class="big">No suppliers recorded</div>
+          <div class="note">${found.length?"There are providers in your data above \u2014 record them and the next invoice from each will fill itself in.":"Suppliers appear here once invoices name them."}</div></div>`}
+    </div>
+    ${edit?html`<${SupplierEditor} st=${st} act=${act} show=${show} editing=${edit.id?edit:null} onClose=${()=>setEdit(null)}/>`:null}
+  </div>`;}
 
 function Health({st,act,show}){
   const res=useMemo(()=>runChecks(st),[st]);
@@ -3869,6 +4030,17 @@ function App(){
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
         cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:!TILLCODE.test(String(e.code||"")),stocked:!TILLCODE.test(String(e.code||"")),online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
       return {...s,catalogue:cat,staging:[]};}),
+    saveSupplier:rec=>setSt(s=>{const now=new Date().toISOString();const list=(s.suppliers||[]).slice();
+      const ix=list.findIndex(x=>x.id===rec.id);
+      if(ix>=0)list[ix]=Object.assign({},list[ix],rec,{updatedAt:now});
+      else list.push(Object.assign({},blankSupplier(),rec,{id:rec.id||uid(),createdAt:now,updatedAt:now}));
+      return {...s,suppliers:list};}),
+    deleteSupplier:id=>setSt(s=>{undoRef.current=s;
+      return {...s,suppliers:(s.suppliers||[]).filter(x=>x.id!==id)};}),
+    addSuppliers:list=>setSt(s=>{undoRef.current=s;const now=new Date().toISOString();
+      return {...s,suppliers:(s.suppliers||[]).concat(list.map(x=>Object.assign({},blankSupplier(),
+        {name:x.name,aliases:x.aliases||[],country:x.country||"",currency:x.currency||""},
+        {id:uid(),createdAt:now,updatedAt:now})))};}),
     addInvoices:list=>setSt(s=>{undoRef.current=s;return {...s,invoices:(s.invoices||[]).concat(list)};}),
     /* Renaming carries history: the code is the anchor, so every movement, staged entry and
        draft line that points at the old code is moved to the new one in the same write. */
@@ -3959,11 +4131,11 @@ function App(){
   const openProduct=(p,fromStaging)=>setModal({type:"product",editing:p,fromStaging:!!fromStaging});
   const openMovement=r=>setModal({type:"movement",editing:r});
 
-  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["invoices","Invoices","invoice"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["health","Health","reconcile"],["settings","Settings","settings"]];
-  const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length,finance:(st.finance||[]).length,invoices:(st.invoices||[]).filter(i=>i.status!=="posted").length,health:hcount};
+  const nav=[["overview","Overview","overview"],["catalogue","Catalogue","catalogue"],["invoices","Invoices","invoice"],["ledger","Ledger","ledger"],["inventory","Inventory","inventory"],["staging","Staging","staging"],["analytics","Analytics","analytics"],["finance","Finance","finance"],["suppliers","Suppliers","supplier"],["health","Health","reconcile"],["settings","Settings","settings"]];
+  const counts={catalogue:st.catalogue.length,ledger:st.ledger.length,staging:st.staging.length,finance:(st.finance||[]).length,suppliers:(st.suppliers||[]).length,invoices:(st.invoices||[]).filter(i=>i.status!=="posted").length,health:hcount};
   const themeLabel={system:"◐",light:"☀",dark:"☾"}[theme];
   const cycleTheme=()=>setTheme(p=>p==="system"?"light":p==="light"?"dark":"system");
-  const where={overview:"Hub",catalogue:"Catalogue",invoices:"Invoices",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",health:"Health",settings:"Settings"}[tab];
+  const where={overview:"Hub",catalogue:"Catalogue",invoices:"Invoices",ledger:"Ledger",inventory:"Inventory",staging:"Staging",analytics:"Analytics",finance:"Finance",suppliers:"Suppliers",health:"Health",settings:"Settings"}[tab];
 
   if(recover)return html`<${RecoverScreen} info=${recover}
     onEmpty=${()=>{setSt(blankState());setRecover(null);}}
@@ -3990,6 +4162,7 @@ function App(){
       ${tab==="staging"?html`<${Staging} st=${st} act=${act} openProduct=${openProduct} show=${show}/>`:null}
       ${tab==="analytics"?html`<${Analytics} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="finance"?html`<${Finance} st=${st} act=${act} show=${show}/>`:null}
+      ${tab==="suppliers"?html`<${Suppliers} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="health"?html`<${Health} st=${st} act=${act} show=${show}/>`:null}
       ${tab==="settings"?html`<${Settings} st=${st} act=${act} show=${show}/>`:null}
     </div>
