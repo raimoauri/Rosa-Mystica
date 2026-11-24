@@ -1305,17 +1305,20 @@ function Overview({st,go,act}){
      the rest of the app matches on, so a filter that split "Lellostore Oy" from "lellostore" would
      disagree with every other screen. */
   const sups=useMemo(()=>{const m={};
-    for(const b of batches){const k=normProv(b.provider||"");if(!k)continue;
+    for(const b of batches){const k=provKey(st,b.provider||"");if(!k)continue;
       const nm=(b.provider||"").trim();
       const e=m[k]||(m[k]={key:k,name:nm,n:0,invested:0,spell:{}});
       e.n++;e.invested+=b.investedNet;e.spell[nm]=(e.spell[nm]||0)+1;}
     const out=Object.values(m);
-    for(const e of out)e.name=Object.keys(e.spell).sort((a,b)=>e.spell[b]-e.spell[a])[0]||e.name;
-    return out.sort((a,b)=>b.invested-a.invested);},[batches]);
+    for(const e of out){
+      const rec=e.key.charAt(0)==="@"?(st.suppliers||[]).find(x=>("@"+x.id)===e.key):null;
+      e.name=rec?rec.name:(Object.keys(e.spell).sort((a,b)=>e.spell[b]-e.spell[a])[0]||e.name);
+      e.spellings=Object.keys(e.spell).length;}
+    return out.sort((a,b)=>b.invested-a.invested);},[batches,st.suppliers]);
   /* null means every supplier, including one that first appears after this screen was opened */
   const [pick,setPick]=useState(null);
   const picked=useMemo(()=>pick||new Set(sups.map(x=>x.key)),[pick,sups]);
-  const fb=useMemo(()=>batches.filter(b=>picked.has(normProv(b.provider||""))),[batches,picked]);
+  const fb=useMemo(()=>batches.filter(b=>picked.has(provKey(st,b.provider||""))),[batches,picked]);
   const narrowed=fb.length!==batches.length;
   const toggle=k=>setPick(()=>{const n=new Set(picked);if(n.has(k))n.delete(k);else n.add(k);return n;});
   const only=k=>setPick(new Set([k]));
@@ -2252,8 +2255,27 @@ function lineVatFor(l,inv,st,byCode){
   const hd=parseNum(inv.vatDefault);if(hd!=null)return hd;
   return defaultVatFor(inv.treatment,st,inv.lineType);}
 function normRef(s){return String(s||"").replace(/[\s\-_.\/]/g,"").toUpperCase();}
-function normProv(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"")
-  .replace(/(lda|oy|ab|gmbh|srl|sarl|bv|nv|spa|sa|ltd|llc|inc|unipessoal)$/,"");}
+/* Nordic and Polish names are most of this shop's suppliers, and stripping [^a-z0-9] deleted
+   their accented letters instead of folding them: "Jakóbczak" lost its ó and keyed as
+   jakbczak while "Jakobczak" keyed as jakobczak \u2014 two keys, one supplier, and an Overview
+   filter that silently hid half its batches. Fold first, then strip. NFD handles everything
+   that decomposes (á à ä å ã ó ę ż \u2026); the handful of letters that do not are mapped by hand. */
+function foldAccents(s){
+  return String(s==null?"":s).normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/\u0142/g,"l").replace(/\u0141/g,"L")
+    .replace(/\u00f8/g,"o").replace(/\u00d8/g,"O")
+    .replace(/\u0111/g,"d").replace(/\u0110/g,"D")
+    .replace(/\u00e6/g,"ae").replace(/\u00c6/g,"AE")
+    .replace(/\u0153/g,"oe").replace(/\u0152/g,"OE")
+    .replace(/\u00df/g,"ss");}
+function normProv(s){return foldAccents(s).toLowerCase().replace(/[^a-z0-9]/g,"")
+  .replace(/(spzoo|spolkazograniczonaodpowiedzialnoscia|lda|oy|ab|gmbh|srl|sarl|bv|nv|spa|sa|ltd|llc|inc|unipessoal)$/,"");}
+/* A recorded supplier outranks the spelling. normProv is a good guess at whether two names are
+   the same supplier, but it is only a guess \u2014 it cannot know that "Jakóbczak Studio" and the
+   full registered name with its legal form are one company. The record can, because you said so,
+   so where one claims a name, its own identity is the key. */
+function provKey(st,name){const sp=(st&&st.suppliers&&st.suppliers.length)?providerIndex(st)[normProv(name)]:null;
+  return sp?("@"+sp.id):normProv(name);}
 /* The catalogue as a sheet. Shared, because export-edit-import is one round trip and the export
    belongs next to the import rather than filed under Settings. The column names match what the
    catalogue import reads, and an import only touches the columns the file carries. */
