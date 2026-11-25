@@ -693,7 +693,16 @@ function storageInfo(){let bytes=0;try{bytes=(localStorage.getItem(LSKEY)||"").l
 
 /* core file (portable, optionally encrypted) */
 const APP="Rosa Mystica";
-function makeCore(s){return {app:APP,kind:"core",schema:SCHEMA,savedAt:new Date().toISOString(),data:{catalogue:s.catalogue,ledger:s.ledger,staging:s.staging,count:s.count,finance:s.finance,postage:s.postage,invoices:s.invoices,channels:s.channels,settings:s.settings}};}
+/* Everything the state holds, minus the one key migrate sets for itself. It used to be a fixed
+   list of collections, and that is exactly how the supplier records and the history log came to
+   be absent from every backup taken after they existed: a collection was added and the exporter
+   was never told. Restoring such a file wiped them without a word, because replaceAll starts
+   from a blank state. Naming what to LEAVE OUT instead means the next collection is carried
+   whether or not anyone remembers this function. */
+const CORE_SKIP={schema:1};
+function makeCore(s){const data={};
+  for(const k in s)if(!CORE_SKIP[k])data[k]=s[k];
+  return {app:APP,kind:"core",schema:SCHEMA,savedAt:new Date().toISOString(),data};}
 function readCore(o){return (o&&o.kind==="core"&&o.data)?o.data:o;}
 function isCoreLike(raw){const d=readCore(raw);return !!(d&&(Array.isArray(d.catalogue)||Array.isArray(d.ledger)));}
 const HAS_CRYPTO=(typeof crypto!=="undefined")&&!!(crypto.subtle)&&(typeof TextEncoder!=="undefined");
