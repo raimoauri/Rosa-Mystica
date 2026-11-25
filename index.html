@@ -145,6 +145,14 @@ button{font-family:inherit}
 .panel-h h3{font-size:14.5px}
 /* A wide table scrolls rather than squashing, and says so: overlay scrollbars vanish on most
    systems, so a table running past the edge simply looked cut off. */
+.tidylist{max-height:330px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.tidylist table{font-size:12.5px}
+.tidylist thead th{position:sticky;top:0;background:var(--surface);z-index:1}
+.tidyhead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.tidyhead .field{flex:0 0 auto}
+.tidyhead .field svg{width:15px;height:15px;flex:none}
+.tidyhead .field input{width:170px}
+.keepsake{font-size:11px;color:var(--warn,var(--faint))}
 .quietx{opacity:.3;transition:opacity .12s}
 .quietx:hover,.quietx:focus-visible{opacity:1}
 .logrow td{vertical-align:top}
@@ -1504,10 +1512,98 @@ function Overview({st,go,act}){
   </div>`;}
 
 /* ===================== Catalogue ===================== */
+/* Catalogue tidying, kept in one deliberate place because both halves change data and one of
+   them removes it. The defaults carry the argument: drifted overrides arrive ticked, because
+   clearing one restores the ledger's own answer and takes nothing away; never-received products
+   arrive unticked, because the list is usually not debris at all. */
+function TidyModal({st,act,show,onClose}){
+  const t=useMemo(()=>catalogueTidy(st),[st]);
+  const [offD,setOffD]=useState({});
+  const [onN,setOnN]=useState({});
+  const [q,setQ]=useState("");const [sup,setSup]=useState("");
+  const [ask,setAsk]=useState(null);
+  const takeD=t.drifted.filter(x=>!offD[normCode(x.code)]);
+  const takeN=t.never.filter(x=>onN[normCode(x.code)]);
+  const sups=useMemo(()=>[...new Set(t.never.map(x=>x.supplier).filter(Boolean))].sort(),[t]);
+  const shown=useMemo(()=>{const n=q.trim().toLowerCase();
+    return t.never.filter(x=>(!sup||x.supplier===sup)
+      &&(!n||String(x.code).toLowerCase().indexOf(n)>=0||String(x.name).toLowerCase().indexOf(n)>=0));},[t,q,sup]);
+  const allShown=shown.length&&shown.every(x=>onN[normCode(x.code)]);
+  function tickShown(v){setOnN(o=>{const n=Object.assign({},o);
+    for(const x of shown){if(v)n[normCode(x.code)]=1;else delete n[normCode(x.code)];}return n;});}
+  const pricedPicked=takeN.filter(x=>x.price!=null).length;
+  const notedPicked=takeN.filter(x=>x.keepsake.indexOf("notes")>=0).length;
+  return html`<${Modal} wide=${true} title="Tidy the catalogue" onClose=${onClose}
+    footer=${html`<${React.Fragment}><span class="sp"></span><button class="btn" onClick=${onClose}>Done</button></${React.Fragment}>`}>
+
+    <div class="panel" style=${{marginBottom:"16px"}}>
+      <div class="panel-h"><h3>Cost overrides that have drifted</h3>
+        <span class="note">${num(t.drifted.length)} product${t.drifted.length===1?"":"s"}</span></div>
+      <div style=${{padding:"12px 14px"}}>
+      ${t.drifted.length?html`<${React.Fragment}>
+        <div class="note" style=${{marginBottom:"8px"}}>A cost keyed by hand that the ledger has since moved under. Clearing it takes nothing away \u2014 the product goes back to reading its cost from the lots you hold, freight included, and keeps following them.</div>
+        <div class="tidylist"><table><thead><tr><th style=${{width:"34px"}}></th><th>Code</th><th>Product</th>
+          <th class="num">Keyed</th><th class="num">Landed</th><th class="num">Apart</th><th class="num">On hand</th></tr></thead>
+          <tbody>${t.drifted.map(x=>{const k=normCode(x.code);return html`<tr key=${k} style=${{cursor:"pointer"}}
+            onClick=${()=>setOffD(o=>{const n=Object.assign({},o);if(n[k])delete n[k];else n[k]=1;return n;})}>
+            <td><input type="checkbox" readOnly checked=${!offD[k]}/></td>
+            <td class="code">${x.code}</td><td>${x.name||html`<span class="faint">(unnamed)</span>`}</td>
+            <td class="num mono">${money(x.cost)}</td><td class="num mono">${money(x.landed)}</td>
+            <td class="num mono" style=${{color:x.over?"var(--bad)":"inherit"}}>${x.over?"+":"\u2212"}${pct(x.d)}</td>
+            <td class="num">${num(x.onHand)}</td></tr>`;})}</tbody></table></div>
+        <div class="hintrow" style=${{marginTop:"10px"}}>
+          <button class="btn primary" disabled=${!takeD.length}
+            onClick=${()=>{act.clearCostOverrides(takeD.map(x=>x.code));
+              show("Cleared "+takeD.length+" cost override"+(takeD.length===1?"":"s"),true);}}>
+            Use landed on ${num(takeD.length)}</button>
+          <span class="note">${(()=>{const o=takeD.filter(x=>x.over).length;
+            return o?num(o)+" of them sit ABOVE landed cost, so those products have been reporting less margin than they earn.":"";})()}</span></div>
+      </${React.Fragment}>`:html`<div class="note">Nothing has drifted. Every cost in the catalogue either follows the ledger or sits within ${pct(DIAG_COSTTOL)} of it.</div>`}
+      </div></div>
+
+    <div class="panel">
+      <div class="panel-h"><h3>Never received</h3>
+        <span class="note">${num(t.never.length)} stock-tracked product${t.never.length===1?"":"s"}${t.notStocked?" \u00b7 "+num(t.notStocked)+" not stock-tracked, left out":""}</span></div>
+      <div style=${{padding:"12px 14px"}}>
+      ${t.never.length?html`<${React.Fragment}>
+        <div class="note" style=${{marginBottom:"10px"}}>No movement of any kind behind these \u2014 no receipt, no sale, no count, no invoice line, not even a draft \u2014 so nothing in the ledger depends on them and removing one cannot move a figure. <b>That is not the same as being worthless.</b> ${t.priced?html`<b>${num(t.priced)}</b> of them carry a price and would need re-pricing if the stock ever arrives. `:""}Nothing is ticked for you; decide line by line.</div>
+        <div class="tidyhead">
+          <div class="field search" style=${{minWidth:"200px"}}><${Icon} name="search"/><input type="text" placeholder="code or name…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
+          ${sups.length?html`<select class="filter" value=${sup} onChange=${e=>setSup(e.target.value)}><option value="">Any supplier</option>${sups.map(v=>html`<option key=${v} value=${v}>${v}</option>`)}</select>`:null}
+          <button class="btn sm" onClick=${()=>tickShown(!allShown)}>${allShown?"Untick":"Tick"} ${num(shown.length)} shown</button>
+          ${Object.keys(onN).length?html`<span class="note">${num(takeN.length)} picked</span>`:null}</div>
+        <div class="tidylist"><table><thead><tr><th style=${{width:"34px"}}></th><th>Code</th><th>Product</th>
+          <th>Supplier</th><th class="num">Price</th><th>Would also go</th></tr></thead>
+          <tbody>${shown.map(x=>{const k=normCode(x.code);return html`<tr key=${k} style=${{cursor:"pointer"}}
+            onClick=${()=>setOnN(o=>{const n=Object.assign({},o);if(n[k])delete n[k];else n[k]=1;return n;})}>
+            <td><input type="checkbox" readOnly checked=${!!onN[k]}/></td>
+            <td class="code">${x.code}</td>
+            <td><span class="name">${x.name||html`<span class="faint">(unnamed)</span>`}</span></td>
+            <td class="muted">${x.supplier||html`<span class="faint">\u2014</span>`}</td>
+            <td class="num mono">${x.price==null?html`<span class="faint">\u2014</span>`:money(x.price)}</td>
+            <td class="keepsake">${x.keepsake.length?x.keepsake.join(", "):html`<span class="faint">nothing</span>`}</td></tr>`;})}</tbody></table></div>
+        <div class="hintrow" style=${{marginTop:"10px"}}>
+          <button class="btn danger" disabled=${!takeN.length} onClick=${()=>setAsk(takeN.slice())}>
+            Remove ${num(takeN.length)} product${takeN.length===1?"":"s"}\u2026</button>
+          <span class="note">Undo is there afterwards, and the removal is written to History.</span></div>
+      </${React.Fragment}>`:html`<div class="note">Every stock-tracked product in the catalogue has something behind it.</div>`}
+      </div></div>
+
+    ${ask?html`<${ConfirmModal} title=${"Remove "+num(ask.length)+" product"+(ask.length===1?"":"s")+" from the catalogue?"}
+      confirmLabel=${"Remove "+num(ask.length)}
+      body=${html`<span>Nothing in the ledger refers to ${ask.length===1?"it":"them"}, so no stock figure, cost or margin will move.
+        ${pricedPicked?html` You are also removing <b>${num(pricedPicked)}</b> retail price${pricedPicked===1?"":"s"}`:null}${notedPicked?html` and <b>${num(notedPicked)}</b> set of notes`:null}${pricedPicked||notedPicked?html`, which would have to be keyed again if the stock arrives later.`:null}
+        <br/><br/>Undo is available immediately afterwards, and this is written to History.</span>`}
+      onConfirm=${()=>{act.deleteProducts(ask.map(x=>x.code));
+        show("Removed "+ask.length+" product"+(ask.length===1?"":"s"),true);
+        setOnN({});setAsk(null);}}
+      onClose=${()=>setAsk(null)}/>`:null}
+  </${Modal}>`;}
+
 function Catalogue({st,act,openProduct,q,setQ}){
   const [ftype,setFtype]=useState("");const [fsell,setFsell]=useState("");const [fonline,setFonline]=useState("");
   const [fsup,setFsup]=useState("");const [fcat,setFcat]=useState("");const [fmiss,setFmiss]=useState("");
-  const [sort,setSort]=useState({k:"name",d:1});
+  const [sort,setSort]=useState({k:"name",d:1});const [tidy,setTidy]=useState(false);
   /* the values actually present, so the lists only ever offer what exists */
   const suppliers=useMemo(()=>[...new Set((st.catalogue||[]).map(p=>(p.supplier||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[st.catalogue]);
   const cats=useMemo(()=>[...new Set((st.catalogue||[]).map(p=>(p.category||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[st.catalogue]);
@@ -1539,7 +1635,9 @@ function Catalogue({st,act,openProduct,q,setQ}){
   return html`<div class="content">
     <div class="rowbetween" style=${{marginBottom:"16px"}}><div><h2 style=${{fontSize:"22px",marginTop:"2px"}}>Products</h2></div>
       <div class="hintrow">${st.catalogue.length?html`<${React.Fragment}><button class="btn" onClick=${()=>act.openRecode()}>Re-code / rename…</button>
+        <button class="btn" onClick=${()=>setTidy(true)}>Tidy…</button>
         <button class="btn" onClick=${()=>act.exportCatalogue()}><${Icon} name="download"/>Export</button></${React.Fragment}>`:null}<button class="btn" onClick=${()=>act.openCatImport()}><${Icon} name="upload"/>Import catalogue</button><button class="btn primary" onClick=${()=>openProduct(null)}><${Icon} name="plus"/>New product</button></div></div>
+    ${tidy?html`<${TidyModal} st=${st} act=${act} show=${act.toast} onClose=${()=>setTidy(false)}/>`:null}
     <div class="toolbar">
       <div class="field search globalsearch"><${Icon} name="search"/><input type="text" placeholder="Search code, name, author…" value=${q} onInput=${e=>setQ(e.target.value)}/></div>
       <select class="filter" value=${ftype} onChange=${e=>setFtype(e.target.value)}><option value="">All types</option>${TYPES.map(([v,l])=>html`<option key=${v} value=${v}>${l}</option>`)}</select>
@@ -2318,6 +2416,55 @@ function batchSheets(b){
     r2(l.netRev||0), r2(l.profit||0), r2(l.valueNet||0),
     l.sellable?"yes":"no", l.stocked?"yes":"no"]);
   return [{name:(b.batchRef||"Batch"),rows:top.concat([head]).concat(body)}];}
+/* Two kinds of catalogue debris, and only the ledger can tell you which is which.
+
+   A DRIFTED OVERRIDE is a cost somebody keyed by hand that the ledger has since moved out from
+   under. Clearing it loses nothing: the figure it falls back to is what the invoices say.
+
+   A NEVER-RECEIVED product has no movement of any kind behind it \u2014 no receipt, no sale, no
+   count, no invoice line, not even a draft. Nothing in the ledger depends on it, so removing it
+   cannot orphan a figure. That is the only sense in which it is safe, and it is not the same as
+   it being worthless: a priced, annotated entry for a book you have sold for years is not
+   debris, it is a catalogue waiting for stock. So each one is listed with what would go with
+   it, and nothing is ticked in advance.
+
+   Products that are not stock-tracked are left out entirely. A till button has no movements by
+   design, and calling it never-received would be the tool misunderstanding its own question. */
+function catalogueTidy(st){
+  const iv=invByCode(st);
+  const touched=new Set();
+  for(const r of (st.ledger||[]))touched.add(normCode(r.code));
+  for(const i of (st.invoices||[]))for(const l of (i.lines||[])){
+    if(l.code)touched.add(normCode(l.code));
+    if(l.supplierRef)touched.add(normCode(l.supplierRef));}
+  for(const k in ((st.count&&st.count.lines)||{}))touched.add(normCode(k));
+  for(const k in ((st.order&&st.order.lines)||{}))touched.add(normCode(k));
+  const drifted=[],never=[];let notStocked=0;
+  for(const p of (st.catalogue||[])){
+    const k=normCode(p.code);const r=iv[k];const cc=costOverride(p);
+    if(cc!=null&&cc>0&&r){
+      const land=(r.unitCost!=null&&r.unitCost>0)?r.unitCost:r.avgCost;
+      if(land!=null&&land>0){const d=Math.abs(cc-land)/land;
+        if(d>DIAG_COSTTOL)drifted.push({code:p.code,name:p.name||"",cost:cc,landed:land,d,
+          onHand:r.onHand||0,over:cc>land});}}
+    if(touched.has(k))continue;
+    if(p.stocked===false){notStocked++;continue;}
+    const keepsake=[];
+    if(p.price!=null&&p.price!=="")keepsake.push("price");
+    if(cc!=null)keepsake.push("cost");
+    if((p.notes||"").trim())keepsake.push("notes");
+    if((p.supplierRef||"").trim())keepsake.push("supplier ref");
+    if((p.category||"").trim())keepsake.push("category");
+    if(p.reorderPoint!=null&&p.reorderPoint!=="")keepsake.push("reorder point");
+    never.push({code:p.code,name:p.name||"",supplier:(p.supplier||"").trim(),type:p.type||"",
+      price:(p.price==null||p.price==="")?null:+p.price,keepsake,
+      created:String(p.createdAt||"").slice(0,10)});}
+  drifted.sort((a,b)=>b.d-a.d);
+  never.sort((a,b)=>(a.supplier||"\uffff").localeCompare(b.supplier||"\uffff")
+    ||String(a.name||"").localeCompare(String(b.name||"")));
+  return {drifted,never,notStocked,
+    bare:never.filter(x=>!x.keepsake.length).length,
+    priced:never.filter(x=>x.price!=null).length};}
 function catalogueSheets(st){
   const head=["Code","Type","Name","Author","Year","Category","Supplier","Provider ref","Cost override","Landed now","Price","Sellable","Stock-tracked","Online","Reorder point","Notes"];
   const ivr=invByCode(st);
@@ -2355,7 +2502,8 @@ const LOG_VERBS={
   "ledger.imported":"Ledger imported","movement.deleted":"Movement deleted",
   "stock.counted":"Stock count applied",
   "product.confirmed":"Staged items confirmed","product.saved":"Product saved",
-  "product.deleted":"Product deleted","product.recoded":"Products re-coded",
+  "product.deleted":"Product deleted","product.removed":"Products removed",
+  "product.costCleared":"Cost overrides cleared","product.recoded":"Products re-coded",
   "catalogue.imported":"Catalogue imported",
   "supplier.recorded":"Suppliers recorded","supplier.saved":"Supplier saved",
   "supplier.deleted":"Supplier removed",
@@ -4263,6 +4411,34 @@ function App(){
       for(const e of s.staging){const nc=normCode(e.code);if(!nc||have.has(nc))continue;
         cat.push({code:e.code,type:e.type||"goods",name:e.name||"",author:"",year:"",category:"",supplier:e.provider||"",supplierRef:e.providerRef||"",cost:null,price:null,sellable:!TILLCODE.test(String(e.code||"")),stocked:!TILLCODE.test(String(e.code||"")),online:false,reorderPoint:null,notes:"",createdAt:now,updatedAt:now});have.add(nc);}
       return {...s,catalogue:cat,staging:[]};}),
+    clearCostOverrides:codes=>setSt(s=>{undoRef.current=s;
+      const want=new Set((codes||[]).map(normCode));if(!want.size)return s;
+      let n=0;const now=new Date().toISOString();
+      const cat=s.catalogue.map(p=>{
+        if(!want.has(normCode(p.code))||costOverride(p)==null)return p;
+        n++;return Object.assign({},p,{cost:null,updatedAt:now});});
+      if(!n)return s;
+      return withLog({...s,catalogue:cat},logEntry("product.costCleared","",n,{}));}),
+    /* The screen's list is a request, not an instruction. Anything the ledger, an invoice line,
+       a stock count or a reorder draft mentions is kept whatever was ticked, and so is anything
+       not stock-tracked \u2014 because the one guarantee worth making here is that this can never
+       remove something another figure depends on. */
+    deleteProducts:codes=>setSt(s=>{undoRef.current=s;
+      const want=new Set((codes||[]).map(normCode));if(!want.size)return s;
+      const keep=new Set();
+      for(const r of (s.ledger||[]))keep.add(normCode(r.code));
+      for(const i of (s.invoices||[]))for(const l of (i.lines||[])){
+        if(l.code)keep.add(normCode(l.code));
+        if(l.supplierRef)keep.add(normCode(l.supplierRef));}
+      for(const k in ((s.count&&s.count.lines)||{}))keep.add(normCode(k));
+      for(const k in ((s.order&&s.order.lines)||{}))keep.add(normCode(k));
+      const go=new Set();
+      for(const p of s.catalogue){const k=normCode(p.code);
+        if(want.has(k)&&!keep.has(k)&&p.stocked!==false)go.add(k);}
+      if(!go.size)return s;
+      const cat=s.catalogue.filter(p=>!go.has(normCode(p.code)));
+      return withLog({...s,catalogue:cat},
+        logEntry("product.removed","",go.size,{asked:want.size}));}),
     saveSupplier:rec=>setSt(s=>{const now=new Date().toISOString();const list=(s.suppliers||[]).slice();
       const ix=list.findIndex(x=>x.id===rec.id);
       if(ix>=0)list[ix]=Object.assign({},list[ix],rec,{updatedAt:now});
